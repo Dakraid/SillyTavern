@@ -1440,9 +1440,9 @@ body.hideAllSwipeButtons :is(.swipe_left, .swipe_right),
 .avatars_inline {
     display: flex;
     gap: 5px;
-    flex-wrap: wrap;
-    overflow: hidden;
-    max-height: calc(var(--avatar-base-height) + 2 * var(--avatar-base-border-radius));
+    flex-wrap: nowrap;
+    overflow-x: scroll;
+    max-height: calc(var(--avatar-base-height) + 2 * var(--avatar-base-border-radius) + 15px);
 }
 
 .bogus_folder_select .avatar {

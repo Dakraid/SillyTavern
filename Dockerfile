@@ -1,4 +1,4 @@
-FROM node:lts-alpine3.23
+FROM nikolaik/python-nodejs:python3.13-nodejs24-alpine
 
 # Arguments
 ARG APP_HOME=/home/node/app

@@ -1,0 +1,73 @@
+name: Sync Origin To Upstream
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-fork:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Add Upstream Remote
+        run: |
+          git remote add upstream https://github.com/SillyTavern/SillyTavern.git
+          git fetch upstream
+
+      # Task 1: Sync 'staging' from upstream to origin if behind
+      - name: Sync Staging Branch
+        run: |
+          # Check out the local staging branch
+          git checkout --track origin/staging
+
+          # Check if upstream/staging has commits that origin/staging does not
+          BEHIND_COUNT=$(git rev-list --count origin/staging..upstream/staging)
+          echo "Staging is behind by $BEHIND_COUNT commits"
+
+          if [ "$BEHIND_COUNT" -gt "0" ]; then
+            echo "Syncing staging..."
+            git merge upstream/staging
+            git push origin staging
+          else
+            echo "Staging is up to date."
+          fi
+
+      # Task 2: Merge origin 'staging' into 'customized' if behind and no conflicts
+      - name: Sync Customized Branch
+        run: |
+          git checkout --track origin/customized
+
+          # Check if origin/staging is ahead of customized
+          # We use '..' to see what commits are in origin/staging but not in customized
+          BEHIND_COUNT=$(git rev-list --count origin/customized..origin/staging)
+
+          if [ "$BEHIND_COUNT" -gt "0" ]; then
+            echo "Customized is behind origin/staging by $BEHIND_COUNT commits. Attempting merge..."
+
+            # Try to merge. If it fails (conflicts), it will return non-zero exit code.
+            if git merge origin/staging --no-edit; then
+              echo "Merge successful. Pushing..."
+              git push origin customized
+            else
+              echo "::warning::Merge conflict detected or merge failed. Skipping auto-merge for customized branch."
+              git merge --abort
+              # We exit cleanly (0) so the workflow doesn't fail
+              exit 0
+            fi
+          else
+            echo "Customized is ahead or equal to origin/staging. No action needed."
+          fi
