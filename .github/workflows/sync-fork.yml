@@ -1,0 +1,40 @@
+name: Sync Fork
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+
+  workflow_dispatch:
+
+jobs:
+  sync-fork:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Install PyGithub
+        run: pip install PyGithub
+
+      - name: Sync fork
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          import os
+          from github import Github
+
+          g = Github(os.environ['GITHUB_TOKEN'])
+          upstream_repo = g.get_repo('SillyTavern/SillyTavern')
+          fork_repo = g.get_repo('Dakraid/SillyTavern')
+
+          for branch in upstream_repo.get_branches():
+              try:
+                  fork_repo.create_git_ref(ref=f'refs/heads/{branch.name}', sha=branch.commit.sha)
+                  print(f'Created branch {branch.name} in fork')
+              except:
+                  print(f'Branch {branch.name} already exists in fork, updating...')
+                  fork_ref = fork_repo.get_git_ref(f'heads/{branch.name}')
+                  fork_ref.edit(sha=branch.commit.sha)
+                  print(f'Updated branch {branch.name} in fork')
