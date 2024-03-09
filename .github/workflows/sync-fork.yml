@@ -31,6 +31,8 @@ jobs:
           fork_repo = g.get_repo('Dakraid/SillyTavern')
 
           for branch in upstream_repo.get_branches():
+              if branch.name == 'release':
+                  continue
               try:
                   fork_repo.create_git_ref(ref=f'refs/heads/{branch.name}', sha=branch.commit.sha)
                   print(f'Created branch {branch.name} in fork')
