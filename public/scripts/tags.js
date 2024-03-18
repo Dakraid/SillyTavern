@@ -144,7 +144,7 @@ function filterTagSubEntities(tag, entities, { filterHidden = true } = {}) {
     const closedFolders = entities.filter(x => x.type === 'tag' && TAG_FOLDER_TYPES[x.item.folder_type] === TAG_FOLDER_TYPES.CLOSED);
 
     entities = entities.filter(sub => {
-        // Filter out all tags and and all who isn't tagged for this item
+        // Filter out all tags and all who isn't tagged for this item
         if (sub.type === 'tag' || !entitiesFilter.isElementTagged(sub, tag.id)) {
             return false;
         }
@@ -392,7 +392,7 @@ function findTag(request, resolve, listSelector) {
 
 function selectTag(event, ui, listSelector) {
     let tagName = ui.item.value;
-    let tag = tags.find(t => t.name === tagName);
+    let tag = tags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
 
     // create new tag if it doesn't exist
     if (!tag) {
@@ -439,14 +439,17 @@ function getExistingTags(new_tags) {
 async function importTags(imported_char) {
     let imported_tags = imported_char.tags.filter(t => t !== 'ROOT' && t !== 'TAVERN');
     let existingTags = await getExistingTags(imported_tags);
-    //make this case insensitive
+    //make this case-insensitive
     let newTags = imported_tags.filter(t => !existingTags.some(existingTag => existingTag.toLowerCase() === t.toLowerCase()));
     let selected_tags = '';
     const existingTagsString = existingTags.length ? (': ' + existingTags.join(', ')) : '';
     if (newTags.length === 0) {
-        await callPopup(`<h3>Importing Tags For ${imported_char.name}</h3><p>${existingTags.length} existing tags have been found${existingTagsString}.</p>`, 'text');
+        // await callPopup(`<h3>Importing Tags For ${imported_char.name}</h3><p>${existingTags.length} existing tags have been found${existingTagsString}.</p>`, 'text');
+        toastr.success(`Importing Tags For ${imported_char.name}`, `${existingTags.length} existing tags have been found${existingTagsString}.`);
     } else {
-        selected_tags = await callPopup(`<h3>Importing Tags For ${imported_char.name}</h3><p>${existingTags.length} existing tags have been found${existingTagsString}.</p><p>The following ${newTags.length} new tags will be imported.</p>`, 'input', newTags.join(', '));
+        toastr.success(`Importing Tags For ${imported_char.name}`, `${existingTags.length} existing tags have been found${existingTagsString}.\nThe following ${newTags.length} new tags will be imported: ${newTags.join(', ')}`);
+        selected_tags = newTags.join(', ');
+        // selected_tags = await callPopup(`<h3>Importing Tags For ${imported_char.name}</h3><p>${existingTags.length} existing tags have been found${existingTagsString}.</p><p>The following ${newTags.length} new tags will be imported.</p>`, 'input', newTags.join(', '));
     }
     // @ts-ignore
     selected_tags = existingTags.concat(selected_tags.split(','));
@@ -457,7 +460,7 @@ async function importTags(imported_char) {
         selected_tags = selected_tags.slice(0, 15);
     }
     for (let tagName of selected_tags) {
-        let tag = tags.find(t => t.name === tagName);
+        let tag = tags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
 
         if (!tag) {
             tag = createNewTag(tagName);
@@ -735,7 +738,7 @@ function onTagRemoveClick(event) {
 // @ts-ignore
 function onTagInput(event) {
     let val = $(this).val();
-    if (tags.find(t => t.name === val)) return;
+    if (tags.find(t => t.name.toLowerCase() === val.toLowerCase())) return;
     // @ts-ignore
     $(this).autocomplete('search', val);
 }
@@ -1072,9 +1075,9 @@ function updateDrawTagFolder(element, tag) {
 }
 
 function onTagDeleteClick() {
-    if (!confirm('Are you sure?')) {
-        return;
-    }
+    //if (!confirm('Are you sure?')) {
+    //    return;
+    //}
 
     const id = $(this).closest('.tag_view_item').attr('id');
     for (const key of Object.keys(tag_map)) {
@@ -1169,4 +1172,3 @@ jQuery(() => {
     $(document).on('click', '.tag_view_backup', onTagsBackupClick);
     $(document).on('click', '.tag_view_restore', onBackupRestoreClick);
 });
-
