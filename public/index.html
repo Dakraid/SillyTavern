@@ -3245,7 +3245,7 @@
                 <div class="flex-container flexFlowColumn">
                     <div name="userSettingsRowOne" class="flex-container flexFlowRow alignitemscenter spaceBetween">
                         <div class="flex-container">
-                            <div class="flex-container flexnowrap alignitemscenter">
+                            <div class="flex-container flexnowrap alignItemsBaseline">
                                 <h3 class="margin0"><span data-i18n="User Settings">User Settings</span></h3>
                                 <select id="ui_mode_select" class="margin0 widthNatural">
                                     <option value="0" data-i18n="Simple">Simple</option>
@@ -3253,9 +3253,9 @@
                                 </select>
                             </div>
                         </div>
-                        <div id="UI-language-block" class="flex-container alignitemscenter">
+                        <div id="UI-language-block" class="flex-container alignItemsBaseline">
                             <span data-i18n="UI Language">Language:</span>
-                            <select id="ui_language_select" class="widthNatural flex1 margin0">
+                            <select id="ui_language_select" class="flex1 margin0">
                                 <option value="" data-i18n="Default">Default</option>
                                 <option value="en">English</option>
                             </select>
@@ -3504,6 +3504,7 @@
                             <label for="bogus_folders" class="checkbox_label" title="Show tagged character folders in the character list." data-i18n="[title]Show tagged character folders in the character list">
                                 <input id="bogus_folders" type="checkbox" />
                                 <span data-i18n="Tags as Folders">Tags as Folders</span>
+                                <i title="Recent change: Tags must be marked as folders in the Tag Management menu to appear as such. Click here to bring it up." class="tags_view right_menu_button fa-solid fa-circle-exclamation"></i>
                             </label>
                         </div>
                         <h4><span data-i18n="Miscellaneous">Miscellaneous</span></h4>
@@ -5255,7 +5256,7 @@
         </div>
         <div id="cfgConfig" class="drawer-content flexGap5">
             <div class="panelControlBar flex-container flexGap10">
-                <div id="cfgConfigHeader" class="fa-solid fa-grip drag-grabber"></div>
+                <div id="cfgConfigheader" class="fa-solid fa-grip drag-grabber"></div>
                 <div id="cfgConfigMaximize" class="inline-drawer-maximize fa-solid">
                     <i class="floating_panel_maximize fa-solid fa-window-maximize"></i>
                 </div>
@@ -5425,6 +5426,9 @@
                     <b data-i18n="Token Probabilities">Token Probabilities</b>
                 </div>
                 <div class="logprobs_panel_controls">
+                    <div id="logprobsViewerheader" class="logprobs_panel_control_button drag-grabber">
+                        <i class="custom-drawer-icon fa-solid fa-grip"></i>
+                    </div>
                     <div id="logprobsMaximizeToggle" class="logprobs_panel_control_button inline-drawer-maximize fa-solid">
                         <i class="inline-drawer-icon fa-solid fa-window-maximize"></i>
                     </div>

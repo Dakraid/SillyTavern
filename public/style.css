@@ -460,7 +460,7 @@ body.reduced-motion #bg_custom {
     backdrop-filter: blur(var(--SmartThemeBlurStrength));
     background-color: var(--SmartThemeBlurTintColor);
     -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength));
-    z-index: 3000;
+    z-index: 3005;
 }
 
 #sheld {
@@ -1364,13 +1364,21 @@ input[type="file"] {
     display: none;
     flex-direction: column;
     box-shadow: 0 0 10px var(--black70a);
-    z-index: 3000;
+    z-index: 4000;
     left: 0;
     top: 0;
     margin: 0;
     right: unset;
     width: calc(((100svw - var(--sheldWidth)) / 2) - 1px);
 
+}
+
+#movingDivs > div {
+    z-index: 4000;
+}
+
+#left-nav-panel {
+    z-index: 3000;
 }
 
 .floating_prompt_radio_group,
@@ -3332,6 +3340,10 @@ a {
     transition: all 250ms;
 }
 
+#ui_language_select {
+    width: 10em;
+}
+
 #extensions_settings .inline-drawer-toggle.inline-drawer-header:hover,
 #extensions_settings2 .inline-drawer-toggle.inline-drawer-header:hover {
     filter: brightness(150%);
@@ -3355,10 +3367,15 @@ a {
     margin: 0 auto;
     height: var(--topBarBlockSize);
     justify-content: center;
-    z-index: 3000;
+    z-index: 3005;
     position: relative;
     width: var(--sheldWidth);
 
+}
+
+body:has(.drawer-content.maximized) #top-settings-holder:has(.drawer-content.openDrawer:not(.fillLeft):not(.fillRight)),
+body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDrawer:not(.fillLeft):not(.fillRight)) {
+    z-index: 4005;
 }
 
 .drawer {
@@ -3459,7 +3476,11 @@ a {
     /* z-index: 1000 !important; */
 }
 
-.drawer-content.maximized {
+body.movingUI .inline-drawer-maximize {
+    display: none;
+}
+
+body:not(.movingUI) .drawer-content.maximized {
     width: var(--sheldWidth) !important;
     top: var(--topBarBlockSize) !important;
     margin: 0 auto !important;
