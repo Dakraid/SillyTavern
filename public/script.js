@@ -2454,7 +2454,7 @@ function addPersonaDescriptionExtensionPrompt() {
             ? `${power_user.persona_description}\n${originalAN}`
             : `${originalAN}\n${power_user.persona_description}`;
 
-        setExtensionPrompt(NOTE_MODULE_NAME, ANWithDesc, chat_metadata[metadata_keys.position], chat_metadata[metadata_keys.depth], extension_settings.note.allowWIScan);
+        setExtensionPrompt(NOTE_MODULE_NAME, ANWithDesc, chat_metadata[metadata_keys.position], chat_metadata[metadata_keys.depth], extension_settings.note.allowWIScan, chat_metadata[metadata_keys.role]);
     }
 }
 
@@ -2491,8 +2491,8 @@ function getExtensionPrompt(position = extension_prompt_types.IN_PROMPT, depth =
         .sort()
         .map((x) => extension_prompts[x])
         .filter(x => x.position == position && x.value)
-        .filter(x => x.depth === undefined || x.depth === depth)
-        .filter(x => x.role === undefined || x.role === role)
+        .filter(x => depth === undefined || x.depth === undefined || x.depth === depth)
+        .filter(x => role === undefined || x.role === undefined || x.role === role)
         .map(x => x.value.trim())
         .join(separator);
     if (extension_prompt.length && !extension_prompt.startsWith(separator)) {
@@ -3258,7 +3258,12 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
     let continue_mag = '';
     for (let i = coreChat.length - 1, j = 0; i >= 0; i--, j++) {
         if (main_api == 'openai') {
-            break;
+            chat2[i] = coreChat[j].mes;
+            if (i === 0 && isContinue) {
+                chat2[i] = chat2[i].slice(0, chat2[i].lastIndexOf(coreChat[j].mes) + coreChat[j].mes.length);
+                continue_mag = coreChat[j].mes;
+            }
+            continue;
         }
 
         chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, false);
@@ -3399,8 +3404,8 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
         // Coping mechanism for OAI spacing
         const isForceInstruct = isOpenRouterWithInstruct();
         if (main_api === 'openai' && !isForceInstruct && !cyclePrompt.endsWith(' ')) {
-            cyclePrompt += ' ';
-            continue_mag += ' ';
+            cyclePrompt += oai_settings.continue_postfix;
+            continue_mag += oai_settings.continue_postfix;
         }
         message_already_generated = continue_mag;
     }
@@ -3524,7 +3529,7 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
         }
 
         // Add a space if prompt cache doesn't start with one
-        if (!/^\s/.test(promptCache) && !isInstruct && !isContinue) {
+        if (!/^\s/.test(promptCache) && !isInstruct) {
             promptCache = ' ' + promptCache;
         }
 
@@ -3980,7 +3985,7 @@ function doChatInject(messages, isContinue) {
             [extension_prompt_roles.SYSTEM]: '',
             [extension_prompt_roles.USER]: name1,
             [extension_prompt_roles.ASSISTANT]: name2,
-        }
+        };
         const roleMessages = [];
         const separator = '\n';
 
