@@ -971,7 +971,7 @@ export function getTextGenGenerationData(finalPrompt, maxTokens, isImpersonate, 
         'top_p': settings.top_p,
         'typical_p': settings.typical_p,
         'typical': settings.typical_p,
-        'sampler_seed': settings.seed,
+        'sampler_seed': settings.seed === 0 ? Math.floor(Math.random() * (Math.floor(2147483647) - Math.ceil(1) + 1) + Math.ceil(1)) : settings.seed,
         'min_p': settings.min_p,
         'repetition_penalty': settings.rep_pen,
         'frequency_penalty': settings.freq_pen,
@@ -1093,4 +1093,3 @@ export function getTextGenGenerationData(finalPrompt, maxTokens, isImpersonate, 
 
     return params;
 }
-
