@@ -3467,7 +3467,6 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
     // Add persona description to prompt
     addPersonaDescriptionExtensionPrompt();
     // Call combined AN into Generate
-    let allAnchors = getAllExtensionPrompts();
     const beforeScenarioAnchor = getExtensionPrompt(extension_prompt_types.BEFORE_PROMPT).trimStart();
     const afterScenarioAnchor = getExtensionPrompt(extension_prompt_types.IN_PROMPT);
 
@@ -3514,10 +3513,11 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
 
     function getMessagesTokenCount() {
         const encodeString = [
+            beforeScenarioAnchor,
             storyString,
+            afterScenarioAnchor,
             examplesString,
             chatString,
-            allAnchors,
             quiet_prompt,
             cyclePrompt,
             userAlignmentMessage,
@@ -3785,12 +3785,13 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
         console.debug('---checking Prompt size');
         setPromptString();
         const prompt = [
+            beforeScenarioAnchor,
             storyString,
+            afterScenarioAnchor,
             mesExmString,
             mesSend.map((e) => `${e.extensionPrompts.join('')}${e.message}`).join(''),
             '\n',
             generatedPromptCache,
-            allAnchors,
             quiet_prompt,
         ].join('').replace(/\r/gm, '');
         let thisPromptContextSize = getTokenCount(prompt, power_user.token_padding);
@@ -4026,7 +4027,8 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
             ...thisPromptBits[currentArrayEntry],
             rawPrompt: generate_data.prompt || generate_data.input,
             mesId: getNextMessageId(type),
-            allAnchors: allAnchors,
+            allAnchors: getAllExtensionPrompts(),
+            chatInjects: injectedIndices?.map(index => arrMes[arrMes.length - index - 1])?.join('') || '',
             summarizeString: (extension_prompts['1_memory']?.value || ''),
             authorsNoteString: (extension_prompts['2_floating_prompt']?.value || ''),
             smartContextString: (extension_prompts['chromadb']?.value || ''),
@@ -4573,7 +4575,7 @@ function addChatsPreamble(mesSendString) {
 
 function addChatsSeparator(mesSendString) {
     if (power_user.context.chat_start) {
-        return substituteParams(power_user.context.chat_start) + '\n' + mesSendString;
+        return substituteParams(power_user.context.chat_start + '\n') + mesSendString;
     }
 
     else {
@@ -4650,7 +4652,12 @@ function promptItemize(itemizedPrompts, requestedMesId) {
         zeroDepthAnchorTokens: getTokenCount(itemizedPrompts[thisPromptSet].zeroDepthAnchor), // TODO: unused
         thisPrompt_padding: itemizedPrompts[thisPromptSet].padding,
         this_main_api: itemizedPrompts[thisPromptSet].main_api,
+        chatInjects: getTokenCount(itemizedPrompts[thisPromptSet].chatInjects),
     };
+
+    if (params.chatInjects){
+        params.ActualChatHistoryTokens = params.ActualChatHistoryTokens - params.chatInjects;
+    }
 
     if (params.this_main_api == 'openai') {
         //for OAI API
