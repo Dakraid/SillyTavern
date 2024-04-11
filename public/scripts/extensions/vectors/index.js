@@ -677,7 +677,8 @@ jQuery(async () => {
 
     // Migrate from TensorFlow to Transformers
     settings.source = settings.source !== 'local' ? settings.source : 'transformers';
-    $('#extensions_settings2').append(renderExtensionTemplate(MODULE_NAME, 'settings'));
+    const template = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
+    $('#extensions_settings2').append(template);
     $('#vectors_enabled_chats').prop('checked', settings.enabled_chats).on('input', () => {
         settings.enabled_chats = $('#vectors_enabled_chats').prop('checked');
         Object.assign(extension_settings.vectors, settings);
