@@ -2443,9 +2443,14 @@ function sendSystemMessage(type, text, extra = {}) {
     is_send_press = false;
 }
 
+/**
+ * Extracts the contents of bias macros from a message.
+ * @param {string} message Message text
+ * @returns {string} Message bias extracted from the message (or an empty string if not found)
+ */
 export function extractMessageBias(message) {
     if (!message) {
-        return null;
+        return '';
     }
 
     try {
@@ -3066,14 +3071,14 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
 
         if (interruptedByCommand) {
             //$("#send_textarea").val('').trigger('input');
-            unblockGeneration();
+            unblockGeneration(type);
             return Promise.resolve();
         }
     }
 
     if (main_api == 'kobold' && kai_settings.streaming_kobold && !kai_flags.can_use_streaming) {
         toastr.error('Streaming is enabled, but the version of Kobold used does not support token streaming.', undefined, { timeOut: 10000, preventDuplicates: true });
-        unblockGeneration();
+        unblockGeneration(type);
         return Promise.resolve();
     }
 
@@ -3082,12 +3087,12 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
         textgen_settings.legacy_api &&
         (textgen_settings.type === OOBA || textgen_settings.type === APHRODITE)) {
         toastr.error('Streaming is not supported for the Legacy API. Update Ooba and use new API to enable streaming.', undefined, { timeOut: 10000, preventDuplicates: true });
-        unblockGeneration();
+        unblockGeneration(type);
         return Promise.resolve();
     }
 
     if (isHordeGenerationNotAllowed()) {
-        unblockGeneration();
+        unblockGeneration(type);
         return Promise.resolve();
     }
 
@@ -3123,7 +3128,7 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
             setCharacterName('');
         } else {
             console.log('No enabled members found');
-            unblockGeneration();
+            unblockGeneration(type);
             return Promise.resolve();
         }
     }
@@ -3297,7 +3302,7 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
 
         if (aborted) {
             console.debug('Generation aborted by extension interceptors');
-            unblockGeneration();
+            unblockGeneration(type);
             return Promise.resolve();
         }
     } else {
@@ -3311,7 +3316,7 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
             adjustedParams = await adjustHordeGenerationParams(max_context, amount_gen);
         }
         catch {
-            unblockGeneration();
+            unblockGeneration(type);
             return Promise.resolve();
         }
         if (horde_settings.auto_adjust_context_length) {
@@ -4098,7 +4103,7 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
                 await eventSource.emit(event_types.IMPERSONATE_READY, getMessage);
             }
             else if (type == 'quiet') {
-                unblockGeneration();
+                unblockGeneration(type);
                 return getMessage;
             }
             else {
@@ -4166,7 +4171,7 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
 
         console.debug('/api/chats/save called by /Generate');
         await saveChatConditional();
-        unblockGeneration();
+        unblockGeneration(type);
         streamingProcessor = null;
 
         if (type !== 'quiet') {
@@ -4184,7 +4189,7 @@ async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, qu
 
         generatedPromptCache = '';
 
-        unblockGeneration();
+        unblockGeneration(type);
         console.log(exception);
         streamingProcessor = null;
         throw exception;
@@ -4254,7 +4259,16 @@ function flushWIDepthInjections() {
     }
 }
 
-function unblockGeneration() {
+/**
+ * Unblocks the UI after a generation is complete.
+ * @param {string} [type] Generation type (optional)
+ */
+function unblockGeneration(type) {
+    // Don't unblock if a parallel stream is still running
+    if (type === 'quiet' && streamingProcessor && !streamingProcessor.isFinished) {
+        return;
+    }
+
     is_send_press = false;
     activateSendButtons();
     showSwipeButtons();
