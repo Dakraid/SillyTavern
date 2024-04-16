@@ -16,7 +16,7 @@ import {
     getContext,
     modules,
     renderExtensionTemplate,
-    getApiUrl, doExtrasFetch,
+    getApiUrl, doExtrasFetch, renderExtensionTemplateAsync,
 } from '../../extensions.js';
 import { collapseNewlines } from '../../power-user.js';
 import { SECRET_KEYS, secret_state, writeSecret } from '../../secrets.js';
