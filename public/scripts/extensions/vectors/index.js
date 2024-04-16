@@ -10,14 +10,7 @@ import {
     substituteParams,
     generateRaw,
 } from '../../../script.js';
-import {
-    ModuleWorkerWrapper,
-    extension_settings,
-    getContext,
-    modules,
-    renderExtensionTemplate,
-    getApiUrl, doExtrasFetch, renderExtensionTemplateAsync,
-} from '../../extensions.js';
+import { ModuleWorkerWrapper, extension_settings, getContext, modules, renderExtensionTemplateAsync } from '../../extensions.js';
 import { collapseNewlines } from '../../power-user.js';
 import { SECRET_KEYS, secret_state, writeSecret } from '../../secrets.js';
 import { debounce, getStringHash as calculateHash, waitUntilCondition, onlyUnique, splitRecursive } from '../../utils.js';
