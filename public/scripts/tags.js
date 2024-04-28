@@ -683,11 +683,21 @@ function printTagList(element, { tags = undefined, addTag = undefined, forEntity
     const expanded = $element.hasClass('tags-expanded') || (expanded_tags_cache.length && expanded_tags_cache.indexOf(key ?? getTagKeyForEntityElement(element)) >= 0);
 
     // We prepare some stuff. No matter which list we have, there is a maximum value of tags we are going to display
-    const TAGS_LIMIT = 50;
-    const MAX_TAGS = !expanded ? TAGS_LIMIT : Number.MAX_SAFE_INTEGER;
-    let totalPrinted = 0;
-    let hiddenTags = 0;
-    const filterActive = (/** @type {Tag} */ tag) => tag.filter_state && !isFilterState(tag.filter_state, FILTER_STATES.UNDEFINED);
+    // Constants to define tag printing limits
+    const DEFAULT_TAGS_LIMIT = 50;
+    const tagsDisplayLimit = expanded ? Number.MAX_SAFE_INTEGER : DEFAULT_TAGS_LIMIT;
+
+    // Functions to determine tag properties
+    const isFilterActive = (/** @type {Tag} */ tag) => tag.filter_state && !isFilterState(tag.filter_state, FILTER_STATES.UNDEFINED);
+    const shouldPrintTag = (/** @type {Tag} */ tag) => isBogusFolder(tag) || isFilterActive(tag);
+
+    // Calculating the number of tags to print
+    const mandatoryPrintTagsCount = printableTags.filter(shouldPrintTag).length;
+    const availableSlotsForAdditionalTags = Math.max(tagsDisplayLimit - mandatoryPrintTagsCount, 0);
+
+    // Counters for printed and hidden tags
+    let additionalTagsPrinted = 0;
+    let tagsSkipped = 0;
 
     for (const tag of printableTags) {
         // If we have a custom action selector, we override that tag options for each tag
@@ -701,16 +711,16 @@ function printTagList(element, { tags = undefined, addTag = undefined, forEntity
         }
 
         // Check if we should print this tag
-        if (totalPrinted++ < MAX_TAGS || filterActive(tag)) {
+        if (shouldPrintTag(tag) || additionalTagsPrinted++ < availableSlotsForAdditionalTags) {
             appendTagToList($element, tag, tagOptions);
         } else {
-            hiddenTags++;
+            tagsSkipped++;
         }
     }
 
     // After the loop, check if we need to add the placeholder.
     // The placehold if clicked expands the tags and remembers either via class or cache array which was expanded, so it'll stay expanded until the next reload.
-    if (hiddenTags > 0) {
+    if (tagsSkipped > 0) {
         const id = 'placeholder_' + uuidv4();
 
         // Add click event
@@ -729,7 +739,7 @@ function printTagList(element, { tags = undefined, addTag = undefined, forEntity
 
         // Print the placeholder object with its styling and action to show the remaining tags
         /** @type {Tag} */
-        const placeholderTag = { id: id, name: '...', title: `${hiddenTags} tags not displayed.\n\nClick to expand remaining tags.`, color: 'transparent', action: showHiddenTags, class: 'placeholder-expander' };
+        const placeholderTag = { id: id, name: '...', title: `${tagsSkipped} tags not displayed.\n\nClick to expand remaining tags.`, color: 'transparent', action: showHiddenTags, class: 'placeholder-expander' };
         // It should never be marked as a removable tag, because it's just an expander action
         /** @type {TagOptions} */
         const placeholderTagOptions = { ...tagOptions, removable: false };
@@ -1470,14 +1480,14 @@ export function initTags() {
         toggleAutoSortTags(evt.originalEvent, toggle);
         printViewTagList();
     });
-    $(document).on('focusout', `#dialogue_popup .tag_view_name`, (evt) => {
+    $(document).on('focusout', '#dialogue_popup .tag_view_name', (evt) => {
         // Remember the order, so we can flash highlight if it changed after reprinting
         const tagId = $(evt.target).parent('.tag_view_item').attr('id');
-        const oldOrder = $(`#dialogue_popup .tag_view_item`).map((_, el) => el.id).get();
+        const oldOrder = $('#dialogue_popup .tag_view_item').map((_, el) => el.id).get();
 
         printViewTagList();
 
-        const newOrder = $(`#dialogue_popup .tag_view_item`).map((_, el) => el.id).get();
+        const newOrder = $('#dialogue_popup .tag_view_item').map((_, el) => el.id).get();
         const orderChanged = !oldOrder.every((id, index) => id === newOrder[index]);
         if (orderChanged) {
             flashHighlight($(`#dialogue_popup .tag_view_item[id="${tagId}"]`));

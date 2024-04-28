@@ -153,6 +153,7 @@ import {
     isValidUrl,
     ensureImageFormatSupported,
     flashHighlight,
+    debounce_timeout,
 } from './scripts/utils.js';
 
 import { ModuleWorkerWrapper, doDailyExtensionUpdatesCheck, extension_settings, getContext, loadExtensionSettings, renderExtensionTemplate, renderExtensionTemplateAsync, runGenerationInterceptors, saveMetadataDebounced, writeExtensionField } from './scripts/extensions.js';
@@ -292,7 +293,21 @@ export {
     isOdd,
     countOccurrences,
     renderTemplate,
+    itemizedPrompts,
+    findItemizedPromptSet,
+    itemizedParams,
 };
+
+/**
+ * Wait for page to load before continuing the app initialization.
+ */
+await new Promise((resolve) => {
+    if (document.readyState === 'complete') {
+        resolve();
+    } else {
+        window.addEventListener('load', resolve);
+    }
+});
 
 showLoader();
 // Yoink preloader entirely; it only exists to cover up unstyled content while loading JS
@@ -530,7 +545,8 @@ let fav_ch_checked = false;
 let scrollLock = false;
 export let abortStatusCheck = new AbortController();
 
-const durationSaveEdit = 1000;
+/** @type {number} The debounce timeout used for chat/settings save. debounce_timeout.long: 1.000 ms */
+const durationSaveEdit = debounce_timeout.relaxed;
 const saveSettingsDebounced = debounce(() => saveSettings(), durationSaveEdit);
 export const saveCharacterDebounced = debounce(() => $('#create_button').trigger('click'), durationSaveEdit);
 
@@ -540,7 +556,7 @@ export const saveCharacterDebounced = debounce(() => $('#create_button').trigger
  *
  * The printing will also always reprint all filter options of the global list, to keep them up to date.
  */
-const printCharactersDebounced = debounce(() => { printCharacters(false); }, 100);
+const printCharactersDebounced = debounce(() => { printCharacters(false); }, debounce_timeout.quick);
 
 /**
  * @enum {string} System message types
@@ -838,7 +854,7 @@ export let active_character = '';
 export let active_group = '';
 
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
-export const personasFilter = new FilterHelper(debounce(getUserAvatars, 100));
+export const personasFilter = new FilterHelper(debounce(getUserAvatars, debounce_timeout.quick));
 
 export function getRequestHeaders() {
     return {
@@ -4588,29 +4604,7 @@ async function DupeChar() {
     }
 }
 
-async function promptItemize(itemizedPrompts, requestedMesId) {
-    console.log('PROMPT ITEMIZE ENTERED');
-    var incomingMesId = Number(requestedMesId);
-    console.debug(`looking for MesId ${incomingMesId}`);
-    var thisPromptSet = undefined;
-
-    for (var i = 0; i < itemizedPrompts.length; i++) {
-        console.log(`looking for ${incomingMesId} vs ${itemizedPrompts[i].mesId}`);
-        if (itemizedPrompts[i].mesId === incomingMesId) {
-            console.log(`found matching mesID ${i}`);
-            thisPromptSet = i;
-            PromptArrayItemForRawPromptDisplay = i;
-            console.log(`wanting to raw display of ArrayItem: ${PromptArrayItemForRawPromptDisplay} which is mesID ${incomingMesId}`);
-            console.log(itemizedPrompts[thisPromptSet]);
-        }
-    }
-
-    if (thisPromptSet === undefined) {
-        console.log(`couldnt find the right mesId. looked for ${incomingMesId}`);
-        console.log(itemizedPrompts);
-        return null;
-    }
-
+async function itemizedParams(itemizedPrompts, thisPromptSet) {
     const params = {
         charDescriptionTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].charDescription),
         charPersonalityTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].charPersonality),
@@ -4709,6 +4703,38 @@ async function promptItemize(itemizedPrompts, requestedMesId) {
         params.allAnchorsTokensPercentage = ((params.allAnchorsTokens / (params.totalTokensInPrompt)) * 100).toFixed(2);
         params.selectedTokenizer = getFriendlyTokenizerName(params.this_main_api).tokenizerName;
     }
+    return params;
+}
+
+function findItemizedPromptSet(itemizedPrompts, incomingMesId) {
+    var thisPromptSet = undefined;
+
+    for (var i = 0; i < itemizedPrompts.length; i++) {
+        console.log(`looking for ${incomingMesId} vs ${itemizedPrompts[i].mesId}`);
+        if (itemizedPrompts[i].mesId === incomingMesId) {
+            console.log(`found matching mesID ${i}`);
+            thisPromptSet = i;
+            PromptArrayItemForRawPromptDisplay = i;
+            console.log(`wanting to raw display of ArrayItem: ${PromptArrayItemForRawPromptDisplay} which is mesID ${incomingMesId}`);
+            console.log(itemizedPrompts[thisPromptSet]);
+        }
+    }
+    return thisPromptSet;
+}
+
+async function promptItemize(itemizedPrompts, requestedMesId) {
+    console.log('PROMPT ITEMIZE ENTERED');
+    var incomingMesId = Number(requestedMesId);
+    console.debug(`looking for MesId ${incomingMesId}`);
+    var thisPromptSet = findItemizedPromptSet(itemizedPrompts, incomingMesId);
+
+    if (thisPromptSet === undefined) {
+        console.log(`couldnt find the right mesId. looked for ${incomingMesId}`);
+        console.log(itemizedPrompts);
+        return null;
+    }
+
+    const params = await itemizedParams(itemizedPrompts, thisPromptSet);
 
     if (params.this_main_api == 'openai') {
         const template = await renderTemplateAsync('itemizationChat', params);
@@ -6475,6 +6501,8 @@ async function messageEditDone(div) {
         text = substituteParams(text);
     }
 
+    await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
+    text = chat[this_edit_mes_id]?.mes ?? text;
     mesBlock.find('.mes_text').empty();
     mesBlock.find('.mes_edit_buttons').css('display', 'none');
     mesBlock.find('.mes_buttons').css('display', '');
@@ -6491,7 +6519,6 @@ async function messageEditDone(div) {
     mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1));
     appendMediaToMessage(mes, div.closest('.mes'));
     addCopyToCodeBlocks(div.closest('.mes'));
-    await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
 
     this_edit_mes_id = undefined;
     await saveChatConditional();
@@ -6701,7 +6728,7 @@ export async function displayPastChats() {
 
     const debouncedDisplay = debounce((searchQuery) => {
         displayChats(searchQuery);
-    }, 300);
+    });
 
     // Define the search input listener
     $('#select_chat_search').on('input', function () {
@@ -8655,14 +8682,20 @@ jQuery(async function () {
 
     $(document).on('click', '.swipe_left', swipe_left);
 
+    const debouncedCharacterSearch = debounce((searchQuery) => {
+        entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, searchQuery);
+    });
     $('#character_search_bar').on('input', function () {
-        const searchValue = String($(this).val()).toLowerCase();
-        entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, searchValue);
+        const searchQuery = String($(this).val()).toLowerCase();
+        debouncedCharacterSearch(searchQuery);
     });
 
+    const debouncedPersonaSearch = debounce((searchQuery) => {
+        personasFilter.setFilterData(FILTER_TYPES.PERSONA_SEARCH, searchQuery);
+    });
     $('#persona_search_bar').on('input', function () {
-        const searchValue = String($(this).val()).toLowerCase();
-        personasFilter.setFilterData(FILTER_TYPES.PERSONA_SEARCH, searchValue);
+        const searchQuery = String($(this).val()).toLowerCase();
+        debouncedPersonaSearch(searchQuery);
     });
 
     $('#mes_continue').on('click', function () {
