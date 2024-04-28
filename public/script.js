@@ -153,8 +153,8 @@ import {
     isValidUrl,
     ensureImageFormatSupported,
     flashHighlight,
-    debounce_timeout,
 } from './scripts/utils.js';
+import { debounce_timeout } from './scripts/constants.js';
 
 import { ModuleWorkerWrapper, doDailyExtensionUpdatesCheck, extension_settings, getContext, loadExtensionSettings, renderExtensionTemplate, renderExtensionTemplateAsync, runGenerationInterceptors, saveMetadataDebounced, writeExtensionField } from './scripts/extensions.js';
 import { COMMENT_NAME_DEFAULT, executeSlashCommands, getSlashCommandsHelp, processChatSlashCommands, registerSlashCommand } from './scripts/slash-commands.js';
@@ -391,6 +391,11 @@ DOMPurify.addHook('uponSanitizeElement', (node, _, config) => {
                 console.warn('External media blocked', data);
                 mediaBlocked = true;
                 node.remove();
+            }
+
+            if (mediaBlocked && (node instanceof HTMLMediaElement)) {
+                node.autoplay = false;
+                node.pause();
             }
         }
             break;
@@ -724,6 +729,7 @@ function reloadMarkdownProcessor(render_formulas = false) {
             underline: true,
             tables: true,
             parseImgDimensions: true,
+            simpleLineBreaks: true,
             extensions: [
                 showdownKatex(
                     {
@@ -742,6 +748,7 @@ function reloadMarkdownProcessor(render_formulas = false) {
             parseImgDimensions: true,
             tables: true,
             underline: true,
+            simpleLineBreaks: true,
             extensions: [markdownUnderscoreExt()],
         });
     }
@@ -1356,7 +1363,7 @@ async function printCharacters(fullRefresh = false) {
             }
 
             const hidden = (characters.length + groups.length) - displayCount;
-            if (hidden > 0) {
+            if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
                 $(listId).append(getHiddenBlock(hidden));
             }
 
@@ -1807,9 +1814,7 @@ function messageFormatting(mes, ch_name, isSystem, isUser, messageId) {
     }
 
     if (this_chid === undefined && !selected_group) {
-        mes = mes
-            .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-            .replace(/\n/g, '<br/>');
+        mes = mes.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
     } else if (!isSystem) {
         // Save double quotes in tags as a special character to prevent them from being encoded
         if (!power_user.encode_tags) {
@@ -1841,7 +1846,6 @@ function messageFormatting(mes, ch_name, isSystem, isUser, messageId) {
             // Firefox creates extra newlines from <br>s in code blocks, so we replace them before converting newlines to <br>s.
             return match.replace(/\n/gm, '\u0000');
         });
-        mes = mes.replace(/\n/g, '<br/>');
         mes = mes.replace(/\u0000/g, '\n'); // Restore converted newlines
         mes = mes.trim();
 
