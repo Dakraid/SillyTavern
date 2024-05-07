@@ -4387,7 +4387,8 @@ function formatMessageHistoryItem(chatItem, isInstruct, forceOutputSequence) {
     const itemName = chatItem.is_user ? chatItem['name'] : characterName;
     const shouldPrependName = !isNarratorType;
 
-    let textResult = shouldPrependName ? `${itemName}: ${chatItem.mes}\n` : `${chatItem.mes}\n`;
+    // Don't include a name if it's empty
+    let textResult = chatItem?.name && shouldPrependName ? `${itemName}: ${chatItem.mes}\n` : `${chatItem.mes}\n`;
 
     if (isInstruct) {
         textResult = formatInstructModeChat(itemName, chatItem.mes, chatItem.is_user, isNarratorType, chatItem.force_avatar, name1, name2, forceOutputSequence);
@@ -4410,14 +4411,16 @@ export function removeMacros(str) {
  * @param {string} messageText Message text.
  * @param {string} messageBias Message bias.
  * @param {number} [insertAt] Optional index to insert the message at.
- * @params {boolean} [compact] Send as a compact display message.
+ * @param {boolean} [compact] Send as a compact display message.
+ * @param {string} [name] Name of the user sending the message. Defaults to name1.
+ * @param {string} [avatar] Avatar of the user sending the message. Defaults to user_avatar.
  * @returns {Promise<void>} A promise that resolves when the message is inserted.
  */
-export async function sendMessageAsUser(messageText, messageBias, insertAt = null, compact = false) {
+export async function sendMessageAsUser(messageText, messageBias, insertAt = null, compact = false, name = name1, avatar = user_avatar) {
     messageText = getRegexedString(messageText, regex_placement.USER_INPUT);
 
     const message = {
-        name: name1,
+        name: name,
         is_user: true,
         is_system: false,
         send_date: getMessageTimeStamp(),
@@ -4432,8 +4435,8 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     }
 
     // Lock user avatar to a persona.
-    if (user_avatar in power_user.personas) {
-        message.force_avatar = getUserAvatar(user_avatar);
+    if (avatar in power_user.personas) {
+        message.force_avatar = getUserAvatar(avatar);
     }
 
     if (messageBias) {
