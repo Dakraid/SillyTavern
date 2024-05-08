@@ -10,6 +10,7 @@ import { power_user } from './power-user.js';
 import { getTagKeyForEntity } from './tags.js';
 import { resolveVariable } from './variables.js';
 import { debounce_timeout } from './constants.js';
+import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 
 export {
     world_info,
@@ -333,6 +334,13 @@ const world_info_position = {
     ANTop: 2,
     ANBottom: 3,
     atDepth: 4,
+    EMTop: 5,
+    EMBottom: 6,
+};
+
+export const wi_anchor_position = {
+    before: 0,
+    after: 1,
 };
 
 const worldInfoCache = {};
@@ -342,7 +350,7 @@ const worldInfoCache = {};
  * @param {string[]} chat The chat messages to scan.
  * @param {number} maxContext The maximum context size of the generation.
  * @param {boolean} isDryRun If true, the function will not emit any events.
- * @typedef {{worldInfoString: string, worldInfoBefore: string, worldInfoAfter: string, worldInfoDepth: any[]}} WIPromptResult
+ * @typedef {{worldInfoString: string, worldInfoBefore: string, worldInfoAfter: string, worldInfoExamples: any[], worldInfoDepth: any[]}} WIPromptResult
  * @returns {Promise<WIPromptResult>} The world info string and depth.
  */
 async function getWorldInfoPrompt(chat, maxContext, isDryRun) {
@@ -362,7 +370,8 @@ async function getWorldInfoPrompt(chat, maxContext, isDryRun) {
         worldInfoString,
         worldInfoBefore,
         worldInfoAfter,
-        worldInfoDepth: activatedWorldInfo.WIDepthEntries,
+        worldInfoExamples: activatedWorldInfo.EMEntries ?? [],
+        worldInfoDepth: activatedWorldInfo.WIDepthEntries ?? [],
     };
 }
 
@@ -2277,7 +2286,7 @@ export async function getSortedEntries() {
  * Performs a scan on the chat and returns the world info activated.
  * @param {string[]} chat The chat messages to scan.
  * @param {number} maxContext The maximum context size of the generation.
- * @typedef {{ worldInfoBefore: string, worldInfoAfter: string, WIDepthEntries: any[], allActivatedEntries: Set<any> }} WIActivated
+ * @typedef {{ worldInfoBefore: string, worldInfoAfter: string, EMEntries: any[], WIDepthEntries: any[], allActivatedEntries: Set<any> }} WIActivated
  * @returns {Promise<WIActivated>} The world info activated.
  */
 async function checkWorldInfo(chat, maxContext) {
@@ -2315,7 +2324,7 @@ async function checkWorldInfo(chat, maxContext) {
     const sortedEntries = await getSortedEntries();
 
     if (sortedEntries.length === 0) {
-        return { worldInfoBefore: '', worldInfoAfter: '', WIDepthEntries: [], allActivatedEntries: new Set() };
+        return { worldInfoBefore: '', worldInfoAfter: '', WIDepthEntries: [], EMEntries: [], allActivatedEntries: new Set() };
     }
 
     while (needsToScan) {
@@ -2514,33 +2523,48 @@ async function checkWorldInfo(chat, maxContext) {
     // Forward-sorted list of entries for joining
     const WIBeforeEntries = [];
     const WIAfterEntries = [];
+    const EMEntries = [];
     const ANTopEntries = [];
     const ANBottomEntries = [];
     const WIDepthEntries = [];
 
     // Appends from insertion order 999 to 1. Use unshift for this purpose
+    // TODO (kingbri): Change to use WI Anchor positioning instead of separate top/bottom arrays
     [...allActivatedEntries].sort(sortFn).forEach((entry) => {
+        const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? DEFAULT_DEPTH) : null;
+        const content = getRegexedString(entry.content, regex_placement.WORLD_INFO, { depth: regexDepth, isMarkdown: false, isPrompt: true });
+
         switch (entry.position) {
             case world_info_position.before:
-                WIBeforeEntries.unshift(substituteParams(entry.content));
+                WIBeforeEntries.unshift(substituteParams(content));
                 break;
             case world_info_position.after:
-                WIAfterEntries.unshift(substituteParams(entry.content));
+                WIAfterEntries.unshift(substituteParams(content));
+                break;
+            case world_info_position.EMTop:
+                EMEntries.unshift(
+                    { position: wi_anchor_position.before, content: content },
+                );
+                break;
+            case world_info_position.EMBottom:
+                EMEntries.unshift(
+                    { position: wi_anchor_position.after, content: content },
+                );
                 break;
             case world_info_position.ANTop:
-                ANTopEntries.unshift(entry.content);
+                ANTopEntries.unshift(content);
                 break;
             case world_info_position.ANBottom:
-                ANBottomEntries.unshift(entry.content);
+                ANBottomEntries.unshift(content);
                 break;
             case world_info_position.atDepth: {
                 const existingDepthIndex = WIDepthEntries.findIndex((e) => e.depth === (entry.depth ?? DEFAULT_DEPTH) && e.role === (entry.role ?? extension_prompt_roles.SYSTEM));
                 if (existingDepthIndex !== -1) {
-                    WIDepthEntries[existingDepthIndex].entries.unshift(entry.content);
+                    WIDepthEntries[existingDepthIndex].entries.unshift(content);
                 } else {
                     WIDepthEntries.push({
                         depth: entry.depth,
-                        entries: [entry.content],
+                        entries: [content],
                         role: entry.role ?? extension_prompt_roles.SYSTEM,
                     });
                 }
@@ -2562,7 +2586,7 @@ async function checkWorldInfo(chat, maxContext) {
 
     buffer.cleanExternalActivations();
 
-    return { worldInfoBefore, worldInfoAfter, WIDepthEntries, allActivatedEntries };
+    return { worldInfoBefore, worldInfoAfter, EMEntries, WIDepthEntries, allActivatedEntries };
 }
 
 /**
@@ -3135,6 +3159,10 @@ jQuery(() => {
     });
 
     $('#world_import_file').on('change', async function (e) {
+        if (!(e.target instanceof HTMLInputElement)) {
+            return;
+        }
+
         const file = e.target.files[0];
 
         await importWorldInfo(file);
