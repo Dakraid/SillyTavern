@@ -166,7 +166,7 @@ export let textgenerationwebui_banned_in_macros = [];
 export let textgenerationwebui_presets = [];
 export let textgenerationwebui_preset_names = [];
 
-const setting_names = [
+export const setting_names = [
     'temp',
     'temperature_last',
     'rep_pen',
@@ -659,7 +659,7 @@ jQuery(function () {
             'no_repeat_ngram_size_textgenerationwebui': 0,
             'min_length_textgenerationwebui': 0,
             'num_beams_textgenerationwebui': 1,
-            'length_penalty_textgenerationwebui': 0,
+            'length_penalty_textgenerationwebui': 1,
             'penalty_alpha_textgenerationwebui': 0,
             'typical_p_textgenerationwebui': 1, // Added entry
             'guidance_scale_textgenerationwebui': 1,

@@ -109,12 +109,11 @@ export class SlashCommandParser {
         return this.text[this.index];
     }
     get endOfText() {
-        return this.index >= this.text.length || /^\s+$/.test(this.ahead);
+        return this.index >= this.text.length || (/\s/.test(this.char) && /^\s+$/.test(this.ahead));
     }
 
 
     constructor() {
-        //TODO should not be re-registered from every instance
         // add dummy commands for help strings / autocomplete
         if (!Object.keys(this.commands).includes('parser-flag')) {
             const help = {};
