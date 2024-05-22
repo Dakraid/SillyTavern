@@ -684,6 +684,7 @@ export function reloadMarkdownProcessor(render_formulas = false) {
             parseImgDimensions: true,
             simpleLineBreaks: true,
             strikethrough: true,
+            disableForced4SpacesIndentedSublists: true,
             extensions: [
                 showdownKatex(
                     {
@@ -704,6 +705,7 @@ export function reloadMarkdownProcessor(render_formulas = false) {
             underline: true,
             simpleLineBreaks: true,
             strikethrough: true,
+            disableForced4SpacesIndentedSublists: true,
             extensions: [markdownUnderscoreExt()],
         });
     }
@@ -9971,6 +9973,7 @@ jQuery(async function () {
             a.setAttribute('download', filename);
             document.body.appendChild(a);
             a.click();
+            URL.revokeObjectURL(a.href);
             document.body.removeChild(a);
         }
 
