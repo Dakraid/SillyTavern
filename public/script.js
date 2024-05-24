@@ -1791,7 +1791,7 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId) {
     }
 
     if (Number(messageId) === 0 && !isSystem && !isUser) {
-        mes = substituteParams(mes);
+        mes = substituteParams(mes, undefined, ch_name);
     }
 
     mesForShowdownParse = mes;
@@ -7828,6 +7828,7 @@ function swipe_left() {      // when we swipe left..but no generation.
  */
 async function branchChat(mesId) {
     const fileName = await createBranch(mesId);
+    await saveItemizedPrompts(fileName);
 
     if (selected_group) {
         await openGroupChat(selected_group, fileName);
