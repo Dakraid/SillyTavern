@@ -466,11 +466,11 @@ export function decodeStyleTags(text) {
     const mediaAllowed = isExternalMediaAllowed();
 
     function sanitizeRule(rule) {
-        if (rule.selectors) {
+        if (Array.isArray(rule.selectors)) {
             for (let i = 0; i < rule.selectors.length; i++) {
-                let selector = rule.selectors[i];
+                const selector = rule.selectors[i];
                 if (selector) {
-                    let selectors = (selector.split(' ') ?? []).map((v) => {
+                    const selectors = (selector.split(' ') ?? []).map((v) => {
                         if (v.startsWith('.')) {
                             return '.custom-' + v.substring(1);
                         }
@@ -482,16 +482,12 @@ export function decodeStyleTags(text) {
             }
         }
         if (!mediaAllowed && Array.isArray(rule.declarations) && rule.declarations.length > 0) {
-            for (const declaration of rule.declarations) {
-                if (declaration.value.includes('://')) {
-                    rule.declarations.splice(rule.declarations.indexOf(declaration), 1);
-                }
-            }
+            rule.declarations = rule.declarations.filter(declaration => !declaration.value.includes('://'));
         }
     }
 
     function sanitizeRuleSet(ruleSet) {
-        if (ruleSet.type === 'rule') {
+        if (Array.isArray(ruleSet.selectors) || Array.isArray(ruleSet.declarations)) {
             sanitizeRule(ruleSet);
         }
 
@@ -859,6 +855,12 @@ async function openAttachmentManager() {
             [ATTACHMENT_SOURCE.CHAT]: '.chatAttachmentsList',
         };
 
+        const selected = template
+            .find(sources[source])
+            .find('.attachmentListItemCheckbox:checked')
+            .map((_, el) => $(el).closest('.attachmentListItem').attr('data-attachment-url'))
+            .get();
+
         template.find(sources[source]).empty();
 
         // Sort attachments by sortField and sortOrder, and apply filter
@@ -868,6 +870,8 @@ async function openAttachmentManager() {
             const isDisabled = isAttachmentDisabled(attachment);
             const attachmentTemplate = template.find('.attachmentListItemTemplate .attachmentListItem').clone();
             attachmentTemplate.toggleClass('disabled', isDisabled);
+            attachmentTemplate.attr('data-attachment-url', attachment.url);
+            attachmentTemplate.attr('data-attachment-source', source);
             attachmentTemplate.find('.attachmentFileIcon').attr('title', attachment.url);
             attachmentTemplate.find('.attachmentListItemName').text(attachment.name);
             attachmentTemplate.find('.attachmentListItemSize').text(humanFileSize(attachment.size));
@@ -880,6 +884,10 @@ async function openAttachmentManager() {
             attachmentTemplate.find('.enableAttachmentButton').toggle(isDisabled).on('click', () => enableAttachment(attachment, renderAttachments));
             attachmentTemplate.find('.disableAttachmentButton').toggle(!isDisabled).on('click', () => disableAttachment(attachment, renderAttachments));
             template.find(sources[source]).append(attachmentTemplate);
+
+            if (selected.includes(attachment.url)) {
+                attachmentTemplate.find('.attachmentListItemCheckbox').prop('checked', true);
+            }
         }
     }
 
@@ -1047,6 +1055,57 @@ async function openAttachmentManager() {
         localStorage.setItem('DataBank_sortField', sortField);
         localStorage.setItem('DataBank_sortOrder', sortOrder);
         renderAttachments();
+    });
+    template.find('.bulkActionDelete').on('click', async () => {
+        const selectedAttachments =  document.querySelectorAll('.attachmentListItemCheckboxContainer .attachmentListItemCheckbox:checked');
+
+        if (selectedAttachments.length === 0) {
+            toastr.info('No attachments selected.', 'Data Bank');
+            return;
+        }
+
+        const confirm = await callGenericPopup('Are you sure you want to delete the selected attachments?', POPUP_TYPE.CONFIRM);
+
+        if (confirm !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        const attachments = getDataBankAttachments();
+        selectedAttachments.forEach(async (checkbox) => {
+            const listItem = checkbox.closest('.attachmentListItem');
+            if (!(listItem instanceof HTMLElement)) {
+                return;
+            }
+            const url = listItem.dataset.attachmentUrl;
+            const source = listItem.dataset.attachmentSource;
+            const attachment = attachments.find(a => a.url === url);
+            if (!attachment) {
+                return;
+            }
+            await deleteAttachment(attachment, source, () => {}, false);
+        });
+
+        document.querySelectorAll('.attachmentListItemCheckbox, .attachmentsBulkEditCheckbox').forEach(checkbox => {
+            if (checkbox instanceof HTMLInputElement) {
+                checkbox.checked = false;
+            }
+        });
+
+        await renderAttachments();
+    });
+    template.find('.bulkActionSelectAll').on('click', () => {
+        $('.attachmentListItemCheckbox:visible').each((_, checkbox) => {
+            if (checkbox instanceof HTMLInputElement) {
+                checkbox.checked = true;
+            }
+        });
+    });
+    template.find('.bulkActionSelectNone').on('click', () => {
+        $('.attachmentListItemCheckbox:visible').each((_, checkbox) => {
+            if (checkbox instanceof HTMLInputElement) {
+                checkbox.checked = false;
+            }
+        });
     });
 
     const cleanupFn = await renderButtons();
@@ -1395,6 +1454,7 @@ jQuery(function () {
     });
 
     $(document).on('click', 'body.documentstyle .mes .mes_text', function () {
+        if (window.getSelection().toString()) return;
         if ($('.edit_textarea').length) return;
         $(this).closest('.mes').find('.mes_edit').trigger('click');
     });
