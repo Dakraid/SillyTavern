@@ -260,6 +260,11 @@
                 <label for="sd_novel_upscale_ratio"><span data-i18n="Upscale by">Upscale by</span> (<span id="sd_novel_upscale_ratio_value"></span>)</label>
                 <input id="sd_novel_upscale_ratio" type="range" min="{{novel_upscale_ratio_min}}" max="{{novel_upscale_ratio_max}}" step="{{novel_upscale_ratio_step}}" value="{{novel_upscale_ratio}}" />
             </div>
+            <div data-sd-source="novel,togetherai,pollinations,comfy,drawthings,vlad,auto,horde" class="marginTop5">
+                <label for="sd_seed">Seed</label>
+                <small>(-1 for random)</small>
+                <input id="sd_seed" type="number" class="text_pole" min="-1" max="9999999999" step="1" />
+            </div>
             <hr>
             <h4  data-i18n="[title]Preset for prompt prefix and negative prompt" title="Preset for prompt prefix and negative prompt">
                 <span data-i18n="Style">Style</span>
@@ -268,6 +273,9 @@
                 <select id="sd_style" class="flex1 text_pole"></select>
                 <div id="sd_save_style" data-i18n="[title]Save style" title="Save style" class="menu_button">
                     <i class="fa-solid fa-save"></i>
+                </div>
+                <div id="sd_delete_style" data-i18n="[title]Delete style" title="Delete style" class="menu_button">
+                    <i class="fa-solid fa-trash-can"></i>
                 </div>
             </div>
             <label for="sd_prompt_prefix" data-i18n="Common prompt prefix">Common prompt prefix</label>
@@ -281,6 +289,15 @@
                 <label for="sd_character_negative_prompt" data-i18n="Character-specific negative prompt prefix">Character-specific negative prompt prefix</label>
                 <small data-i18n="Won't be used in groups.">Won't be used in groups.</small>
                 <textarea id="sd_character_negative_prompt" class="text_pole textarea_compact" rows="3" data-i18n="[placeholder]sd_character_negative_prompt_placeholder" placeholder="Any characteristics that should not appear for the selected character. Will be added after a negative common prompt prefix.&#10;Example: jewellery, shoes, glasses"></textarea>
+                <label for="sd_character_prompt_share" class="checkbox_label flexWrap marginTop5">
+                    <input id="sd_character_prompt_share" type="checkbox" />
+                    <span data-i18n="Shareable">
+                        Shareable
+                    </span>
+                    <small class="flexBasis100p">
+                        When checked, character-specific prompts will be saved with the character card data.
+                    </small>
+                </label>
             </div>
         </div>
     </div>

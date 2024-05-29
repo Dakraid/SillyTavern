@@ -18,9 +18,9 @@ import {
     formatCharacterAvatar,
     substituteParams,
 } from '../../../script.js';
-import { getApiUrl, getContext, extension_settings, doExtrasFetch, modules, renderExtensionTemplateAsync } from '../../extensions.js';
+import { getApiUrl, getContext, extension_settings, doExtrasFetch, modules, renderExtensionTemplateAsync, writeExtensionField } from '../../extensions.js';
 import { selected_group } from '../../group-chats.js';
-import { stringFormat, initScrollHeight, resetScrollHeight, getCharaFilename, saveBase64AsFile, getBase64Async, delay, isTrueBoolean } from '../../utils.js';
+import { stringFormat, initScrollHeight, resetScrollHeight, getCharaFilename, saveBase64AsFile, getBase64Async, delay, isTrueBoolean, debounce } from '../../utils.js';
 import { getMessageTimeStamp, humanizedDateTime } from '../../RossAscends-mods.js';
 import { SECRET_KEYS, secret_state } from '../../secrets.js';
 import { getNovelUnlimitedImageGeneration, getNovelAnlas, loadNovelSubscriptionData } from '../../nai-settings.js';
@@ -29,6 +29,7 @@ import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../../slash-commands/SlashCommandArgument.js';
 import { resolveVariable } from '../../variables.js';
+import { debounce_timeout } from '../../constants.js';
 export { MODULE_NAME };
 
 const MODULE_NAME = 'sd';
@@ -185,6 +186,7 @@ const defaultSettings = {
     sampler: 'DDIM',
     model: '',
     vae: '',
+    seed: -1,
 
     // Automatic1111/Horde exclusives
     restore_faces: false,
@@ -260,6 +262,8 @@ const defaultSettings = {
     pollinations_enhance: false,
     pollinations_refine: false,
 };
+
+const writePromptFieldsDebounced = debounce(writePromptFields, debounce_timeout.relaxed);
 
 function processTriggers(chat, _, abort) {
     if (!extension_settings.sd.interactive_mode) {
@@ -414,6 +418,7 @@ async function loadSettings() {
     $('#sd_snap').prop('checked', extension_settings.sd.snap);
     $('#sd_clip_skip').val(extension_settings.sd.clip_skip);
     $('#sd_clip_skip_value').text(extension_settings.sd.clip_skip);
+    $('#sd_seed').val(extension_settings.sd.seed);
 
     for (const style of extension_settings.sd.styles) {
         const option = document.createElement('option');
@@ -532,6 +537,42 @@ function onStyleSelect() {
     saveSettingsDebounced();
 }
 
+async function onDeleteStyleClick() {
+    const selectedStyle = String($('#sd_style').find(':selected').val());
+    const styleObject = extension_settings.sd.styles.find(x => x.name === selectedStyle);
+
+    if (!styleObject) {
+        return;
+    }
+
+    const confirmed = await callPopup(`Are you sure you want to delete the style "${selectedStyle}"?`, 'confirm', '', { okButton: 'Delete' });
+
+    if (!confirmed) {
+        return;
+    }
+
+    const index = extension_settings.sd.styles.indexOf(styleObject);
+
+    if (index === -1) {
+        return;
+    }
+
+    extension_settings.sd.styles.splice(index, 1);
+    $('#sd_style').find(`option[value="${selectedStyle}"]`).remove();
+
+    if (extension_settings.sd.styles.length > 0) {
+        extension_settings.sd.style = extension_settings.sd.styles[0].name;
+        $('#sd_style').val(extension_settings.sd.style).trigger('change');
+    } else {
+        extension_settings.sd.style = '';
+        $('#sd_prompt_prefix').val('').trigger('input');
+        $('#sd_negative_prompt').val('').trigger('input');
+        $('#sd_style').val('');
+    }
+
+    saveSettingsDebounced();
+}
+
 async function onSaveStyleClick() {
     const userInput = await callPopup('Enter style name:', 'input', '', { okButton: 'Save' });
 
@@ -621,9 +662,27 @@ function onChatChanged() {
     }
 
     $('#sd_character_prompt_block').show();
+
     const key = getCharaFilename(this_chid);
-    $('#sd_character_prompt').val(key ? (extension_settings.sd.character_prompts[key] || '') : '');
-    $('#sd_character_negative_prompt').val(key ? (extension_settings.sd.character_negative_prompts[key] || '') : '');
+    let characterPrompt = key ? (extension_settings.sd.character_prompts[key] || '') : '';
+    let negativePrompt = key ? (extension_settings.sd.character_negative_prompts[key] || '') : '';
+
+    const context = getContext();
+    const sharedPromptData = context?.characters[this_chid]?.data?.extensions?.sd_character_prompt;
+    const hasSharedData = sharedPromptData && typeof sharedPromptData === 'object';
+
+    if (typeof sharedPromptData?.positive === 'string' && !characterPrompt && sharedPromptData.positive) {
+        characterPrompt = sharedPromptData.positive;
+        extension_settings.sd.character_prompts[key] = characterPrompt;
+    }
+    if (typeof sharedPromptData?.negative === 'string' && !negativePrompt && sharedPromptData.negative) {
+        negativePrompt = sharedPromptData.negative;
+        extension_settings.sd.character_negative_prompts[key] = negativePrompt;
+    }
+
+    $('#sd_character_prompt').val(characterPrompt);
+    $('#sd_character_negative_prompt').val(negativePrompt);
+    $('#sd_character_prompt_share').prop('checked', hasSharedData);
 }
 
 function onCharacterPromptInput() {
@@ -631,6 +690,7 @@ function onCharacterPromptInput() {
     extension_settings.sd.character_prompts[key] = $('#sd_character_prompt').val();
     resetScrollHeight($(this));
     saveSettingsDebounced();
+    writePromptFieldsDebounced(this_chid);
 }
 
 function onCharacterNegativePromptInput() {
@@ -638,6 +698,7 @@ function onCharacterNegativePromptInput() {
     extension_settings.sd.character_negative_prompts[key] = $('#sd_character_negative_prompt').val();
     resetScrollHeight($(this));
     saveSettingsDebounced();
+    writePromptFieldsDebounced(this_chid);
 }
 
 function getCharacterPrefix() {
@@ -704,6 +765,11 @@ function onRefineModeInput() {
 function onClipSkipInput() {
     extension_settings.sd.clip_skip = Number($('#sd_clip_skip').val());
     $('#sd_clip_skip_value').text(extension_settings.sd.clip_skip);
+    saveSettingsDebounced();
+}
+
+function onSeedInput() {
+    extension_settings.sd.seed = Number($('#sd_seed').val());
     saveSettingsDebounced();
 }
 
@@ -2178,6 +2244,7 @@ async function generateMultimodalPrompt(generationType, quietPrompt) {
     }
 
     try {
+        const toast = toastr.info('Generating multimodal caption...', 'Image Generation');
         const response = await fetch(avatarUrl);
 
         if (!response.ok) {
@@ -2188,6 +2255,7 @@ async function generateMultimodalPrompt(generationType, quietPrompt) {
         const avatarBase64 = await getBase64Async(avatarBlob);
 
         const caption = await getMultimodalCaption(avatarBase64, quietPrompt);
+        toastr.clear(toast);
 
         if (!caption) {
             throw new Error('No caption returned from the API.');
@@ -2326,6 +2394,7 @@ async function generateTogetherAIImage(prompt, negativePrompt) {
             steps: extension_settings.sd.steps,
             width: extension_settings.sd.width,
             height: extension_settings.sd.height,
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
         }),
     });
 
@@ -2350,6 +2419,7 @@ async function generatePollinationsImage(prompt, negativePrompt) {
             height: extension_settings.sd.height,
             enhance: extension_settings.sd.pollinations_enhance,
             refine: extension_settings.sd.pollinations_refine,
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
         }),
     });
 
@@ -2392,6 +2462,7 @@ async function generateExtrasImage(prompt, negativePrompt) {
             hr_scale: extension_settings.sd.hr_scale,
             denoising_strength: extension_settings.sd.denoising_strength,
             hr_second_pass_steps: extension_settings.sd.hr_second_pass_steps,
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
         }),
     });
 
@@ -2429,6 +2500,7 @@ async function generateHordeImage(prompt, negativePrompt) {
             enable_hr: !!extension_settings.sd.enable_hr,
             sanitize: !!extension_settings.sd.horde_sanitize,
             clip_skip: extension_settings.sd.clip_skip,
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
         }),
     });
 
@@ -2467,6 +2539,7 @@ async function generateAutoImage(prompt, negativePrompt) {
             hr_scale: extension_settings.sd.hr_scale,
             denoising_strength: extension_settings.sd.denoising_strength,
             hr_second_pass_steps: extension_settings.sd.hr_second_pass_steps,
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
             override_settings: {
                 CLIP_stop_at_last_layers: extension_settings.sd.clip_skip,
             },
@@ -2513,6 +2586,7 @@ async function generateDrawthingsImage(prompt, negativePrompt) {
             denoising_strength: extension_settings.sd.denoising_strength,
             clip_skip: extension_settings.sd.clip_skip,
             upscaler_scale: extension_settings.sd.hr_scale,
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
             // TODO: advanced API parameters: hr, upscaler
         }),
     });
@@ -2552,6 +2626,7 @@ async function generateNovelImage(prompt, negativePrompt) {
             decrisper: extension_settings.sd.novel_decrisper,
             sm: sm,
             sm_dyn: sm_dyn,
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
         }),
     });
 
@@ -2714,7 +2789,9 @@ async function generateComfyImage(prompt, negativePrompt) {
     }
     let workflow = (await workflowResponse.json()).replace('"%prompt%"', JSON.stringify(prompt));
     workflow = workflow.replace('"%negative_prompt%"', JSON.stringify(negativePrompt));
-    workflow = workflow.replaceAll('"%seed%"', JSON.stringify(Math.round(Math.random() * Number.MAX_SAFE_INTEGER)));
+
+    const seed = extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : Math.round(Math.random() * Number.MAX_SAFE_INTEGER);
+    workflow = workflow.replaceAll('"%seed%"', JSON.stringify(seed));
     placeholders.forEach(ph => {
         workflow = workflow.replace(`"%${ph}%"`, JSON.stringify(extension_settings.sd[ph]));
     });
@@ -3114,8 +3191,35 @@ $('#sd_dropdown [id]').on('click', function () {
     }
 });
 
+async function onCharacterPromptShareInput() {
+    // Not a valid state to share character prompt
+    if (this_chid === undefined || selected_group) {
+        return;
+    }
+
+    const shouldShare = !!$('#sd_character_prompt_share').prop('checked');
+
+    if (shouldShare) {
+        await writePromptFields(this_chid);
+    } else {
+        await writeExtensionField(this_chid, 'sd_character_prompt', null);
+    }
+}
+
+async function writePromptFields(characterId) {
+    const key = getCharaFilename(characterId);
+    const promptPrefix = key ? (extension_settings.sd.character_prompts[key] || '') : '';
+    const negativePromptPrefix = key ? (extension_settings.sd.character_negative_prompts[key] || '') : '';
+    const promptObject = {
+        positive: promptPrefix,
+        negative: negativePromptPrefix,
+    };
+    await writeExtensionField(characterId, 'sd_character_prompt', promptObject);
+}
+
 jQuery(async () => {
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({ name: 'imagine',
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'imagine',
         callback: generatePicture,
         aliases: ['sd', 'img', 'image'],
         namedArgumentList: [
@@ -3141,7 +3245,8 @@ jQuery(async () => {
         `,
     }));
 
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({ name: 'imagine-comfy-workflow',
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'imagine-comfy-workflow',
         callback: changeComfyWorkflow,
         aliases: ['icw'],
         unnamedArgumentList: [
@@ -3205,6 +3310,7 @@ jQuery(async () => {
     $('#sd_expand').on('input', onExpandInput);
     $('#sd_style').on('change', onStyleSelect);
     $('#sd_save_style').on('click', onSaveStyleClick);
+    $('#sd_delete_style').on('click', onDeleteStyleClick);
     $('#sd_character_prompt_block').hide();
     $('#sd_interactive_mode').on('input', onInteractiveModeInput);
     $('#sd_openai_style').on('change', onOpenAiStyleSelect);
@@ -3212,6 +3318,8 @@ jQuery(async () => {
     $('#sd_multimodal_captioning').on('input', onMultimodalCaptioningInput);
     $('#sd_snap').on('input', onSnapInput);
     $('#sd_clip_skip').on('input', onClipSkipInput);
+    $('#sd_seed').on('input', onSeedInput);
+    $('#sd_character_prompt_share').on('input', onCharacterPromptShareInput);
 
     $('.sd_settings .inline-drawer-toggle').on('click', function () {
         initScrollHeight($('#sd_prompt_prefix'));
