@@ -229,6 +229,12 @@ const defaultSettings = {
     hr_second_pass_steps_max: 150,
     hr_second_pass_steps_step: 1,
 
+    // CLIP skip
+    clip_skip_min: 1,
+    clip_skip_max: 12,
+    clip_skip_step: 1,
+    clip_skip: 1,
+
     // NovelAI settings
     novel_upscale_ratio_min: 1.0,
     novel_upscale_ratio_max: 4.0,
@@ -237,6 +243,7 @@ const defaultSettings = {
     novel_anlas_guard: false,
     novel_sm: false,
     novel_sm_dyn: false,
+    novel_decrisper: false,
 
     // OpenAI settings
     openai_style: 'vivid',
@@ -381,6 +388,7 @@ async function loadSettings() {
     $('#sd_novel_sm').prop('checked', extension_settings.sd.novel_sm);
     $('#sd_novel_sm_dyn').prop('checked', extension_settings.sd.novel_sm_dyn);
     $('#sd_novel_sm_dyn').prop('disabled', !extension_settings.sd.novel_sm);
+    $('#sd_novel_decrisper').prop('checked', extension_settings.sd.novel_decrisper);
     $('#sd_pollinations_enhance').prop('checked', extension_settings.sd.pollinations_enhance);
     $('#sd_pollinations_refine').prop('checked', extension_settings.sd.pollinations_refine);
     $('#sd_horde').prop('checked', extension_settings.sd.horde);
@@ -404,6 +412,8 @@ async function loadSettings() {
     $('#sd_comfy_url').val(extension_settings.sd.comfy_url);
     $('#sd_comfy_prompt').val(extension_settings.sd.comfy_prompt);
     $('#sd_snap').prop('checked', extension_settings.sd.snap);
+    $('#sd_clip_skip').val(extension_settings.sd.clip_skip);
+    $('#sd_clip_skip_value').text(extension_settings.sd.clip_skip);
 
     for (const style of extension_settings.sd.styles) {
         const option = document.createElement('option');
@@ -465,7 +475,7 @@ function addPromptTemplates() {
         const label = $('<label></label>')
             .text(modeLabels[name])
             .attr('for', `sd_prompt_${name}`)
-			.attr('data-i18n', `sd_prompt_${name}`);
+            .attr('data-i18n', `sd_prompt_${name}`);
         const textarea = $('<textarea></textarea>')
             .addClass('textarea_compact text_pole')
             .attr('id', `sd_prompt_${name}`)
@@ -477,7 +487,7 @@ function addPromptTemplates() {
         const button = $('<button></button>')
             .addClass('menu_button fa-solid fa-undo')
             .attr('title', 'Restore default')
-			.attr('data-i18n', 'Restore default')
+            .attr('data-i18n', 'Restore default')
             .on('click', () => {
                 textarea.val(promptTemplates[name]);
                 extension_settings.sd.prompts[name] = promptTemplates[name];
@@ -691,6 +701,12 @@ function onRefineModeInput() {
     saveSettingsDebounced();
 }
 
+function onClipSkipInput() {
+    extension_settings.sd.clip_skip = Number($('#sd_clip_skip').val());
+    $('#sd_clip_skip_value').text(extension_settings.sd.clip_skip);
+    saveSettingsDebounced();
+}
+
 function onScaleInput() {
     extension_settings.sd.scale = Number($('#sd_scale').val());
     $('#sd_scale_value').text(extension_settings.sd.scale.toFixed(1));
@@ -829,6 +845,11 @@ function onNovelSmInput() {
 
 function onNovelSmDynInput() {
     extension_settings.sd.novel_sm_dyn = !!$('#sd_novel_sm_dyn').prop('checked');
+    saveSettingsDebounced();
+}
+
+function onNovelDecrisperInput() {
+    extension_settings.sd.novel_decrisper = !!$('#sd_novel_decrisper').prop('checked');
     saveSettingsDebounced();
 }
 
@@ -1135,6 +1156,27 @@ async function getVladRemoteUpscalers() {
     } catch (error) {
         console.error(error);
         return [extension_settings.sd.hr_upscaler];
+    }
+}
+
+async function getDrawthingsRemoteUpscalers() {
+    try {
+        const result = await fetch('/api/sd/drawthings/get-upscaler', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(getSdRequestBody()),
+        });
+
+        if (!result.ok) {
+            throw new Error('SD DrawThings API returned an error.');
+        }
+
+        const data = await result.text();
+
+        return data ? [data] : ['N/A'];
+    } catch (error) {
+        console.error(error);
+        return ['N/A'];
     }
 }
 
@@ -1571,6 +1613,21 @@ async function loadDrawthingsModels() {
         }
 
         const data = [{ value: currentModel, text: currentModel }];
+
+
+        const upscalers = await getDrawthingsRemoteUpscalers();
+
+        if (Array.isArray(upscalers) && upscalers.length > 0) {
+            $('#sd_hr_upscaler').empty();
+
+            for (const upscaler of upscalers) {
+                const option = document.createElement('option');
+                option.innerText = upscaler;
+                option.value = upscaler;
+                option.selected = upscaler === extension_settings.sd.hr_upscaler;
+                $('#sd_hr_upscaler').append(option);
+            }
+        }
 
         return data;
     } catch (error) {
@@ -2371,6 +2428,7 @@ async function generateHordeImage(prompt, negativePrompt) {
             restore_faces: !!extension_settings.sd.restore_faces,
             enable_hr: !!extension_settings.sd.enable_hr,
             sanitize: !!extension_settings.sd.horde_sanitize,
+            clip_skip: extension_settings.sd.clip_skip,
         }),
     });
 
@@ -2409,6 +2467,10 @@ async function generateAutoImage(prompt, negativePrompt) {
             hr_scale: extension_settings.sd.hr_scale,
             denoising_strength: extension_settings.sd.denoising_strength,
             hr_second_pass_steps: extension_settings.sd.hr_second_pass_steps,
+            override_settings: {
+                CLIP_stop_at_last_layers: extension_settings.sd.clip_skip,
+            },
+            override_settings_restore_afterwards: true,
             // Ensure generated img is saved to disk
             save_images: true,
             send_images: true,
@@ -2449,6 +2511,8 @@ async function generateDrawthingsImage(prompt, negativePrompt) {
             restore_faces: !!extension_settings.sd.restore_faces,
             enable_hr: !!extension_settings.sd.enable_hr,
             denoising_strength: extension_settings.sd.denoising_strength,
+            clip_skip: extension_settings.sd.clip_skip,
+            upscaler_scale: extension_settings.sd.hr_scale,
             // TODO: advanced API parameters: hr, upscaler
         }),
     });
@@ -2485,6 +2549,7 @@ async function generateNovelImage(prompt, negativePrompt) {
             height: height,
             negative_prompt: negativePrompt,
             upscale_ratio: extension_settings.sd.novel_upscale_ratio,
+            decrisper: extension_settings.sd.novel_decrisper,
             sm: sm,
             sm_dyn: sm_dyn,
         }),
@@ -2633,6 +2698,7 @@ async function generateComfyImage(prompt, negativePrompt) {
         'scale',
         'width',
         'height',
+        'clip_skip',
     ];
 
     const workflowResponse = await fetch('/api/sd/comfy/workflow', {
@@ -3127,6 +3193,7 @@ jQuery(async () => {
     $('#sd_novel_view_anlas').on('click', onViewAnlasClick);
     $('#sd_novel_sm').on('input', onNovelSmInput);
     $('#sd_novel_sm_dyn').on('input', onNovelSmDynInput);
+    $('#sd_novel_decrisper').on('input', onNovelDecrisperInput);
     $('#sd_pollinations_enhance').on('input', onPollinationsEnhanceInput);
     $('#sd_pollinations_refine').on('input', onPollinationsRefineInput);
     $('#sd_comfy_validate').on('click', validateComfyUrl);
@@ -3144,6 +3211,7 @@ jQuery(async () => {
     $('#sd_openai_quality').on('change', onOpenAiQualitySelect);
     $('#sd_multimodal_captioning').on('input', onMultimodalCaptioningInput);
     $('#sd_snap').on('input', onSnapInput);
+    $('#sd_clip_skip').on('input', onClipSkipInput);
 
     $('.sd_settings .inline-drawer-toggle').on('click', function () {
         initScrollHeight($('#sd_prompt_prefix'));
