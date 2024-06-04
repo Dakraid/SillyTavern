@@ -178,6 +178,8 @@ import {
     tag_filter_types,
     compareTagsForSort,
     initTags,
+    applyTagsOnCharacterSelect,
+    applyTagsOnGroupSelect,
 } from './scripts/tags.js';
 import {
     SECRET_KEYS,
@@ -1307,6 +1309,10 @@ export async function printCharacters(fullRefresh = false) {
     // We are actually always reprinting filters, as it "doesn't hurt", and this way they are always up to date
     printTagFilters(tag_filter_types.character);
     printTagFilters(tag_filter_types.group_member);
+
+    // We are also always reprinting the lists on character/group edit window, as these ones doesn't get updated otherwise
+    applyTagsOnCharacterSelect();
+    applyTagsOnGroupSelect();
 
     const entities = getEntitiesList({ doFilter: true });
 
@@ -10537,54 +10543,60 @@ jQuery(async function () {
 
     $(document).on('click', '.external_import_button, #external_import_button', async () => {
         const html = await renderTemplateAsync('importCharacters');
-        const input = await callGenericPopup(html, POPUP_TYPE.INPUT, '', { okButton: $('#shadow_popup_template').attr('popup_text_import'), rows: 4 });
+
+        /** @type {string?} */
+        const input = await callGenericPopup(html, POPUP_TYPE.INPUT, '', { wider: true, okButton: $('#shadow_popup_template').attr('popup_text_import'), rows: 4 });
 
         if (!input) {
             console.debug('Custom content import cancelled');
             return;
         }
 
-        const url = input.trim();
-        var request;
+        // break input into one input per line
+        const inputs = input.split('\n').map(x => x.trim()).filter(x => x.length > 0);
 
-        if (isValidUrl(url)) {
-            console.debug('Custom content import started for URL: ', url);
-            request = await fetch('/api/content/importURL', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ url }),
-            });
-        } else {
-            console.debug('Custom content import started for Char UUID: ', url);
-            request = await fetch('/api/content/importUUID', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ url }),
-            });
-        }
+        for (const url of inputs) {
+            let request;
 
-        if (!request.ok) {
-            toastr.info(request.statusText, 'Custom content import failed');
-            console.error('Custom content import failed', request.status, request.statusText);
-            return;
-        }
+            if (isValidUrl(url)) {
+                console.debug('Custom content import started for URL: ', url);
+                request = await fetch('/api/content/importURL', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ url }),
+                });
+            } else {
+                console.debug('Custom content import started for Char UUID: ', url);
+                request = await fetch('/api/content/importUUID', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ url }),
+                });
+            }
 
-        const data = await request.blob();
-        const customContentType = request.headers.get('X-Custom-Content-Type');
-        const fileName = request.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
-        const file = new File([data], fileName, { type: data.type });
+            if (!request.ok) {
+                toastr.info(request.statusText, 'Custom content import failed');
+                console.error('Custom content import failed', request.status, request.statusText);
+                return;
+            }
 
-        switch (customContentType) {
-            case 'character':
-                await processDroppedFiles([file]);
-                break;
-            case 'lorebook':
-                await importWorldInfo(file);
-                break;
-            default:
-                toastr.warning('Unknown content type');
-                console.error('Unknown content type', customContentType);
-                break;
+            const data = await request.blob();
+            const customContentType = request.headers.get('X-Custom-Content-Type');
+            const fileName = request.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
+            const file = new File([data], fileName, { type: data.type });
+
+            switch (customContentType) {
+                case 'character':
+                    await processDroppedFiles([file]);
+                    break;
+                case 'lorebook':
+                    await importWorldInfo(file);
+                    break;
+                default:
+                    toastr.warning('Unknown content type');
+                    console.error('Unknown content type', customContentType);
+                    break;
+            }
         }
     });
 
