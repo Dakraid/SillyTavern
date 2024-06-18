@@ -1055,7 +1055,7 @@ body .panelControlBar {
 
 .hotswap-scroll {
     overflow-x: scroll !important;
-    max-height: max-content !important;
+    /*max-height: max-content !important;*/
 }
 
 #HotSwapWrapper {
