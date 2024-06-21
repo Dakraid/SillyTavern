@@ -272,12 +272,12 @@ toastr.options.timeOut = 4000; // How long the toast will display without user i
 toastr.options.extendedTimeOut = 10000; // How long the toast will display after a user hovers over it
 toastr.options.progressBar = true; // Visually indicate how long before a toast expires.
 toastr.options.closeButton = true; // enable a close button
-toastr.options.positionClass = "toast-top-center"; // Where to position the toast container
+toastr.options.positionClass = 'toast-top-center'; // Where to position the toast container
 toastr.options.onHidden = () => {
     // If we have any dialog still open, the last "hidden" toastr will remove the toastr-container. We need to keep it alive inside the dialog though
     // so the toasts still show up inside there.
     fixToastrForDialogs();
-}
+};
 
 // Allow target="_blank" in links
 DOMPurify.addHook('afterSanitizeAttributes', function (node) {
@@ -431,7 +431,9 @@ export const event_types = {
     CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
     FORCE_SET_BACKGROUND: 'force_set_background',
     CHAT_DELETED: 'chat_deleted',
+    CHAT_CREATED: 'chat_created',
     GROUP_CHAT_DELETED: 'group_chat_deleted',
+    GROUP_CHAT_CREATED: 'group_chat_created',
     GENERATE_BEFORE_COMBINE_PROMPTS: 'generate_before_combine_prompts',
     GENERATE_AFTER_COMBINE_PROMPTS: 'generate_after_combine_prompts',
     GROUP_MEMBER_DRAFTED: 'group_member_drafted',
@@ -3439,7 +3441,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
      * @returns {string[]} Examples array with block heading
      */
     function parseMesExamples(examplesStr) {
-        if (examplesStr.length === 0) {
+        if (examplesStr.length === 0 || examplesStr === '<START>') {
             return [];
         }
 
@@ -5884,11 +5886,13 @@ export async function getChat() {
 
 async function getChatResult() {
     name2 = characters[this_chid].name;
+    let freshChat = false;
     if (chat.length === 0) {
         const message = getFirstMessage();
         if (message.mes) {
             chat.push(message);
             await saveChatConditional();
+            freshChat = true;
         }
     }
     await loadItemizedPrompts(getCurrentChatId());
@@ -5896,6 +5900,7 @@ async function getChatResult() {
     select_selected_character(this_chid);
 
     await eventSource.emit(event_types.CHAT_CHANGED, (getCurrentChatId()));
+    if (freshChat) await eventSource.emit(event_types.CHAT_CREATED);
 
     if (chat.length === 1) {
         const chat_id = (chat.length - 1);
@@ -7543,10 +7548,15 @@ function addAlternateGreeting(template, greeting, index, getArray) {
     template.find('.alternate_greetings_list').append(greetingBlock);
 }
 
+/**
+ * Creates or edits a character based on the form data.
+ * @param {Event} [e] Event that triggered the function call.
+ */
 async function createOrEditCharacter(e) {
     $('#rm_info_avatar').html('');
     const formData = new FormData($('#form_create').get(0));
     formData.set('fav', String(fav_ch_checked));
+    const isNewChat = e instanceof CustomEvent && e.type === 'newChat';
 
     const rawFile = formData.get('avatar');
     if (rawFile instanceof File) {
@@ -7689,6 +7699,7 @@ async function createOrEditCharacter(e) {
                 // Recreate the chat if it hasn't been used at least once (i.e. with continue).
                 const message = getFirstMessage();
                 const shouldRegenerateMessage =
+                    !isNewChat &&
                     message.mes &&
                     !selected_group &&
                     !chat_metadata['tainted'] &&
@@ -9215,7 +9226,7 @@ jQuery(async function () {
                 characters[this_chid].chat = `${name2} - ${humanizedDateTime()}`;
                 $('#selected_chat_pole').val(characters[this_chid].chat);
                 await getChat();
-                await createOrEditCharacter();
+                await createOrEditCharacter(new CustomEvent('newChat'));
                 if (isDelChatCheckbox) await delChat(chat_file_for_del + '.jsonl');
             }
         }
