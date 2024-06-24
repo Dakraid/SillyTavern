@@ -71,6 +71,7 @@ import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
 import { renderTemplateAsync } from './templates.js';
+import { SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 
 export {
     openai_messages_count,
@@ -199,16 +200,18 @@ const custom_prompt_post_processing_types = {
     CLAUDE: 'claude',
 };
 
-const prefixMap = selected_group ? {
-    assistant: '',
-    user: '',
-    system: 'OOC: ',
+function getPrefixMap() {
+    return selected_group ? {
+        assistant: '',
+        user: '',
+        system: 'OOC: ',
+    }
+        : {
+            assistant: '{{char}}:',
+            user: '{{user}}:',
+            system: '',
+        };
 }
-    : {
-        assistant: '{{char}}:',
-        user: '{{user}}:',
-        system: '',
-    };
 
 const default_settings = {
     preset_settings_openai: 'Default',
@@ -1548,10 +1551,10 @@ function saveModelList(data) {
     }
 
     if (oai_settings.chat_completion_source == chat_completion_sources.CUSTOM) {
-        $('#model_custom_select').empty();
-        $('#model_custom_select').append('<option value="">None</option>');
+        $('.model_custom_select').empty();
+        $('.model_custom_select').append('<option value="">None</option>');
         model_list.forEach((model) => {
-            $('#model_custom_select').append(
+            $('.model_custom_select').append(
                 $('<option>', {
                     value: model.id,
                     text: model.id,
@@ -1709,7 +1712,7 @@ async function sendOpenAIRequest(type, messages, signal) {
 
     if (isAI21) {
         const joinedMsgs = messages.reduce((acc, obj) => {
-            const prefix = prefixMap[obj.role];
+            const prefix = getPrefixMap()[obj.role];
             return acc + (prefix ? (selected_group ? '\n' : prefix + ' ') : '') + obj.content + '\n';
         }, '');
         messages = substituteParams(joinedMsgs) + (isImpersonate ? `${name1}:` : `${name2}:`);
@@ -3161,7 +3164,7 @@ async function getStatusOpen() {
     }
 
     if (oai_settings.chat_completion_source === chat_completion_sources.CUSTOM) {
-        $('#model_custom_select').empty();
+        $('.model_custom_select').empty();
         data.custom_url = oai_settings.custom_url;
         data.custom_include_headers = oai_settings.custom_include_headers;
     }
@@ -4602,9 +4605,12 @@ SlashCommandParser.addCommandObject(SlashCommand.fromProps({
     returns: 'current proxy',
     namedArgumentList: [],
     unnamedArgumentList: [
-        new SlashCommandArgument(
-            'name', [ARGUMENT_TYPE.STRING], true,
-        ),
+        SlashCommandArgument.fromProps({
+            description: 'name',
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: true,
+            enumProvider: () => proxies.map(preset => new SlashCommandEnumValue(preset.name, preset.url)),
+        }),
     ],
     helpString: 'Sets a proxy preset by name.',
 }));

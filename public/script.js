@@ -175,11 +175,12 @@ import {
     createTagMapFromList,
     renameTagKey,
     importTags,
-    tag_filter_types,
+    tag_filter_type,
     compareTagsForSort,
     initTags,
     applyTagsOnCharacterSelect,
     applyTagsOnGroupSelect,
+    tag_import_setting,
 } from './scripts/tags.js';
 import {
     SECRET_KEYS,
@@ -238,6 +239,8 @@ import { initCustomSelectedSamplers, validateDisabledSamplers } from './scripts/
 import { DragAndDropHandler } from './scripts/dragdrop.js';
 import { INTERACTABLE_CONTROL_CLASS, initKeyboard } from './scripts/keyboard.js';
 import { initDynamicStyles } from './scripts/dynamic-styles.js';
+import { SlashCommandEnumValue, enumTypes } from './scripts/slash-commands/SlashCommandEnumValue.js';
+import { enumIcons } from './scripts/slash-commands/SlashCommandCommonEnumsProvider.js';
 
 //exporting functions and vars for mods
 export {
@@ -1346,8 +1349,8 @@ export async function printCharacters(fullRefresh = false) {
     verifyCharactersSearchSortRule();
 
     // We are actually always reprinting filters, as it "doesn't hurt", and this way they are always up to date
-    printTagFilters(tag_filter_types.character);
-    printTagFilters(tag_filter_types.group_member);
+    printTagFilters(tag_filter_type.character);
+    printTagFilters(tag_filter_type.group_member);
 
     // We are also always reprinting the lists on character/group edit window, as these ones doesn't get updated otherwise
     applyTagsOnCharacterSelect();
@@ -1368,7 +1371,7 @@ export async function printCharacters(fullRefresh = false) {
         nextText: '>',
         formatNavigator: PAGINATION_TEMPLATE,
         showNavigator: true,
-        callback: function (data) {
+        callback: function (/** @type {Entity[]} */ data) {
             $(listId).empty();
             if (power_user.bogus_folders && isBogusFolderOpen()) {
                 $(listId).append(getBackBlock());
@@ -1388,7 +1391,7 @@ export async function printCharacters(fullRefresh = false) {
                         displayCount++;
                         break;
                     case 'tag':
-                        $(listId).append(getTagBlock(i.item, i.entities, i.hidden));
+                        $(listId).append(getTagBlock(i.item, i.entities, i.hidden, i.isUseless));
                         break;
                 }
             }
@@ -1442,8 +1445,9 @@ function verifyCharactersSearchSortRule() {
  * @property {Character|Group|import('./scripts/tags.js').Tag|*} item - The item
  * @property {string|number} id - The id
  * @property {'character'|'group'|'tag'} type - The type of this entity (character, group, tag)
- * @property {Entity[]} [entities] - An optional list of entities relevant for this item
- * @property {number} [hidden] - An optional number representing how many hidden entities this entity contains
+ * @property {Entity[]?} [entities=null] - An optional list of entities relevant for this item
+ * @property {number?} [hidden=null] - An optional number representing how many hidden entities this entity contains
+ * @property {boolean?} [isUseless=null] - Specifies if the entity is useless (not relevant, but should still be displayed for consistency) and should be displayed greyed out
  */
 
 /**
@@ -1538,6 +1542,15 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
         }
     }
 
+    // Final step, updating some properties after the last filter run
+    const nonTagEntitiesCount = entities.filter(entity => entity.type !== 'tag').length;
+    for (const entity of entities) {
+        if (entity.type === 'tag') {
+            if (entity.entities?.length == nonTagEntitiesCount) entity.isUseless = true;
+        }
+    }
+
+    // Sort before returning if requested
     if (doSort) {
         sortEntitiesList(entities);
     }
@@ -2111,7 +2124,7 @@ export function addCopyToCodeBlocks(messageElement) {
         hljs.highlightElement(codeBlocks.get(i));
         if (navigator.clipboard !== undefined) {
             const copyButton = document.createElement('i');
-            copyButton.classList.add('fa-solid', 'fa-copy', 'code-copy');
+            copyButton.classList.add('fa-solid', 'fa-copy', 'code-copy', 'interactable');
             copyButton.title = 'Copy code';
             codeBlocks.get(i).appendChild(copyButton);
             copyButton.addEventListener('pointerup', function (event) {
@@ -2365,6 +2378,10 @@ export function substituteParamsExtended(content, additionalMacro = {}) {
  * @returns {string} The string with substituted parameters.
  */
 export function substituteParams(content, _name1, _name2, _original, _group, _replaceCharacterCard = true, additionalMacro = {}) {
+    if (!content) {
+        return '';
+    }
+
     const environment = {};
 
     if (typeof _original === 'string') {
@@ -8464,7 +8481,7 @@ async function importCharacter(file, preserveFileName = false) {
 
         await getCharacters();
         select_rm_info('char_import', data.file_name, oldSelectedChar);
-        if (power_user.import_card_tags) {
+        if (power_user.tag_import_setting !== tag_import_setting.NONE) {
             let currentContext = getContext();
             let avatarFileName = `${data.file_name}.png`;
             let importedCharacter = currentContext.characters.find(character => character.avatar === avatarFileName);
@@ -8806,6 +8823,9 @@ jQuery(async function () {
         return '';
     }
 
+    // Collect all unique API names in an array
+    const uniqueAPIs = [...new Set(Object.values(CONNECT_API_MAP).map(x => x.selected))];
+
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'dupe',
         callback: DupeChar,
@@ -8814,16 +8834,15 @@ jQuery(async function () {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'api',
         callback: connectAPISlash,
-        namedArgumentList: [],
         unnamedArgumentList: [
-            new SlashCommandArgument(
-                'API to connect to',
-                [ARGUMENT_TYPE.STRING],
-                true,
-                false,
-                null,
-                Object.keys(CONNECT_API_MAP),
-            ),
+            SlashCommandArgument.fromProps({
+                description: 'API to connect to',
+                typeList: [ARGUMENT_TYPE.STRING],
+                isRequired: false,
+                enumList: Object.entries(CONNECT_API_MAP).map(([api, { selected }]) =>
+                    new SlashCommandEnumValue(api, selected, enumTypes.getBasedOnIndex(uniqueAPIs.findIndex(x => x === selected)),
+                        selected[0].toUpperCase() ?? enumIcons.default)),
+            }),
         ],
         helpString: `
             <div>
@@ -8912,11 +8931,12 @@ jQuery(async function () {
         name: 'instruct',
         callback: selectInstructCallback,
         returns: 'current preset',
-        namedArgumentList: [],
         unnamedArgumentList: [
-            new SlashCommandArgument(
-                'name', [ARGUMENT_TYPE.STRING], false,
-            ),
+            SlashCommandArgument.fromProps({
+                description: 'instruct preset name',
+                typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: () => instruct_presets.map(preset => new SlashCommandEnumValue(preset.name, null, enumTypes.enum, enumIcons.preset)),
+            }),
         ],
         helpString: `
             <div>
@@ -8947,9 +8967,11 @@ jQuery(async function () {
         callback: selectContextCallback,
         returns: 'template name',
         unnamedArgumentList: [
-            new SlashCommandArgument(
-                'name', [ARGUMENT_TYPE.STRING], false,
-            ),
+            SlashCommandArgument.fromProps({
+                description: 'context preset name',
+                typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: () => context_presets.map(preset => new SlashCommandEnumValue(preset.name, null, enumTypes.enum, enumIcons.preset)),
+            }),
         ],
         helpString: 'Selects context template by name. Gets the current template if no name is provided',
     }));
@@ -10599,7 +10621,7 @@ jQuery(async function () {
                 }
             } break;
             case 'import_tags': {
-                await importTags(characters[this_chid]);
+                await importTags(characters[this_chid], { forceShow: true });
             } break;
             /*case 'delete_button':
                 popup_type = "del_ch";
