@@ -423,7 +423,7 @@
                                         </span>
                                     </div>
                                 </div>
-                                <div class="range-block" data-source="openai,claude,windowai,openrouter,ai21,scale,makersuite,mistralai,custom,cohere,perplexity,groq">
+                                <div class="range-block" data-source="openai,claude,windowai,openrouter,ai21,scale,makersuite,mistralai,custom,cohere,perplexity,groq,01ai">
                                     <div class="range-block-title" data-i18n="Temperature">
                                         Temperature
                                     </div>
@@ -488,7 +488,7 @@
                                         </div>
                                     </div>
                                 </div>
-                                <div data-newbie-hidden class="range-block" data-source="openai,claude,openrouter,ai21,scale,makersuite,mistralai,custom,cohere,perplexity,groq">
+                                <div data-newbie-hidden class="range-block" data-source="openai,claude,openrouter,ai21,scale,makersuite,mistralai,custom,cohere,perplexity,groq,01ai">
                                     <div class="range-block-title" data-i18n="Top P">
                                         Top P
                                     </div>
@@ -1141,7 +1141,7 @@
                                         <div class="fa-solid fa-circle-info opacity50p" title="Customize displayed samplers or add custom samplers." data-i18n="[title]Customize displayed samplers or add custom samplers."></div>
                                     </small>
                                 </div>
-                                <div data-newbie-hidden data-tg-type="mancer, vllm, aphrodite, tabby" class="flex-container flexFlowColumn alignitemscenter flexBasis100p flexGrow flexShrink gap0">
+                                <div data-newbie-hidden data-tg-type="mancer, vllm, aphrodite, tabby, infermaticai" class="flex-container flexFlowColumn alignitemscenter flexBasis100p flexGrow flexShrink gap0">
                                     <small data-i18n="Multiple swipes per generation">Multiple swipes per generation</small>
                                     <input type="number" id="n_textgenerationwebui" class="text_pole textAlignCenter" min="1" value="1" step="1" />
                                 </div>
@@ -1263,7 +1263,7 @@
                                         <input class="neo-range-slider" type="range" id="skew_textgenerationwebui" name="volume" min="-5" max="5" step="0.01" />
                                         <input class="neo-range-input" type="number" min="-5" max="5" step="0.01" data-for="skew_textgenerationwebui" id="skew_counter_textgenerationwebui">
                                     </div>
-                                    <div data-newbie-hidden data-tg-type="mancer, ooba, tabby, dreamgen" class="alignitemscenter flex-container flexFlowColumn flexBasis30p flexGrow flexShrink gap0">
+                                    <div data-newbie-hidden data-tg-type="mancer, ooba, tabby, dreamgen, infermaticai" class="alignitemscenter flex-container flexFlowColumn flexBasis30p flexGrow flexShrink gap0">
                                         <small data-i18n="Min Length">Min Length</small>
                                         <input class="neo-range-slider" type="range" id="min_length_textgenerationwebui" name="volume" min="0" max="2000" step="1" />
                                         <input class="neo-range-input" type="number" min="0" max="2000" step="1" data-for="min_length_textgenerationwebui" id="min_length_counter_textgenerationwebui">
@@ -1446,7 +1446,7 @@
                                                     <div class="fa-solid fa-circle-info opacity50p " data-i18n="[title]Ban the eos_token. This forces the model to never end the generation prematurely" title="Ban the eos_token. This forces the model to never end the generation prematurely."></div>
                                                 </label>
                                             </label>
-                                            <label data-tg-type="vllm, aphrodite" class="checkbox_label" for="ignore_eos_token_textgenerationwebui">
+                                            <label data-tg-type="vllm, aphrodite, infermaticai" class="checkbox_label" for="ignore_eos_token_textgenerationwebui">
                                                 <input type="checkbox" id="ignore_eos_token_textgenerationwebui" />
                                                 <small data-i18n="Ignore EOS Token">Ignore EOS Token
                                                     <div class="fa-solid fa-circle-info opacity50p " data-i18n="[title]Ignore the EOS Token even if it generates." title="Ignore the EOS Token even if it generates."></div>
@@ -1471,13 +1471,13 @@
                                                 </label>
                                             </label>
 
-                                            <label data-tg-type="vllm, aphrodite" class="checkbox_label" for="spaces_between_special_tokens_textgenerationwebui">
+                                            <label data-tg-type="vllm, aphrodite, infermaticai" class="checkbox_label" for="spaces_between_special_tokens_textgenerationwebui">
                                                 <input type="checkbox" id="spaces_between_special_tokens_textgenerationwebui" />
                                                 <small data-i18n="Spaces Between Special Tokens">Spaces Between Special Tokens</small>
                                             </label>
                                         </div>
                                     </div>
-                                    <div data-tg-type="mancer, ooba, koboldcpp, vllm, aphrodite, llamacpp, ollama" data-newbie-hidden class="flex-container flexFlowColumn alignitemscenter flexBasis48p flexGrow flexShrink gap0">
+                                    <div data-tg-type="mancer, ooba, koboldcpp, vllm, aphrodite, llamacpp, ollama, infermaticai" data-newbie-hidden class="flex-container flexFlowColumn alignitemscenter flexBasis48p flexGrow flexShrink gap0">
                                         <small data-i18n="Seed" class="textAlignCenter">Seed</small>
                                         <input type="number" id="seed_textgenerationwebui" class="text_pole textAlignCenter" min="-2" value="-1" maxlength="100" />
                                     </div>
@@ -2360,6 +2360,7 @@
                                 <option value="custom" data-i18n="Custom (OpenAI-compatible)">Custom (OpenAI-compatible)</option>
                             </optgroup>
                             <optgroup>
+                                <option value="01ai">01.AI (Yi)</option>
                                 <option value="ai21">AI21</option>
                                 <option value="claude">Claude</option>
                                 <option value="cohere">Cohere</option>
@@ -2890,6 +2891,23 @@
                                 <option value="claude">Claude</option>
                             </select>
                         </form>
+                        <div id="01ai_form" data-source="01ai">
+                            <h4>
+                                <a data-i18n="01.AI API Key" href="https://platform.01.ai/" target="_blank" rel="noopener noreferrer">
+                                    01.AI API Key
+                                </a>
+                            </h4>
+                            <div class="flex-container">
+                                <input id="api_key_01ai" name="api_key_01ai" class="text_pole flex1" maxlength="500" value="" type="text" autocomplete="off">
+                                <div title="Clear your API key" data-i18n="[title]Clear your API key" class="menu_button fa-solid fa-circle-xmark clear-api-key" data-key="api_key_01ai"></div>
+                            </div>
+                            <div data-for="api_key_01ai" class="neutral_warning" data-i18n="For privacy reasons, your API key will be hidden after you reload the page.">
+                                For privacy reasons, your API key will be hidden after you reload the page.
+                            </div>
+                            <h4 data-i18n="01.AI Model">01.AI Model</h4>
+                            <select id="model_01ai_select">
+                            </select>
+                        </div>
                         <div class="flex-container flex">
                             <div id="api_button_openai" class="api_button menu_button menu_button_icon" type="submit" data-i18n="Connect">Connect</div>
                             <div class="api_loading menu_button" data-i18n="Cancel">Cancel</div>
@@ -3749,95 +3767,6 @@
                                     <input class="neo-range-slider" type="range" id="shadow_width" name="shadow_width" min="0" max="5" step="1">
                                     <input class="neo-range-input" type="number" min="0" max="5" step="1" data-for="shadow_width" id="shadow_width_counter">
                                 </div>
-
-
-
-                                <!--                                 <div data-newbie-hidden class="range-block">
-                                    <label for="compact_input_area" class="range-block-title">
-                                        <span data-i18n="Chat Width (PC)">
-                                            Chat Width
-                                        </span>
-                                        <i class="fa-solid fa-desktop"></i>
-                                    </label>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input id="chat_width_slider" class="wide100p" type="range" min="25" max="100" step="1" value="50">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="25" max="100" step="1" value="50" data-for="chat_width_slider" id="chat_width_slider_counter">
-                                        </div>
-                                    </div>
-                                </div> -->
-
-                                <!--                                 <div id="font-scale-block" class="range-block">
-                                    <div class="range-block-title" data-i18n="Font Scale">
-                                        Font Scale
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="font_scale" name="font_scale" min="0.8" max="1.2" step="0.01">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0.8" max="1.2" step="0.01" data-for="font_scale" id="font_scale_counter">
-                                        </div>
-                                    </div>
-                                </div> -->
-                                <!--                                 <div id="blur-strength-block" class="range-block">
-                                    <div class="range-block-title" data-i18n="Blur Strength">
-                                        Blur Strength
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="blur_strength" name="blur_strength" min="0" max="30" step="1">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0" max="30" step="1" data-for="blur_strength" id="blur_strength_counter">
-                                        </div>
-                                    </div>
-                                </div> -->
-                                <!--                                 <div id="shadow-width-block" class="range-block">
-                                    <div class="range-block-title" data-i18n="Text Shadow Width">
-                                        Text Shadow Width
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="shadow_width" name="shadow_width" min="0" max="5" step="1">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0" max="5" step="1" data-for="shadow_width" id="shadow_width_counter">
-                                        </div>
-                                    </div>
-                                </div> -->
-                                <!--                                 <div id="chat-truncation-block" class="range-block">
-                                    <label for="compact_input_area" class="range-block-title">
-                                        <span data-i18n="Chat Truncation">
-                                            Chat Truncation
-                                        </span>
-                                        <small data-i18n="(0 = unlimited)">(0 = unlimited)</small>
-                                    </label>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="chat_truncation" name="chat_truncation" min="0" max="1000" step="25">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0" max="1000" step="1" data-for="chat_truncation" id="chat_truncation_counter">
-                                        </div>
-                                    </div>
-                                </div> -->
-                                <!--                                 <div id="streaming-fps" class="range-block">
-                                    <div class="range-block-title" data-i18n="Streaming FPS">
-                                        Streaming FPS
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="streaming_fps" name="streaming_fps" min="5" max="100" step="5">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="5" max="100" step="1" data-for="streaming_fps" id="streaming_fps_counter">
-                                        </div>
-                                    </div>
-                                </div> -->
-
                             </div>
                             <hr>
                             <div name="themeToggles">
@@ -4334,8 +4263,33 @@
                         </div>
                     </div>
                     <div id="extensions_settings" class="flex1 wide50p">
+                        <div id="assets_container" class="extension_container"></div>
+                        <div id="expressions_container" class="extension_container"></div>
+                        <div id="sd_container" class="extension_container"></div>
+                        <div id="tts_container" class="extension_container"></div>
+                        <div id="rvc_container" class="extension_container"></div>
+                        <div id="stt_container" class="extension_container"></div>
+                        <div id="audio_container" class="extension_container"></div>
+                        <div id="silence_container" class="extension_container"></div>
+                        <div id="objective_container" class="extension_container"></div>
+                        <div id="blip_container" class="extension_container"></div>
+                        <div id="live2d_container" class="extension_container"></div>
+                        <div id="vrm_container" class="extension_container"></div>
+                        <div id="timelines_container" class="extension_container"></div>
                     </div>
                     <div id="extensions_settings2" class="flex1 wide50p">
+                        <div id="websearch_container" class="extension_container"></div>
+                        <div id="emulatorjs_container" class="extension_container"></div>
+                        <div id="qr_container" class="extension_container"></div>
+                        <div id="translation_container" class="extension_container"></div>
+                        <div id="caption_container" class="extension_container"></div>
+                        <div id="idle_container" class="extension_container"></div>
+                        <div id="summarize_container" class="extension_container"></div>
+                        <div id="hypebot_container" class="extension_container"></div>
+                        <div id="regex_container" class="extension_container"></div>
+                        <div id="vectors_container" class="extension_container"></div>
+                        <div id="randomizer_container" class="extension_container"></div>
+                        <div id="chromadb_container" class="extension_container"></div>
                     </div>
                     <hr class="wide100p margin0">
                     <div class="alignitemscenter flex-container justifyCenter wide100p" style="justify-content: space-between;">
@@ -4850,13 +4804,17 @@
         </div>
     </div>
     <!-- various fullscreen popups -->
-    <template id="popup_template" data-i18n="[popup-button-save]popup-button-save;[popup-button-yes]popup-button-yes;[popup-button-no]popup-button-no;[popup-button-cancel]popup-button-cancel;[popup-button-import]popup-button-import" popup-button-save="Save" popup-button-yes="Yes" popup-button-no="No" popup-button-cancel="Cancel" popup-button-import="Import"> <!-- localization data holder for popups -->
+    <template id="popup_template" data-i18n="[popup-button-save]popup-button-save;[popup-button-yes]popup-button-yes;[popup-button-no]popup-button-no;[popup-button-cancel]popup-button-cancel;[popup-button-import]popup-button-import;[popup-button-crop]popup-button-crop" popup-button-save="Save" popup-button-yes="Yes" popup-button-no="No" popup-button-cancel="Cancel" popup-button-import="Import" popup-button-crop="Crop"> <!-- localization data holder for popups -->
         <dialog class="popup">
             <div class="popup-body">
                 <div class="popup-content">
                     <h3 class="popup-header">text</h3>
                 </div>
+                <div class="popup-crop-wrap">
+                    <img class="popup-crop-image" src="">
+                </div>
                 <textarea class="popup-input text_pole result-control" rows="1" data-result="1" data-result-event="submit"></textarea>
+                <div class="popup-inputs"></div>
                 <div class="popup-controls">
                     <div class="popup-button-ok menu_button result-control" data-result="1" data-i18n="Delete">Delete</div>
                     <div class="popup-button-cancel menu_button result-control" data-result="0" data-i18n="Cancel">Cancel</div>
@@ -5399,7 +5357,7 @@
                             </div>
                         </div>
                         <div class="flex-container wide100p flexGap10">
-                            <div class="flex3 flex-container flexFlowColumn flexNoGap">
+                            <div class="flex4 flex-container flexFlowColumn flexNoGap">
                                 <div class="flex-container justifySpaceBetween">
                                     <small for="group">
                                         <span data-i18n="Inclusion Group">Inclusion Group</span>
@@ -5421,7 +5379,7 @@
                                     <input type="text" class="text_pole margin0" name="group" rows="1" data-i18n="[placeholder]Only one entry with the same label will be activated" placeholder="Only one entry with the same label will be activated">
                                 </div>
                             </div>
-                            <div class="flex1 flex-container flexFlowColumn flexNoGap" data-i18n="[title]A relative likelihood of entry activation within the group" title="A relative likelihood of entry activation within the group">
+                            <div class="flex2 flex-container flexFlowColumn flexNoGap" data-i18n="[title]A relative likelihood of entry activation within the group" title="A relative likelihood of entry activation within the group">
                                 <div class="flex-container justifySpaceBetween marginBot5">
                                     <small for="groupWeight" data-i18n="Group Weight">
                                         Group Weight
@@ -5455,6 +5413,19 @@
                                 </div>
                                 <div class="range-block-range">
                                     <input class="text_pole margin0" name="cooldown" type="number" placeholder="No cooldown" min="0" max="999999">
+                                </div>
+                            </div>
+                            <div class="flex2 flex-container flexFlowColumn flexNoGap" data-i18n="[title]Entries with a delay can't be activated until there are N messages present in the chat." title="Entries with a delay can't be activated until there are N messages present in the chat.">
+                                <div class="flex-container justifySpaceBetween marginBot5">
+                                    <small class="flex-container alignItemsBaseline" for="delay" data-i18n="Delay">
+                                        <span data-i18n="Delay">
+                                            Delay
+                                        </span>
+                                        <i class="fa-solid fa-comments fa-xs"></i>
+                                    </small>
+                                </div>
+                                <div class="range-block-range">
+                                    <input class="text_pole margin0" name="delay" type="number" placeholder="No delay" min="0" max="999999">
                                 </div>
                             </div>
                         </div>
@@ -5882,32 +5853,7 @@
             <textarea name="alternate_greetings" data-i18n="[placeholder](This will be the first message from the character that starts every chat)" placeholder="(This will be the first message from the character that starts every chat)" class="text_pole textarea_compact alternate_greeting_text" maxlength="50000" value="" autocomplete="off" rows="16"></textarea>
         </div>
     </div>
-    <div id="forbid_media_override_template" class="template_element">
-        <div class="forbid_media_override flex-container flexFlowColumn">
-            <h4 data-i18n="Forbid Media Override explanation" class="margin0">
-                Ability of the current character/group to use external media in chats.
-            </h4>
-            <small data-i18n="Forbid Media Override subtitle" class="marginBot5">
-                Media: images, videos, audio. External: not hosted on the local server.
-            </small>
-            <label class="checkbox_label" for="forbid_media_override_global">
-                <input type="radio" id="forbid_media_override_global" name="forbid_media_override" />
-                <span>
-                    <span data-i18n="Use global setting">Use global setting</span>
-                    <b class="forbid_media_global_state_forbidden">(forbidden)</b>
-                    <b class="forbid_media_global_state_allowed">(allowed)</b>
-                </span>
-            </label>
-            <label class="checkbox_label" for="forbid_media_override_forbidden">
-                <input type="radio" id="forbid_media_override_forbidden" name="forbid_media_override" />
-                <span data-i18n="Always forbidden">Always forbidden</span>
-            </label>
-            <label class="checkbox_label" for="forbid_media_override_allowed">
-                <input type="radio" id="forbid_media_override_allowed" name="forbid_media_override" />
-                <span data-i18n="Always allowed">Always allowed</span>
-            </label>
-        </div>
-    </div>
+
     <!-- chat and input bar -->
     <div id="typing_indicator_template" class="template_element">
         <div class="typing_indicator"><span class="typing_indicator_name">CHAR</span> is typing</div>
@@ -6399,9 +6345,6 @@
             </div>
         </div>
     </template>
-    <div id="rawPromptPopup" class="list-group">
-        <div id="rawPromptWrapper" class="tokenItemizingSubclass"></div>
-    </div>
     <div id="user_avatar_template" class="template_element">
         <div class="avatar-container">
             <div imgfile="" class="avatar">

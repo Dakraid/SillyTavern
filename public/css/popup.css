@@ -92,6 +92,24 @@ dialog {
     text-align: left;
 }
 
+.popup-crop-wrap {
+    margin: 10px auto;
+    max-height: 75vh;
+    max-height: 75svh;
+    max-width: 100%;
+}
+
+.popup-crop-wrap img {
+    max-width: 100%;
+    /* This rule is very important, please do not ignore this! */
+}
+
+.popup-inputs {
+    margin-top: 10px;
+    font-size: smaller;
+    opacity: 0.7;
+}
+
 .popup-input {
     margin-top: 10px;
 }
@@ -115,12 +133,10 @@ dialog {
     background-color: var(--crimson-hover);
 }
 
-.menu_button.popup-button-custom {
-    /* Custom buttons should not scale to smallest size, otherwise they will always break to multiline */
-    width: unset;
-}
-
 .popup-controls .menu_button {
+    /* Popup buttons should not scale to smallest size, otherwise they will always break to multiline if multiple words */
+    width: unset;
+
     /* Fix weird animation issue with fonts on brightness filter */
     backface-visibility: hidden;
     transform: translateZ(0);

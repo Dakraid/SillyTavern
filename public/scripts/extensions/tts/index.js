@@ -1,5 +1,5 @@
-import { callPopup, cancelTtsPlay, eventSource, event_types, isStreamingEnabled, name2, saveSettingsDebounced, substituteParams } from '../../../script.js';
-import { ModuleWorkerWrapper, doExtrasFetch, extension_settings, getApiUrl, getContext, modules } from '../../extensions.js';
+import { cancelTtsPlay, eventSource, event_types, isStreamingEnabled, name2, saveSettingsDebounced, substituteParams } from '../../../script.js';
+import { ModuleWorkerWrapper, doExtrasFetch, extension_settings, getApiUrl, getContext, modules, renderExtensionTemplateAsync } from '../../extensions.js';
 import { delay, escapeRegex, getBase64Async, getStringHash, onlyUnique } from '../../utils.js';
 import { EdgeTtsProvider } from './edge.js';
 import { ElevenLabsTtsProvider } from './elevenlabs.js';
@@ -21,6 +21,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '
 import { debounce_timeout } from '../../constants.js';
 import { SlashCommandEnumValue, enumTypes } from '../../slash-commands/SlashCommandEnumValue.js';
 import { enumIcons } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
+import { POPUP_TYPE, callGenericPopup } from '../../popup.js';
 export { talkingAnimation };
 
 const UPDATE_INTERVAL = 1000;
@@ -310,7 +311,7 @@ async function onTtsVoicesClick() {
         popupText = 'Could not load voices list. Check your API key.';
     }
 
-    callPopup(popupText, 'text');
+    callGenericPopup(popupText, POPUP_TYPE.TEXT, '', { allowVerticalScrolling: true });
 }
 
 function updateUiAudioPlayState() {
@@ -345,7 +346,7 @@ function onAudioControlClicked() {
 
 function addAudioControl() {
 
-    $('#extensionsMenu').prepend(`
+    $('#tts_wand_container').append(`
         <div id="ttsExtensionMenuItem" class="list-group-item flex-container flexGap5">
             <div id="tts_media_control" class="extensionsMenuExtensionButton "/></div>
             TTS Playback
@@ -592,6 +593,7 @@ function onEnableClick() {
     );
     updateUiAudioPlayState();
     saveSettingsDebounced();
+    $('body').toggleClass('tts', extension_settings.tts.enabled);
 }
 
 
@@ -914,7 +916,7 @@ function getCharacters(unrestricted) {
 
 function sanitizeId(input) {
     // Remove any non-alphanumeric characters except underscore (_) and hyphen (-)
-    let sanitized = input.replace(/[^a-zA-Z0-9-_]/g, '');
+    let sanitized = encodeURIComponent(input).replace(/[^a-zA-Z0-9-_]/g, '');
 
     // Ensure first character is always a letter
     if (!/^[a-zA-Z]/.test(sanitized)) {
@@ -1075,94 +1077,10 @@ export async function initVoiceMap(unrestricted = false) {
     updateVoiceMap();
 }
 
-$(document).ready(function () {
-    function addExtensionControls() {
-        const settingsHtml = `
-        <div id="tts_settings">
-            <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>TTS</b>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                </div>
-                <div class="inline-drawer-content">
-                    <div id="tts_status">
-                    </div>
-                    <span>Select TTS Provider</span> </br>
-                    <div class="tts_block">
-                        <select id="tts_provider" class="flex1">
-                        </select>
-                        <input id="tts_refresh" class="menu_button" type="submit" value="Reload" />
-                    </div>
-                    <div>
-                        <label class="checkbox_label" for="tts_enabled">
-                            <input type="checkbox" id="tts_enabled" name="tts_enabled">
-                            <small>Enabled</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_narrate_user">
-                            <input type="checkbox" id="tts_narrate_user">
-                            <small>Narrate user messages</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_auto_generation">
-                            <input type="checkbox" id="tts_auto_generation">
-                            <small>Auto Generation</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_periodic_auto_generation" title="Requires auto generation to be enabled.">
-                            <input type="checkbox" id="tts_periodic_auto_generation">
-                            <small>Narrate by paragraphs (when streaming)</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_narrate_quoted">
-                            <input type="checkbox" id="tts_narrate_quoted">
-                            <small>Only narrate "quotes"</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_narrate_dialogues">
-                            <input type="checkbox" id="tts_narrate_dialogues">
-                            <small>Ignore *text, even "quotes", inside asterisks*</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_narrate_translated_only">
-                            <input type="checkbox" id="tts_narrate_translated_only">
-                            <small>Narrate only the translated text</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_skip_codeblocks">
-                            <input type="checkbox" id="tts_skip_codeblocks">
-                            <small>Skip codeblocks</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_skip_tags">
-                            <input type="checkbox" id="tts_skip_tags">
-                            <small>Skip &lt;tagged&gt; blocks</small>
-                        </label>
-                        <label class="checkbox_label" for="tts_pass_asterisks">
-                        <input type="checkbox" id="tts_pass_asterisks">
-                        <small>Pass Asterisks to TTS Engine</small>
-                        </label>
-                    </div>
-                    <div id="playback_rate_block" class="range-block">
-                        <hr>
-                        <div class="range-block-title justifyLeft" data-i18n="Audio Playback Speed">
-                            <small>Audio Playback Speed</small>
-                        </div>
-                        <div class="range-block-range-and-counter">
-                            <div class="range-block-range">
-                                <input type="range" id="playback_rate" name="volume" min="0" max="3" step="0.05">
-                            </div>
-                            <div class="range-block-counter">
-                                <input type="number" min="0" max="3" step="0.05" data-for="playback_rate" id="playback_rate_counter">
-                            </div>
-                        </div>
-                    </div>
-                    <div id="tts_voicemap_block">
-                    </div>
-                    <hr>
-                    <form id="tts_provider_settings" class="inline-drawer-content">
-                    </form>
-                    <div class="tts_buttons">
-                        <input id="tts_voices" class="menu_button" type="submit" value="Available voices" />
-                    </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        `;
-        $('#extensions_settings').append(settingsHtml);
+jQuery(async function () {
+    async function addExtensionControls() {
+        const settingsHtml = $(await renderExtensionTemplateAsync('tts', 'settings'));
+        $('#tts_container').append(settingsHtml);
         $('#tts_refresh').on('click', onRefreshClick);
         $('#tts_enabled').on('click', onEnableClick);
         $('#tts_narrate_dialogues').on('click', onNarrateDialoguesClick);
@@ -1190,7 +1108,7 @@ $(document).ready(function () {
         $('#tts_provider').on('change', onTtsProviderChange);
         $(document).on('click', '.mes_narrate', onNarrateOneMessage);
     }
-    addExtensionControls(); // No init dependencies
+    await addExtensionControls(); // No init dependencies
     loadSettings(); // Depends on Extension Controls and loadTtsProvider
     loadTtsProvider(extension_settings.tts.currentProvider); // No dependencies
     addAudioControl(); // Depends on Extension Controls

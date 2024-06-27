@@ -82,7 +82,7 @@
     /*base variable calculated in rems*/
     --fontScale: 1;
     --mainFontSize: calc(var(--fontScale) * 15px);
-    --mainFontFamily: "Noto Sans", "Noto Color Emoji", sans-serif;
+    --mainFontFamily: "Noto Sans", sans-serif;
     --monoFontFamily: 'Noto Sans Mono', 'Courier New', Consolas, monospace;
 
     /* base variable for blur strength slider calculations */
@@ -254,10 +254,6 @@ input[type='checkbox']:focus-visible {
 .tokenItemizingSubclass {
     font-size: calc(var(--mainFontSize) * 0.8);
     color: var(--SmartThemeEmColor);
-}
-
-#rawPromptWrapper {
-    white-space: pre-wrap;
 }
 
 .tokenGraph {
@@ -462,7 +458,7 @@ code {
 kbd {
     display: inline-block;
     padding: 2px 4px;
-    font-family: Consolas, monospace;
+    font-family: var(--monoFontFamily);
     white-space: nowrap;
     /* background-color: #eeeeee; */
     background-color: rgba(255, 255, 255, 0.9);
@@ -827,7 +823,7 @@ body .panelControlBar {
 }
 
 .font-family-reset {
-    font-family:  var(--mainFontFamily);
+    font-family: var(--mainFontFamily);
     font-size: var(--mainFontSize);
     font-weight: 400;
 }
@@ -885,7 +881,8 @@ body .panelControlBar {
 }
 
 .options-content a,
-#extensionsMenu>div,
+#extensionsMenu>.extension_container>div,
+#extensionsMenu>div:not(.extension_container),
 .list-group>div,
 .list-group .list-group-item,
 #sd_dropdown .list-group span {
@@ -899,13 +896,15 @@ body .panelControlBar {
     align-items: baseline;
 }
 
-#extensionsMenu>div,
+#extensionsMenu>.extension_container>div,
+#extensionsMenu>div:not(.extension_container),
 .options-content a,
 .list-group-item {
     opacity: 0.5;
 }
 
-#extensionsMenu>div:hover,
+#extensionsMenu>.extension_container>div:hover,
+#extensionsMenu>div:not(.extension_container):hover,
 .options-content a:hover,
 .list-group-item:hover {
     opacity: 1;
@@ -4164,17 +4163,6 @@ h5 {
     grid-template-columns: 340px auto;
 }
 
-#avatarCropWrap {
-    margin: 10px auto;
-    max-height: 90%;
-    max-width: 100%;
-}
-
-#avatarToCrop {
-    max-width: 100%;
-    /* This rule is very important, please do not ignore this! */
-}
-
 body .ui-autocomplete {
     max-height: 300px;
     overflow-y: auto;
@@ -4376,8 +4364,7 @@ a {
     text-decoration: none;
 }
 
-#export_format_popup,
-#rawPromptPopup {
+#export_format_popup {
     display: none;
     z-index: 9999;
 }
@@ -4385,7 +4372,7 @@ a {
 #rawPromptPopup {
     inset: 0px auto auto 0px;
     margin: 0px;
-    transform: translate(909px, 47px);
+    transform: translate(500px, 0px);
     display: block;
     overflow-wrap: break-word;
     white-space: normal;
@@ -4404,7 +4391,8 @@ a {
     display: none;
 }
 
-#rawPopupWrapper {
+#rawPromptWrapper {
+    white-space: pre-wrap;
     word-wrap: break-word;
     width: 100%;
     text-align: start;
