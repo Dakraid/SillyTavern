@@ -35,6 +35,7 @@ import {
     setWorldInfoButtonClass,
     importWorldInfo,
     wi_anchor_position,
+    world_info_include_names,
 } from './scripts/world-info.js';
 
 import {
@@ -3500,7 +3501,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // Add WI to prompt (and also inject WI to AN value via hijack)
     // Make quiet prompt available for WIAN
     setExtensionPrompt('QUIET_PROMPT', quiet_prompt || '', extension_prompt_types.IN_PROMPT, 0, true);
-    const chatForWI = coreChat.map(x => `${x.name}: ${x.mes}`).reverse();
+    const chatForWI = coreChat.map(x => world_info_include_names ? `${x.name}: ${x.mes}` : x.mes).reverse();
     const { worldInfoString, worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth } = await getWorldInfoPrompt(chatForWI, this_max_context, dryRun);
     setExtensionPrompt('QUIET_PROMPT', '', extension_prompt_types.IN_PROMPT, 0, true);
 
@@ -5019,6 +5020,10 @@ async function sendGenerationRequest(type, data) {
  * @returns {Promise<any>} Streaming generator
  */
 async function sendStreamingRequest(type, data) {
+    if (abortController?.signal?.aborted) {
+        throw new Error('Generation was aborted.');
+    }
+
     switch (main_api) {
         case 'openai':
             return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal);
@@ -6109,7 +6114,7 @@ export function changeMainAPI() {
     }
 
     if (selectedVal === 'textgenerationwebui' || selectedVal === 'novel') {
-        console.log('enabling amount_gen for ooba/novel');
+        console.debug('enabling amount_gen for ooba/novel');
         activeItem.amountGenElem.find('input').prop('disabled', false);
         activeItem.amountGenElem.css('opacity', 1.0);
     }
