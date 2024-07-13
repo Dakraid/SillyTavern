@@ -101,6 +101,7 @@ import {
     proxies,
     loadProxyPresets,
     selected_proxy,
+    initOpenai,
 } from './scripts/openai.js';
 
 import {
@@ -155,7 +156,6 @@ import {
     ensureImageFormatSupported,
     flashHighlight,
     isTrueBoolean,
-    debouncedThrottle,
 } from './scripts/utils.js';
 import { debounce_timeout } from './scripts/constants.js';
 
@@ -915,6 +915,7 @@ async function firstLoadInit() {
     initKeyboard();
     initDynamicStyles();
     initTags();
+    initOpenai();
     await getUserAvatars(true, user_avatar);
     await getCharacters();
     await getBackgrounds();
@@ -9125,10 +9126,6 @@ jQuery(async function () {
         $('#groupCurrentMemberListToggle .inline-drawer-icon').trigger('click');
     }, 200);
 
-    $('#chat').on('wheel touchstart', () => {
-        scrollLock = true;
-    });
-
     $(document).on('click', '.api_loading', cancelStatusCheck);
 
     //////////INPUT BAR FOCUS-KEEPING LOGIC/////////////
@@ -9233,23 +9230,32 @@ jQuery(async function () {
      */
     function autoFitEditTextArea(e) {
         scroll_holder = chatElement[0].scrollTop;
-        e.style.height = '0';
-        e.style.height = `${e.scrollHeight + 4}px`;
+        e.style.height = '0px';
+        const newHeight = e.scrollHeight + 4;
+        e.style.height = `${newHeight}px`;
         is_use_scroll_holder = true;
     }
-    const autoFitEditTextAreaDebounced = debouncedThrottle(autoFitEditTextArea, debounce_timeout.short);
+    const autoFitEditTextAreaDebounced = debounce(autoFitEditTextArea, debounce_timeout.short);
     document.addEventListener('input', e => {
         if (e.target instanceof HTMLTextAreaElement && e.target.classList.contains('edit_textarea')) {
-            const immediately = e.target.scrollHeight > e.target.offsetHeight || e.target.value === '';
+            const scrollbarShown = e.target.clientWidth < e.target.offsetWidth && e.target.offsetHeight >= window.innerHeight * 0.75;
+            const immediately = (e.target.scrollHeight > e.target.offsetHeight && !scrollbarShown) || e.target.value === '';
             immediately ? autoFitEditTextArea(e.target) : autoFitEditTextAreaDebounced(e.target);
         }
     });
-    document.getElementById('chat').addEventListener('scroll', function () {
+    const chatElement = document.getElementById('chat');
+    chatElement.addEventListener('wheel', function () {
+        scrollLock = true;
+    }, { passive: true });
+    chatElement.addEventListener('touchstart', function () {
+        scrollLock = true;
+    }, { passive: true });
+    chatElement.addEventListener('scroll', function () {
         if (is_use_scroll_holder) {
             this.scrollTop = scroll_holder;
             is_use_scroll_holder = false;
         }
-    });
+    }, { passive: true });
 
     $(document).on('click', '.mes', function () {
         //when a 'delete message' parent div is clicked
