@@ -3069,7 +3069,11 @@
                                 </div>
                                 <label class="checkbox_label" title="Add Chat Start and Example Separator to a list of stopping strings." data-i18n="[title]Add Chat Start and Example Separator to a list of stopping strings.">
                                     <input id="context_use_stop_strings" type="checkbox" />
-                                    <small data-i18n="Use as Stop Strings">Use as Stop Strings</small>
+                                    <small data-i18n="Separators as Stop Strings">Separators as Stop Strings</small>
+                                </label>
+                                <label class="checkbox_label" title="Add Character and User names to a list of stopping strings." data-i18n="[title]Add Character and User names to a list of stopping strings.">
+                                    <input id="context_names_as_stop_strings" type="checkbox" />
+                                    <small data-i18n="Names as Stop Strings">Names as Stop Strings</small>
                                 </label>
                                 <label class="checkbox_label" title="Includes Post-History Instructions at the end of the prompt, if defined in the character card AND ''Prefer Char. Instructions'' is enabled.&#10;THIS IS NOT RECOMMENDED FOR TEXT COMPLETION MODELS, CAN LEAD TO BAD OUTPUT." data-i18n="[title]context_allow_post_history_instructions">
                                     <input id="context_allow_jailbreak" type="checkbox" />
@@ -3662,8 +3666,8 @@
                             <div id="OpenAllWIEntries" class="menu_button fa-solid fa-expand" title="Open all Entries" data-i18n="[title]Open all Entries"></div>
                             <div id="CloseAllWIEntries" class="menu_button fa-solid fa-compress" title="Close all Entries" data-i18n="[title]Close all Entries"></div>
                             <div id="world_popup_new" class="menu_button fa-solid fa-plus" title="New Entry" data-i18n="[title]New Entry"></div>
-                            <div id="world_backfill_memos" class="menu_button fa-solid fa-notes-medical" title="Fill empty Memo/Titles with Keywords" data-i18n="[title]Fill empty Memo/Titles with Keywords"></div><div id="world_apply_custom_sorting" class="menu_button fa-solid fa-solid fa-arrow-down-9-1"
-                                title="Apply custom sorting as Order" data-i18n="[title]Apply custom sorting as Order"></div>
+                            <div id="world_backfill_memos" class="menu_button fa-solid fa-notes-medical" title="Fill empty Memo/Titles with Keywords" data-i18n="[title]Fill empty Memo/Titles with Keywords"></div>
+                            <div id="world_apply_current_sorting" class="menu_button fa-solid fa-solid fa-arrow-down-9-1" title="Apply current sorting as Order" data-i18n="[title]Apply current sorting as Order"></div>
                             <div id="world_import_button" class="menu_button fa-solid fa-file-import" title="Import World Info" data-i18n="[title]Import World Info"></div>
                             <div id="world_popup_export" class="menu_button fa-solid fa-file-export" title="Export World Info" data-i18n="[title]Export World Info"></div>
                             <div id="world_duplicate" class="menu_button fa-solid fa-paste" title="Duplicate World Info" data-i18n="[title]Duplicate World Info"></div>
@@ -4026,7 +4030,7 @@
                                     <input type="range" id="smooth_streaming_speed" name="smooth_streaming_speed" min="0" max="100" step="10" value="50">
                                     <div class="slider_hint">
                                         <span data-i18n="Slow">Slow</span>
-                                        <span data-i18n=""></span>
+                                        <span></span>
                                         <span data-i18n="Fast">Fast</span>
                                     </div>
                                 </div>

@@ -570,6 +570,7 @@ export const system_message_types = {
  * @enum {number} Extension prompt types
  */
 export const extension_prompt_types = {
+    NONE: -1,
     IN_PROMPT: 0,
     IN_CHAT: 1,
     BEFORE_PROMPT: 2,
@@ -929,8 +930,15 @@ async function firstLoadInit() {
     initCfg();
     initLogprobs();
     doDailyExtensionUpdatesCheck();
-    hideLoader();
+    await hideLoader();
+    await fixViewport();
     await eventSource.emit(event_types.APP_READY);
+}
+
+async function fixViewport() {
+    document.body.style.position = 'absolute';
+    await delay(1);
+    document.body.style.position = '';
 }
 
 function cancelStatusCheck() {
@@ -2462,26 +2470,30 @@ export function substituteParams(content, _name1, _name2, _original, _group, _re
  * @returns {string[]} Array of stopping strings
  */
 export function getStoppingStrings(isImpersonate, isContinue) {
-    const charString = `\n${name2}:`;
-    const userString = `\n${name1}:`;
-    const result = isImpersonate ? [charString] : [userString];
+    const result = [];
 
-    result.push(userString);
+    if (power_user.context.names_as_stop_strings) {
+        const charString = `\n${name2}:`;
+        const userString = `\n${name1}:`;
+        result.push(isImpersonate ? charString : userString);
 
-    if (isContinue && Array.isArray(chat) && chat[chat.length - 1]?.is_user) {
-        result.push(charString);
-    }
+        result.push(userString);
 
-    // Add other group members as the stopping strings
-    if (selected_group) {
-        const group = groups.find(x => x.id === selected_group);
+        if (isContinue && Array.isArray(chat) && chat[chat.length - 1]?.is_user) {
+            result.push(charString);
+        }
 
-        if (group && Array.isArray(group.members)) {
-            const names = group.members
-                .map(x => characters.find(y => y.avatar == x))
-                .filter(x => x && x.name && x.name !== name2)
-                .map(x => `\n${x.name}:`);
-            result.push(...names);
+        // Add other group members as the stopping strings
+        if (selected_group) {
+            const group = groups.find(x => x.id === selected_group);
+
+            if (group && Array.isArray(group.members)) {
+                const names = group.members
+                    .map(x => characters.find(y => y.avatar == x))
+                    .filter(x => x && x.name && x.name !== name2)
+                    .map(x => `\n${x.name}:`);
+                result.push(...names);
+            }
         }
     }
 
@@ -6816,6 +6828,11 @@ export async function displayPastChats() {
             const fileName = chat['file_name'];
             const chatContent = rawChats[fileName];
 
+            // Make sure empty chats are displayed when there is no search query
+            if (Array.isArray(chatContent) && !chatContent.length && !searchQuery) {
+                return true;
+            }
+
             // // Uncomment this to return to old behavior (classical full-substring search).
             // return chatContent && Object.values(chatContent).some(message => message?.mes?.toLowerCase()?.includes(searchQuery.toLowerCase()));
 
@@ -8297,6 +8314,7 @@ const swipe_right = () => {
 };
 
 const CONNECT_API_MAP = {
+    // Default APIs not contined inside text gen / chat gen
     'kobold': {
         selected: 'kobold',
         button: '#api_button',
@@ -8308,147 +8326,48 @@ const CONNECT_API_MAP = {
         selected: 'novel',
         button: '#api_button_novel',
     },
-    'ooba': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.OOBA,
-    },
-    'tabby': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.TABBY,
-    },
-    'llamacpp': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.LLAMACPP,
-    },
-    'ollama': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.OLLAMA,
-    },
-    'mancer': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.MANCER,
-    },
-    'vllm': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.VLLM,
-    },
-    'aphrodite': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.APHRODITE,
-    },
-    'koboldcpp': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.KOBOLDCPP,
-    },
+    // KoboldCpp alias
     'kcpp': {
         selected: 'textgenerationwebui',
         button: '#api_button_textgenerationwebui',
         type: textgen_types.KOBOLDCPP,
     },
-    'togetherai': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.TOGETHERAI,
-    },
-    'openai': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.OPENAI,
-    },
+    // OpenAI alias
     'oai': {
         selected: 'openai',
         button: '#api_button_openai',
         source: chat_completion_sources.OPENAI,
     },
-    'claude': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.CLAUDE,
-    },
-    'windowai': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.WINDOWAI,
-    },
+    // OpenRouter special naming, to differentiate between chat comp and text comp
     'openrouter': {
         selected: 'openai',
         button: '#api_button_openai',
         source: chat_completion_sources.OPENROUTER,
-    },
-    'scale': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.SCALE,
-    },
-    'ai21': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.AI21,
-    },
-    'makersuite': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.MAKERSUITE,
-    },
-    'mistralai': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.MISTRALAI,
-    },
-    'custom': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.CUSTOM,
-    },
-    'cohere': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.COHERE,
-    },
-    'perplexity': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.PERPLEXITY,
-    },
-    'groq': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.GROQ,
-    },
-    '01ai': {
-        selected: 'openai',
-        button: '#api_button_openai',
-        source: chat_completion_sources.ZEROONEAI,
-    },
-    'infermaticai': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.INFERMATICAI,
-    },
-    'dreamgen': {
-        selected: 'textgenerationwebui',
-        button: '#api_button_textgenerationwebui',
-        type: textgen_types.DREAMGEN,
     },
     'openrouter-text': {
         selected: 'textgenerationwebui',
         button: '#api_button_textgenerationwebui',
         type: textgen_types.OPENROUTER,
     },
-    'huggingface': {
+};
+
+// Fill connections map from textgen_types and chat_completion_sources
+for (const textGenType of Object.values(textgen_types)) {
+    if (CONNECT_API_MAP[textGenType]) continue;
+    CONNECT_API_MAP[textGenType] = {
         selected: 'textgenerationwebui',
         button: '#api_button_textgenerationwebui',
-        type: textgen_types.HUGGINGFACE,
-    },
-};
+        type: textGenType,
+    };
+}
+for (const chatCompletionSource of Object.values(chat_completion_sources)) {
+    if (CONNECT_API_MAP[chatCompletionSource]) continue;
+    CONNECT_API_MAP[chatCompletionSource] = {
+        selected: 'openai',
+        button: '#api_button_openai',
+        source: chatCompletionSource,
+    };
+}
 
 async function selectContextCallback(_, name) {
     if (!name) {
@@ -10817,7 +10736,7 @@ jQuery(async function () {
                         //newSlider.val(manualInput)
                         //handleSlideEvent.call(newSlider, null, { value: parseFloat(manualInput) }, 'manual');
                         valueBeforeManualInput = manualInput;
-                        $(masterElement).val($(this).val()).trigger('input');
+                        $(masterElement).val($(this).val()).trigger('input', { forced: true });
                     } else {
                         //if value not ok, warn and reset to last known valid value
                         toastr.warning(`Invalid value. Must be between ${$(this).attr('min')} and ${$(this).attr('max')}`);
@@ -10843,7 +10762,7 @@ jQuery(async function () {
                 if (manualInput >= Number($(this).attr('min')) && manualInput <= Number($(this).attr('max'))) {
                     valueBeforeManualInput = manualInput;
                     //set the slider value to input value
-                    $(masterElement).val($(this).val()).trigger('input');
+                    $(masterElement).val($(this).val()).trigger('input', { forced: true });
                 } else {
                     //if value not ok, warn and reset to last known valid value
                     toastr.warning(`Invalid value. Must be between ${$(this).attr('min')} and ${$(this).attr('max')}`);
