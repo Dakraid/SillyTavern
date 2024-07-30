@@ -227,7 +227,7 @@ import { BulkEditOverlay, CharacterContextMenu } from './scripts/BulkEditOverlay
 import { loadFeatherlessModels, loadMancerModels, loadOllamaModels, loadTogetherAIModels, loadInfermaticAIModels, loadOpenRouterModels, loadVllmModels, loadAphroditeModels, loadDreamGenModels } from './scripts/textgen-models.js';
 import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, getCurrentEntityId } from './scripts/chats.js';
 import { initPresetManager } from './scripts/preset-manager.js';
-import { MacrosParser, evaluateMacros } from './scripts/macros.js';
+import { MacrosParser, evaluateMacros, getLastMessageId } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
@@ -439,6 +439,7 @@ export const event_types = {
     GROUP_CHAT_CREATED: 'group_chat_created',
     GENERATE_BEFORE_COMBINE_PROMPTS: 'generate_before_combine_prompts',
     GENERATE_AFTER_COMBINE_PROMPTS: 'generate_after_combine_prompts',
+    GENERATE_AFTER_DATA: 'generate_after_data',
     GROUP_MEMBER_DRAFTED: 'group_member_drafted',
     WORLD_INFO_ACTIVATED: 'world_info_activated',
     TEXT_COMPLETION_SETTINGS_READY: 'text_completion_settings_ready',
@@ -1720,16 +1721,24 @@ export async function replaceCurrentChat() {
 }
 
 export function showMoreMessages() {
-    let messageId = Number($('#chat').children('.mes').first().attr('mesid'));
+    const firstDisplayedMesId = $('#chat').children('.mes').first().attr('mesid');
+    let messageId = Number(firstDisplayedMesId);
     let count = power_user.chat_truncation || Number.MAX_SAFE_INTEGER;
+
+    // If there are no messages displayed, or the message somehow has no mesid, we default to one higher than last message id,
+    // so the first "new" message being shown will be the last available message
+    if (isNaN(messageId)) {
+        messageId = getLastMessageId() + 1;
+    }
 
     console.debug('Inserting messages before', messageId, 'count', count, 'chat length', chat.length);
     const prevHeight = $('#chat').prop('scrollHeight');
 
     while (messageId > 0 && count > 0) {
+        let newMessageId = messageId - 1;
+        addOneMessage(chat[newMessageId], { insertBefore: messageId >= chat.length ? null : messageId, scroll: false, forceId: newMessageId });
         count--;
         messageId--;
-        addOneMessage(chat[messageId], { insertBefore: messageId + 1, scroll: false, forceId: messageId });
     }
 
     if (messageId == 0) {
@@ -4215,6 +4224,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
     }
 
+    await eventSource.emit(event_types.GENERATE_AFTER_DATA, generate_data);
+
     if (dryRun) {
         generatedPromptCache = '';
         return Promise.resolve();
@@ -5078,7 +5089,7 @@ function setInContextMessages(lastmsg, type) {
  * @param {object} data Generation data
  * @returns {Promise<object>} Response data from the API
  */
-async function sendGenerationRequest(type, data) {
+export async function sendGenerationRequest(type, data) {
     if (main_api === 'openai') {
         return await sendOpenAIRequest(type, data.prompt, abortController.signal);
     }
@@ -5110,7 +5121,7 @@ async function sendGenerationRequest(type, data) {
  * @param {object} data Generation data
  * @returns {Promise<any>} Streaming generator
  */
-async function sendStreamingRequest(type, data) {
+export async function sendStreamingRequest(type, data) {
     if (abortController?.signal?.aborted) {
         throw new Error('Generation was aborted.');
     }
@@ -7921,6 +7932,8 @@ window['SillyTavern'].getContext = function () {
         eventTypes: event_types,
         addOneMessage: addOneMessage,
         generate: Generate,
+        sendStreamingRequest: sendStreamingRequest,
+        sendGenerationRequest: sendGenerationRequest,
         stopGeneration: stopGeneration,
         getTokenCount: getTokenCount,
         extensionPrompts: extension_prompts,
