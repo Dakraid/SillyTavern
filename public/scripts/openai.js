@@ -258,14 +258,14 @@ const default_settings = {
     group_nudge_prompt: default_group_nudge_prompt,
     scenario_format: default_scenario_format,
     personality_format: default_personality_format,
-    openai_model: 'gpt-3.5-turbo',
-    claude_model: 'claude-2.1',
+    openai_model: 'gpt-4-turbo',
+    claude_model: 'claude-3-5-sonnet-20240620',
     google_model: 'gemini-pro',
     ai21_model: 'j2-ultra',
-    mistralai_model: 'mistral-medium-latest',
-    cohere_model: 'command-r',
-    perplexity_model: 'llama-3-70b-instruct',
-    groq_model: 'llama3-70b-8192',
+    mistralai_model: 'mistral-large-latest',
+    cohere_model: 'command-r-plus',
+    perplexity_model: 'llama-3.1-70b-instruct',
+    groq_model: 'llama-3.1-70b-versatile',
     zerooneai_model: 'yi-large',
     custom_model: '',
     custom_url: '',
@@ -338,14 +338,14 @@ const oai_settings = {
     group_nudge_prompt: default_group_nudge_prompt,
     scenario_format: default_scenario_format,
     personality_format: default_personality_format,
-    openai_model: 'gpt-3.5-turbo',
-    claude_model: 'claude-2.1',
+    openai_model: 'gpt-4-turbo',
+    claude_model: 'claude-3-5-sonnet-20240620',
     google_model: 'gemini-pro',
     ai21_model: 'j2-ultra',
-    mistralai_model: 'mistral-medium-latest',
-    cohere_model: 'command-r',
-    perplexity_model: 'llama-3-70b-instruct',
-    groq_model: 'llama3-70b-8192',
+    mistralai_model: 'mistral-large-latest',
+    cohere_model: 'command-r-plus',
+    perplexity_model: 'llama-3.1-70b-instruct',
+    groq_model: 'llama-3.1-70b-versatile',
     zerooneai_model: 'yi-large',
     custom_model: '',
     custom_url: '',
@@ -4066,8 +4066,9 @@ async function onModelChange() {
         } else {
             $('#openai_max_context').attr('max', max_8k);
         }
-        oai_settings.temp_openai = Math.min(claude_max_temp, oai_settings.temp_openai);
-        $('#temp_openai').attr('max', claude_max_temp).val(oai_settings.temp_openai).trigger('input');
+        let makersuite_max_temp = (value.includes('vision') || value.includes('ultra')) ? 1.0 : 2.0;
+        oai_settings.temp_openai = Math.min(makersuite_max_temp, oai_settings.temp_openai);
+        $('#temp_openai').attr('max', makersuite_max_temp).val(oai_settings.temp_openai).trigger('input');
         oai_settings.openai_max_context = Math.min(Number($('#openai_max_context').attr('max')), oai_settings.openai_max_context);
         $('#openai_max_context').val(oai_settings.openai_max_context).trigger('input');
     }
@@ -4200,6 +4201,11 @@ async function onModelChange() {
     if (oai_settings.chat_completion_source === chat_completion_sources.PERPLEXITY) {
         if (oai_settings.max_context_unlocked) {
             $('#openai_max_context').attr('max', unlocked_max);
+        }
+        else if (oai_settings.perplexity_model.includes('llama-3.1')) {
+            const isOnline = oai_settings.perplexity_model.includes('online');
+            const contextSize = isOnline ? 128 * 1024 - 4000 : 128 * 1024;
+            $('#openai_max_context').attr('max', contextSize);
         }
         else if (['llama-3-sonar-small-32k-chat', 'llama-3-sonar-large-32k-chat'].includes(oai_settings.perplexity_model)) {
             $('#openai_max_context').attr('max', max_32k);
