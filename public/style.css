@@ -5297,6 +5297,7 @@ body:not(.movingUI) .drawer-content.maximized {
     flex-direction: column;
     gap: 10px;
     text-align: left;
+    height: 100%;
 }
 
 .onboarding span.menu_button {
