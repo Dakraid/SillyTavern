@@ -225,7 +225,7 @@ import {
 import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_settings } from './scripts/backgrounds.js';
 import { hideLoader, showLoader } from './scripts/loader.js';
 import { BulkEditOverlay, CharacterContextMenu } from './scripts/BulkEditOverlay.js';
-import { loadFeatherlessModels, loadMancerModels, loadOllamaModels, loadTogetherAIModels, loadInfermaticAIModels, loadOpenRouterModels, loadVllmModels, loadAphroditeModels, loadDreamGenModels } from './scripts/textgen-models.js';
+import { loadFeatherlessModels, loadMancerModels, loadOllamaModels, loadTogetherAIModels, loadInfermaticAIModels, loadOpenRouterModels, loadVllmModels, loadAphroditeModels, loadDreamGenModels, initTextGenModels } from './scripts/textgen-models.js';
 import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, getCurrentEntityId } from './scripts/chats.js';
 import { initPresetManager } from './scripts/preset-manager.js';
 import { MacrosParser, evaluateMacros, getLastMessageId } from './scripts/macros.js';
@@ -912,6 +912,7 @@ async function firstLoadInit() {
     await readSecretState();
     initLocales();
     initDefaultSlashCommands();
+    initTextGenModels();
     await getSystemMessages();
     sendSystemMessage(system_message_types.WELCOME);
     await getSettings();
@@ -10744,62 +10745,66 @@ jQuery(async function () {
     var isManualInput = false;
     var valueBeforeManualInput;
 
-    $('.range-block-counter input, .neo-range-input').on('click', function () {
+    $(document).on('input', '.range-block-counter input, .neo-range-input', function () {
         valueBeforeManualInput = $(this).val();
         console.log(valueBeforeManualInput);
-    })
-        .on('change', function (e) {
-            e.target.focus();
-            e.target.dispatchEvent(new Event('keyup'));
-        })
-        .on('keydown', function (e) {
-            const masterSelector = '#' + $(this).data('for');
-            const masterElement = $(masterSelector);
-            if (e.key === 'Enter') {
-                let manualInput = Number($(this).val());
-                if (isManualInput) {
-                    //disallow manual inputs outside acceptable range
-                    if (manualInput >= Number($(this).attr('min')) && manualInput <= Number($(this).attr('max'))) {
-                        //if value is ok, assign to slider and update handle text and position
-                        //newSlider.val(manualInput)
-                        //handleSlideEvent.call(newSlider, null, { value: parseFloat(manualInput) }, 'manual');
-                        valueBeforeManualInput = manualInput;
-                        $(masterElement).val($(this).val()).trigger('input', { forced: true });
-                    } else {
-                        //if value not ok, warn and reset to last known valid value
-                        toastr.warning(`Invalid value. Must be between ${$(this).attr('min')} and ${$(this).attr('max')}`);
-                        console.log(valueBeforeManualInput);
-                        //newSlider.val(valueBeforeManualInput)
-                        $(this).val(valueBeforeManualInput);
-                    }
-                }
-            }
-        })
-        .on('keyup', function () {
-            valueBeforeManualInput = $(this).val();
-            console.log(valueBeforeManualInput);
-            isManualInput = true;
-        })
-        //trigger slider changes when user clicks away
-        .on('mouseup blur', function () {
-            const masterSelector = '#' + $(this).data('for');
-            const masterElement = $(masterSelector);
+    });
+
+    $(document).on('change', '.range-block-counter input, .neo-range-input', function (e) {
+        e.target.focus();
+        e.target.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    });
+
+    $(document).on('keydown', '.range-block-counter input, .neo-range-input', function (e) {
+        const masterSelector = '#' + $(this).data('for');
+        const masterElement = $(masterSelector);
+        if (e.key === 'Enter') {
             let manualInput = Number($(this).val());
             if (isManualInput) {
-                //if value is between correct range for the slider
+                //disallow manual inputs outside acceptable range
                 if (manualInput >= Number($(this).attr('min')) && manualInput <= Number($(this).attr('max'))) {
+                    //if value is ok, assign to slider and update handle text and position
+                    //newSlider.val(manualInput)
+                    //handleSlideEvent.call(newSlider, null, { value: parseFloat(manualInput) }, 'manual');
                     valueBeforeManualInput = manualInput;
-                    //set the slider value to input value
                     $(masterElement).val($(this).val()).trigger('input', { forced: true });
                 } else {
                     //if value not ok, warn and reset to last known valid value
                     toastr.warning(`Invalid value. Must be between ${$(this).attr('min')} and ${$(this).attr('max')}`);
                     console.log(valueBeforeManualInput);
+                    //newSlider.val(valueBeforeManualInput)
                     $(this).val(valueBeforeManualInput);
                 }
             }
-            isManualInput = false;
-        });
+        }
+    });
+
+    $(document).on('keyup', '.range-block-counter input, .neo-range-input', function () {
+        valueBeforeManualInput = $(this).val();
+        console.log(valueBeforeManualInput);
+        isManualInput = true;
+    });
+
+    //trigger slider changes when user clicks away
+    $(document).on('mouseup blur', '.range-block-counter input, .neo-range-input', function () {
+        const masterSelector = '#' + $(this).data('for');
+        const masterElement = $(masterSelector);
+        let manualInput = Number($(this).val());
+        if (isManualInput) {
+            //if value is between correct range for the slider
+            if (manualInput >= Number($(this).attr('min')) && manualInput <= Number($(this).attr('max'))) {
+                valueBeforeManualInput = manualInput;
+                //set the slider value to input value
+                $(masterElement).val($(this).val()).trigger('input', { forced: true });
+            } else {
+                //if value not ok, warn and reset to last known valid value
+                toastr.warning(`Invalid value. Must be between ${$(this).attr('min')} and ${$(this).attr('max')}`);
+                console.log(valueBeforeManualInput);
+                $(this).val(valueBeforeManualInput);
+            }
+        }
+        isManualInput = false;
+    });
 
     $('.user_stats_button').on('click', function () {
         userStatsHandler();
