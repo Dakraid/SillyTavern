@@ -1879,8 +1879,12 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId) {
     }
 
     if (Number(messageId) === 0 && !isSystem && !isUser) {
+        const mesBeforeReplace = mes;
+        const chatMessage = chat[messageId];
         mes = substituteParams(mes, undefined, ch_name);
-        chat[messageId] && (chat[messageId].mes = mes);
+        if (chatMessage && chatMessage.mes === mesBeforeReplace && chatMessage.extra?.display_text !== mesBeforeReplace) {
+            chatMessage.mes = mes;
+        }
     }
 
     mesForShowdownParse = mes;
@@ -8379,6 +8383,12 @@ const CONNECT_API_MAP = {
         selected: 'openai',
         button: '#api_button_openai',
         source: chat_completion_sources.OPENAI,
+    },
+    // Google alias
+    'google': {
+        selected: 'openai',
+        button: '#api_button_openai',
+        source: chat_completion_sources.MAKERSUITE,
     },
     // OpenRouter special naming, to differentiate between chat comp and text comp
     'openrouter': {
