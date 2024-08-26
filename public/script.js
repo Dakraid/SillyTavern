@@ -84,6 +84,7 @@ import {
     context_presets,
     resetMovableStyles,
     forceCharacterEditorTokenize,
+    applyPowerUserSettings,
 } from './scripts/power-user.js';
 
 import {
@@ -415,6 +416,7 @@ export const event_types = {
     GENERATION_STOPPED: 'generation_stopped',
     GENERATION_ENDED: 'generation_ended',
     EXTENSIONS_FIRST_LOAD: 'extensions_first_load',
+    EXTENSION_SETTINGS_LOADED: 'extension_settings_loaded',
     SETTINGS_LOADED: 'settings_loaded',
     SETTINGS_UPDATED: 'settings_updated',
     GROUP_UPDATED: 'group_updated',
@@ -5344,17 +5346,10 @@ export function cleanUpMessage(getMessage, isImpersonate, isContinue, displayInc
     // Regex uses vars, so add before formatting
     getMessage = getRegexedString(getMessage, isImpersonate ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT);
 
-    if (!displayIncompleteSentences && power_user.trim_sentences) {
-        getMessage = trimToEndSentence(getMessage, power_user.include_newline);
-    }
-
     if (power_user.collapse_newlines) {
         getMessage = collapseNewlines(getMessage);
     }
 
-    if (power_user.trim_spaces) {
-        getMessage = getMessage.trim();
-    }
     // trailing invisible whitespace before every newlines, on a multiline string
     // "trailing whitespace on newlines       \nevery line of the string    \n?sample text" ->
     // "trailing whitespace on newlines\nevery line of the string\nsample text"
@@ -5443,6 +5438,14 @@ export function cleanUpMessage(getMessage, isImpersonate, isContinue, displayInc
     }
 
     if (isImpersonate) {
+        getMessage = getMessage.trim();
+    }
+
+    if (!displayIncompleteSentences && power_user.trim_sentences) {
+        getMessage = trimToEndSentence(getMessage, power_user.include_newline);
+    }
+
+    if (power_user.trim_spaces) {
         getMessage = getMessage.trim();
     }
 
@@ -6459,6 +6462,8 @@ export async function getSettings() {
         // Load power user settings
         await loadPowerUserSettings(settings, data);
 
+        applyPowerUserSettings();
+
         // Load character tags
         loadTagsSettings(settings);
 
@@ -6513,9 +6518,10 @@ export async function getSettings() {
         selected_button = settings.selected_button;
 
         if (data.enable_extensions) {
+            const enableAutoUpdate = Boolean(data.enable_extensions_auto_update);
             const isVersionChanged = settings.currentVersion !== currentVersion;
-            await loadExtensionSettings(settings, isVersionChanged);
-            eventSource.emit(event_types.EXTENSION_SETTINGS_LOADED);
+            await loadExtensionSettings(settings, isVersionChanged, enableAutoUpdate);
+            await eventSource.emit(event_types.EXTENSION_SETTINGS_LOADED);
         }
 
         firstRun = !!settings.firstRun;
