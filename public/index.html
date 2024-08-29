@@ -2797,8 +2797,11 @@
                                     </optgroup>
                                     <optgroup label="Subversions">
                                         <option value="gemini-1.5-pro-exp-0801">Gemini 1.5 Pro Experiment 2024-08-01</option>
+                                        <option value="gemini-1.5-pro-exp-0827">Gemini 1.5 Pro Experiment 2024-08-27</option>
                                         <option value="gemini-1.5-pro-latest">Gemini 1.5 Pro [latest]</option>
                                         <option value="gemini-1.5-pro-001">Gemini 1.5 Pro [001]</option>
+                                        <option value="gemini-1.5-flash-exp-0827">Gemini 1.5 Flash Experiment 2024-08-27</option>
+                                        <option value="gemini-1.5-flash-8b-exp-0827">Gemini 1.5 Flash 8B Experiment 2024-08-27</option>
                                         <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash [latest]</option>
                                         <option value="gemini-1.5-flash-001">Gemini 1.5 Flash [001]</option>
                                         <option value="gemini-1.0-pro-latest">Gemini 1.0 Pro [latest]</option>
@@ -4094,7 +4097,7 @@
                                     <input id="movingUImode" type="checkbox" />
                                     <small data-i18n="Movable UI Panels">MovingUI&nbsp;<i class="fa-solid fa-desktop"></i></small>
                                 </label>
-                                <div data-newbie-hidden id="movingUIreset" title="Reset MovingUI panel sizes/locations." class="menu_button margin0" data-i18n="[title]Reset MovingUI panel sizes/locations."><i class=" fa-solid fa-recycle margin-r5"></i> Reset</div>
+                                <div data-newbie-hidden id="movingUIreset" title="Reset MovingUI panel sizes/locations." class="menu_button margin0" data-i18n="[title]Reset MovingUI panel sizes/locations."><i class=" fa-solid fa-recycle margin-r5"></i> <span data-i18n="mui_reset">Reset</span></div>
                             </div>
                             <div data-newbie-hidden id="MovingUI-presets-block" class="flex-container alignitemscenter">
                                 <div class="flex-container alignItemsFlexEnd">
@@ -4550,6 +4553,7 @@
                                 <div data-newbie-hidden>
                                     <label for="persona_description_position" data-i18n="Position:">Position:</label>
                                     <select id="persona_description_position">
+                                        <option value="9" data-i18n="None (disabled)">None (disabled)</option>
                                         <option value="0" data-i18n="In Story String / Prompt Manager">In Story String / Prompt Manager</option>
                                         <option value="2" data-i18n="Top of Author's Note">Top of Author's Note</option>
                                         <option value="3" data-i18n="Bottom of Author's Note">Bottom of Author's Note</option>
