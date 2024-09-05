@@ -2334,7 +2334,7 @@ async function getWorldEntry(name, data, entry) {
             input.on('select2:unselect', /** @type {function(*):void} */ event => updateWorldEntryKeyOptionsCache([event.params.data], { remove: true }));
 
             select2ChoiceClickSubscribe(input, target => {
-                const key = $(target).text();
+                const key = $(target.closest('.regex-highlight, .item')).text();
                 console.debug('Editing WI key', key);
 
                 // Remove the current key from the actual selection
@@ -3813,12 +3813,12 @@ export async function checkWorldInfo(chat, maxContext, isDryRun) {
             }
 
             // Only use checks for recursion flags if the scan step was activated by recursion
-            if (scanState !== scan_state.RECURSION && entry.delayUntilRecursion) {
+            if (scanState !== scan_state.RECURSION && entry.delayUntilRecursion && !isSticky) {
                 log('suppressed by delay until recursion');
                 continue;
             }
 
-            if (scanState === scan_state.RECURSION && world_info_recursive && entry.excludeRecursion) {
+            if (scanState === scan_state.RECURSION && world_info_recursive && entry.excludeRecursion && !isSticky) {
                 log('suppressed by exclude recursion');
                 continue;
             }
@@ -3940,12 +3940,20 @@ export async function checkWorldInfo(chat, maxContext, isDryRun) {
         }
 
         console.debug(`[WI] Search done. Found ${activatedNow.size} possible entries.`);
+
+        // Sort the entries for the probability and the budget limit checks
         const newEntries = [...activatedNow]
-            .sort((a, b) => sortedEntries.indexOf(a) - sortedEntries.indexOf(b));
+            .sort((a, b) => {
+                const isASticky = timedEffects.isEffectActive('sticky', a) ? 1 : 0;
+                const isBSticky = timedEffects.isEffectActive('sticky', b) ? 1 : 0;
+                return isBSticky - isASticky || sortedEntries.indexOf(a) - sortedEntries.indexOf(b);
+            });
+
+
         let newContent = '';
         const textToScanTokens = await getTokenCountAsync(allActivatedText);
 
-        filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanState);
+        filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanState, timedEffects);
 
         console.debug('[WI] --- PROBABILITY CHECKS ---');
         for (const entry of newEntries) {
@@ -4135,12 +4143,20 @@ export async function checkWorldInfo(chat, maxContext, isDryRun) {
  * @param {WorldInfoBuffer} buffer The buffer to use for scoring
  * @param {(entry: WIScanEntry) => void} removeEntry The function to remove an entry
  * @param {number} scanState The current scan state
+ * @param {Map<string, boolean>} hasStickyMap The sticky entries map
  */
-function filterGroupsByScoring(groups, buffer, removeEntry, scanState) {
+function filterGroupsByScoring(groups, buffer, removeEntry, scanState, hasStickyMap) {
     for (const [key, group] of Object.entries(groups)) {
         // Group scoring is disabled both globally and for the group entries
         if (!world_info_use_group_scoring && !group.some(x => x.useGroupScoring)) {
             console.debug(`[WI] Skipping group scoring for group '${key}'`);
+            continue;
+        }
+
+        // If the group has any sticky entries, the rest are already removed by the timed effects filter
+        const hasAnySticky = hasStickyMap.get(key);
+        if (hasAnySticky) {
+            console.debug(`[WI] Skipping group scoring check, group '${key}' has sticky entries`);
             continue;
         }
 
@@ -4168,13 +4184,64 @@ function filterGroupsByScoring(groups, buffer, removeEntry, scanState) {
 }
 
 /**
+ * Removes entries on cooldown and forces sticky entries as winners.
+ * @param {Record<string, WIScanEntry[]>} groups The groups to filter
+ * @param {WorldInfoTimedEffects} timedEffects The timed effects to use
+ * @param {(entry: WIScanEntry) => void} removeEntry The function to remove an entry
+ * @returns {Map<string, boolean>} If any sticky entries were found
+ */
+function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
+    /** @type {Map<string, boolean>} */
+    const hasStickyMap = new Map();
+
+    for (const [key, group] of Object.entries(groups)) {
+        hasStickyMap.set(key, false);
+
+        // If the group has any sticky entries, leave only the sticky entries
+        const stickyEntries = group.filter(x => timedEffects.isEffectActive('sticky', x));
+        if (stickyEntries.length) {
+            for (const entry of group) {
+                if (stickyEntries.includes(entry)) {
+                    continue;
+                }
+
+                console.debug(`[WI] Entry ${entry.uid}`, `removed as a non-sticky loser from inclusion group '${key}'`, entry);
+                removeEntry(entry);
+            }
+
+            hasStickyMap.set(key, true);
+        }
+
+        // It should not be possible for an entry on cooldown/delay to event get into the grouping phase but @Wolfsblvt told me to leave it here.
+        const cooldownEntries = group.filter(x => timedEffects.isEffectActive('cooldown', x));
+        if (cooldownEntries.length) {
+            console.debug(`[WI] Inclusion group '${key}' has entries on cooldown. They will be removed.`, cooldownEntries);
+            for (const entry of cooldownEntries) {
+                removeEntry(entry);
+            }
+        }
+
+        const delayEntries = group.filter(x => timedEffects.isEffectActive('delay', x));
+        if (delayEntries.length) {
+            console.debug(`[WI] Inclusion group '${key}' has entries with delay. They will be removed.`, delayEntries);
+            for (const entry of delayEntries) {
+                removeEntry(entry);
+            }
+        }
+    }
+
+    return hasStickyMap;
+}
+
+/**
  * Filters entries by inclusion groups.
  * @param {object[]} newEntries Entries activated on current recursion level
  * @param {Set<object>} allActivatedEntries Set of all activated entries
  * @param {WorldInfoBuffer} buffer The buffer to use for scanning
  * @param {number} scanState The current scan state
+ * @param {WorldInfoTimedEffects} timedEffects The timed effects currently active
  */
-function filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanState) {
+function filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanState, timedEffects) {
     console.debug('[WI] --- INCLUSION GROUP CHECKS ---');
 
     const grouped = newEntries.filter(x => x.group).reduce((acc, item) => {
@@ -4204,10 +4271,18 @@ function filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanSt
         }
     }
 
-    filterGroupsByScoring(grouped, buffer, removeEntry, scanState);
+    const hasStickyMap = filterGroupsByTimedEffects(grouped, timedEffects, removeEntry);
+    filterGroupsByScoring(grouped, buffer, removeEntry, scanState, hasStickyMap);
 
     for (const [key, group] of Object.entries(grouped)) {
         console.debug(`[WI] Checking inclusion group '${key}' with ${group.length} entries`, group);
+
+        // If the group has any sticky entries, the rest are already removed by the timed effects filter
+        const hasAnySticky = hasStickyMap.get(key);
+        if (hasAnySticky) {
+            console.debug(`[WI] Skipping inclusion group check, group '${key}' has sticky entries`);
+            continue;
+        }
 
         if (Array.from(allActivatedEntries).some(x => x.group === key)) {
             console.debug(`[WI] Skipping inclusion group check, group '${key}' was already activated`);
@@ -4777,8 +4852,10 @@ jQuery(() => {
         world_info_min_activations = Number($(this).val());
         $('#world_info_min_activations_counter').val(world_info_min_activations);
 
-        if (world_info_min_activations !== 0) {
+        if (world_info_min_activations !== 0 && world_info_max_recursion_steps !== 0) {
             $('#world_info_max_recursion_steps').val(0).trigger('input');
+            flashHighlight($('#world_info_max_recursion_steps').parent()); // flash the other control to show it has changed
+            console.info('[WI] Max recursion steps set to 0, as min activations is set to', world_info_min_activations);
         } else {
             saveSettings();
         }
@@ -4840,8 +4917,10 @@ jQuery(() => {
     $('#world_info_max_recursion_steps').on('input', function () {
         world_info_max_recursion_steps = Number($(this).val());
         $('#world_info_max_recursion_steps_counter').val(world_info_max_recursion_steps);
-        if (world_info_max_recursion_steps !== 0) {
+        if (world_info_max_recursion_steps !== 0 && world_info_min_activations !== 0) {
             $('#world_info_min_activations').val(0).trigger('input');
+            flashHighlight($('#world_info_min_activations').parent()); // flash the other control to show it has changed
+            console.info('[WI] Min activations set to 0, as max recursion steps is set to', world_info_max_recursion_steps);
         } else {
             saveSettings();
         }

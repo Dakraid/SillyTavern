@@ -78,12 +78,16 @@ function migrateInstructModeSettings(settings) {
  * Loads instruct mode settings from the given data object.
  * @param {object} data Settings data object.
  */
-export function loadInstructMode(data) {
+export async function loadInstructMode(data) {
     if (data.instruct !== undefined) {
         instruct_presets = data.instruct;
     }
 
     migrateInstructModeSettings(power_user.instruct);
+
+    $('#instruct_enabled').parent().find('i').toggleClass('toggleEnabled', !!power_user.instruct.enabled);
+    $('#instructSettingsBlock, #InstructSequencesColumn').toggleClass('disabled', !power_user.instruct.enabled);
+    $('#instruct_bind_to_context').parent().find('i').toggleClass('toggleEnabled', !!power_user.instruct.bind_to_context);
 
     controls.forEach(control => {
         const $element = $(`#${control.id}`);
@@ -96,10 +100,10 @@ export function loadInstructMode(data) {
 
         $element.on('input', async function () {
             power_user.instruct[control.property] = control.isCheckbox ? !!$(this).prop('checked') : $(this).val();
-            saveSettingsDebounced();
-            if (!control.isCheckbox) {
-                await resetScrollHeight($element);
+            if (!CSS.supports('field-sizing', 'content')) {
+                await resetScrollHeight($(this));
             }
+            saveSettingsDebounced();
         });
 
         if (control.trigger) {
@@ -152,7 +156,7 @@ export function selectInstructPreset(preset) {
     // If instruct preset is not already selected, select it
     if (preset !== power_user.instruct.preset) {
         $('#instruct_presets').val(preset).trigger('change');
-        toastr.info(`Instruct Mode: preset "${preset}" auto-selected`);
+        toastr.info(`Instruct Mode: template "${preset}" auto-selected`);
     }
 
     // If instruct mode is disabled, enable it
@@ -592,11 +596,11 @@ jQuery(() => {
         if (power_user.instruct.preset === power_user.default_instruct) {
             power_user.default_instruct = null;
             $(this).removeClass('default');
-            toastr.info('Default instruct preset cleared');
+            toastr.info('Default instruct template cleared');
         } else {
             power_user.default_instruct = power_user.instruct.preset;
             $(this).addClass('default');
-            toastr.info(`Default instruct preset set to ${power_user.default_instruct}`);
+            toastr.info(`Default instruct template set to ${power_user.default_instruct}`);
         }
 
         saveSettingsDebounced();
@@ -604,11 +608,25 @@ jQuery(() => {
 
     $('#instruct_system_same_as_user').on('input', function () {
         const state = !!$(this).prop('checked');
-        $('#instruct_system_sequence').prop('disabled', state);
-        $('#instruct_system_suffix').prop('disabled', state);
+        if (state) {
+            $('#instruct_system_sequence_block').addClass('disabled');
+            $('#instruct_system_suffix_block').addClass('disabled');
+            $('#instruct_system_sequence').prop('readOnly', true);
+            $('#instruct_system_suffix').prop('readOnly', true);
+        } else {
+            $('#instruct_system_sequence_block').removeClass('disabled');
+            $('#instruct_system_suffix_block').removeClass('disabled');
+            $('#instruct_system_sequence').prop('readOnly', false);
+            $('#instruct_system_suffix').prop('readOnly', false);
+        }
+
     });
 
     $('#instruct_enabled').on('change', function () {
+        //color toggle for the main switch
+        $('#instruct_enabled').parent().find('i').toggleClass('toggleEnabled', !!power_user.instruct.enabled);
+        $('#instructSettingsBlock, #InstructSequencesColumn').toggleClass('disabled', !power_user.instruct.enabled);
+
         if (!power_user.instruct.bind_to_context) {
             return;
         }
@@ -620,6 +638,10 @@ jQuery(() => {
             // When instruct mode gets disabled, select default context preset
             selectContextPreset(power_user.default_context);
         }
+    });
+
+    $('#instruct_bind_to_context').on('change', function () {
+        $('#instruct_bind_to_context').parent().find('i').toggleClass('toggleEnabled', !!power_user.instruct.bind_to_context);
     });
 
     $('#instruct_presets').on('change', function () {
@@ -641,7 +663,8 @@ jQuery(() => {
                 if (control.isCheckbox) {
                     $element.prop('checked', power_user.instruct[control.property]).trigger('input');
                 } else {
-                    $element.val(power_user.instruct[control.property]).trigger('input');
+                    $element.val(power_user.instruct[control.property]);
+                    $element.trigger('input');
                 }
             }
         });

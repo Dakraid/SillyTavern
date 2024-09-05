@@ -1,4 +1,4 @@
-import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, shouldSendOnEnter } from './scripts/RossAscends-mods.js';
+import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, shouldSendOnEnter, addSafariPatch } from './scripts/RossAscends-mods.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
@@ -78,8 +78,6 @@ import {
     renderStoryString,
     sortEntitiesList,
     registerDebugFunction,
-    ui_mode,
-    switchSimpleMode,
     flushEphemeralStoppingStrings,
     context_presets,
     resetMovableStyles,
@@ -454,7 +452,9 @@ export const event_types = {
     // TODO: Naming convention is inconsistent with other events
     CHARACTER_DELETED: 'characterDeleted',
     CHARACTER_DUPLICATED: 'character_duplicated',
-    SMOOTH_STREAM_TOKEN_RECEIVED: 'smooth_stream_token_received',
+    /** @deprecated The event is aliased to STREAM_TOKEN_RECEIVED. */
+    SMOOTH_STREAM_TOKEN_RECEIVED: 'stream_token_received',
+    STREAM_TOKEN_RECEIVED: 'stream_token_received',
     FILE_ATTACHMENT_DELETED: 'file_attachment_deleted',
     WORLDINFO_FORCE_ACTIVATE: 'worldinfo_force_activate',
     OPEN_CHARACTER_LIBRARY: 'open_character_library',
@@ -484,9 +484,10 @@ const promptStorage = new localforage.createInstance({ name: 'SillyTavern_Prompt
 export let itemizedPrompts = [];
 
 export const systemUserName = 'SillyTavern System';
+export const neutralCharacterName = 'Assistant';
 let default_user_name = 'User';
 export let name1 = default_user_name;
-export let name2 = 'SillyTavern System';
+export let name2 = systemUserName;
 export let chat = [];
 let chatSaveTimeout;
 let importFlashTimeout;
@@ -563,6 +564,8 @@ export const system_message_types = {
     FORMATTING: 'formatting',
     HOTKEYS: 'hotkeys',
     MACROS: 'macros',
+    WELCOME_PROMPT: 'welcome_prompt',
+    ASSISTANT_NOTE: 'assistant_note',
 };
 
 /**
@@ -679,6 +682,26 @@ async function getSystemMessages() {
             is_user: false,
             is_system: true,
             mes: 'Click here to return to the previous chat: <a class="bookmark_link" file_name="{0}" href="javascript:void(null);">Return</a>',
+        },
+        welcome_prompt: {
+            name: systemUserName,
+            force_avatar: system_avatar,
+            is_user: false,
+            is_system: true,
+            mes: await renderTemplateAsync('welcomePrompt'),
+            extra: {
+                isSmallSys: true,
+            },
+        },
+        assistant_note: {
+            name: systemUserName,
+            force_avatar: system_avatar,
+            is_user: false,
+            is_system: true,
+            mes: await renderTemplateAsync('assistantNote'),
+            extra: {
+                isSmallSys: true,
+            },
         },
     };
 }
@@ -916,6 +939,7 @@ async function firstLoadInit() {
         throw new Error('Initialization failed');
     }
 
+    addSafariPatch();
     await getClientVersion();
     await readSecretState();
     initLocales();
@@ -923,6 +947,7 @@ async function firstLoadInit() {
     initTextGenModels();
     await getSystemMessages();
     sendSystemMessage(system_message_types.WELCOME);
+    sendSystemMessage(system_message_types.WELCOME_PROMPT);
     await getSettings();
     initKeyboard();
     initDynamicStyles();
@@ -1848,7 +1873,7 @@ export async function reloadCurrentChat() {
 /**
  * Send the message currently typed into the chat box.
  */
-export function sendTextareaMessage() {
+export async function sendTextareaMessage() {
     if (is_send_press) return;
     if (isExecutingCommandsFromChatInput) return;
 
@@ -1864,6 +1889,10 @@ export function sendTextareaMessage() {
         !chat[chat.length - 1]['is_system']
     ) {
         generateType = 'continue';
+    }
+
+    if (textareaText && !selected_group && this_chid === undefined && name2 !== neutralCharacterName) {
+        await newAssistantChat();
     }
 
     Generate(generateType);
@@ -1945,9 +1974,7 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId) {
         mes = mes.replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     }
 
-    if (this_chid === undefined && !selected_group) {
-        mes = mes.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
-    } else if (!isSystem) {
+    if (!isSystem) {
         // Save double quotes in tags as a special character to prevent them from being encoded
         if (!power_user.encode_tags) {
             mes = mes.replace(/<([^>]+)>/g, function (_, contents) {
@@ -1985,13 +2012,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId) {
             return match.replace(/&amp;/g, '&');
         });
     }
-
-    /*
-    // Hides bias from empty messages send with slash commands
-    if (isSystem) {
-        mes = mes.replace(/\{\{[\s\S]*?\}\}/gm, "");
-    }
-    */
 
     if (!power_user.allow_name2_display && ch_name && !isUser && !isSystem) {
         mes = mes.replace(new RegExp(`(^|\n)${escapeRegex(ch_name)}:`, 'g'), '$1');
@@ -2798,21 +2818,22 @@ export function baseChatReplace(value, name1, name2) {
  */
 export function getCharacterCardFields() {
     const result = { system: '', mesExamples: '', description: '', personality: '', persona: '', scenario: '', jailbreak: '', version: '' };
+    result.persona = baseChatReplace(power_user.persona_description?.trim(), name1, name2);
+
     const character = characters[this_chid];
 
     if (!character) {
         return result;
     }
 
-    const scenarioText = chat_metadata['scenario'] || characters[this_chid]?.scenario;
-    result.description = baseChatReplace(characters[this_chid].description?.trim(), name1, name2);
-    result.personality = baseChatReplace(characters[this_chid].personality?.trim(), name1, name2);
+    const scenarioText = chat_metadata['scenario'] || character.scenario || '';
+    result.description = baseChatReplace(character.description?.trim(), name1, name2);
+    result.personality = baseChatReplace(character.personality?.trim(), name1, name2);
     result.scenario = baseChatReplace(scenarioText.trim(), name1, name2);
-    result.mesExamples = baseChatReplace(characters[this_chid].mes_example?.trim(), name1, name2);
-    result.persona = baseChatReplace(power_user.persona_description?.trim(), name1, name2);
-    result.system = power_user.prefer_character_prompt ? baseChatReplace(characters[this_chid].data?.system_prompt?.trim(), name1, name2) : '';
-    result.jailbreak = power_user.prefer_character_jailbreak ? baseChatReplace(characters[this_chid].data?.post_history_instructions?.trim(), name1, name2) : '';
-    result.version = characters[this_chid].data?.character_version ?? '';
+    result.mesExamples = baseChatReplace(character.mes_example?.trim(), name1, name2);
+    result.system = power_user.prefer_character_prompt ? baseChatReplace(character.data?.system_prompt?.trim(), name1, name2) : '';
+    result.jailbreak = power_user.prefer_character_jailbreak ? baseChatReplace(character.data?.post_history_instructions?.trim(), name1, name2) : '';
+    result.version = character.data?.character_version ?? '';
 
     if (selected_group) {
         const groupCards = getGroupCharacterCards(selected_group, Number(this_chid));
@@ -3122,6 +3143,7 @@ class StreamingProcessor {
                 if (logprobs) {
                     this.messageLogprobs.push(...(Array.isArray(logprobs) ? logprobs : [logprobs]));
                 }
+                await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
                 await sw.tick(() => this.onProgressStreaming(this.messageId, this.continueMessage + text));
             }
             const seconds = (timestamps[timestamps.length - 1] - timestamps[0]) / 1000;
@@ -3398,14 +3420,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         quiet_prompt = main_api == 'novel' && !quietToLoud ? adjustNovelInstructionPrompt(quiet_prompt) : quiet_prompt;
     }
 
-    const isChatValid = online_status !== 'no_connection' && this_chid !== undefined;
+    const hasBackendConnection = online_status !== 'no_connection';
 
     // We can't do anything because we're not in a chat right now. (Unless it's a dry run, in which case we need to
     // assemble the prompt so we can count its tokens regardless of whether a chat is active.)
-    if (!dryRun && !isChatValid) {
-        if (this_chid === undefined) {
-            toastr.warning('Сharacter is not selected');
-        }
+    if (!dryRun && !hasBackendConnection) {
         is_send_press = false;
         return Promise.resolve();
     }
@@ -3491,9 +3510,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             setExtensionPrompt('DEPTH_PROMPT_' + index, value.text, extension_prompt_types.IN_CHAT, value.depth, extension_settings.note.allowWIScan, role);
         });
     } else {
-        const depthPromptText = baseChatReplace(characters[this_chid].data?.extensions?.depth_prompt?.prompt?.trim(), name1, name2) || '';
-        const depthPromptDepth = characters[this_chid].data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default;
-        const depthPromptRole = getExtensionPromptRoleByName(characters[this_chid].data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
+        const depthPromptText = baseChatReplace(characters[this_chid]?.data?.extensions?.depth_prompt?.prompt?.trim(), name1, name2) || '';
+        const depthPromptDepth = characters[this_chid]?.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default;
+        const depthPromptRole = getExtensionPromptRoleByName(characters[this_chid]?.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
         setExtensionPrompt('DEPTH_PROMPT', depthPromptText, extension_prompt_types.IN_CHAT, depthPromptDepth, extension_settings.note.allowWIScan, depthPromptRole);
     }
 
@@ -5903,11 +5922,16 @@ export function saveChatDebounced() {
     }, 1000);
 }
 
-export async function saveChat(chat_name, withMetadata, mesId) {
+export async function saveChat(chatName, withMetadata, mesId) {
     const metadata = { ...chat_metadata, ...(withMetadata || {}) };
-    let file_name = chat_name ?? characters[this_chid]?.chat;
+    const fileName = chatName ?? characters[this_chid]?.chat;
 
-    if (!file_name) {
+    if (!fileName && name2 === neutralCharacterName) {
+        // TODO: Do something for a temporary chat with no character.
+        return;
+    }
+
+    if (!fileName) {
         console.warn('saveChat called without chat_name and no chat file found');
         return;
     }
@@ -5948,7 +5972,7 @@ export async function saveChat(chat_name, withMetadata, mesId) {
         url: '/api/chats/save',
         data: JSON.stringify({
             ch_name: characters[this_chid].name,
-            file_name: file_name,
+            file_name: fileName,
             chat: save_chat,
             avatar_url: characters[this_chid].avatar,
         }),
@@ -6320,15 +6344,11 @@ export function setUserName(value) {
 }
 
 async function doOnboarding(avatarId) {
-    let simpleUiMode = false;
     const template = $('#onboarding_template .onboarding');
-    template.find('input[name="enable_simple_mode"]').on('input', function () {
-        simpleUiMode = $(this).is(':checked');
-    });
-    let userName = await callGenericPopup(template, POPUP_TYPE.INPUT, currentUser?.name || name1, { rows: 2, wide: true, large: true });
+    let userName = await callGenericPopup(template, POPUP_TYPE.INPUT, currentUser?.name || name1, { rows: 2, wider: true, cancelButton: false });
 
     if (userName) {
-        userName = userName.replace('\n', ' ');
+        userName = String(userName).replace('\n', ' ');
         setUserName(userName);
         console.log(`Binding persona ${avatarId} to name ${userName}`);
         power_user.personas[avatarId] = userName;
@@ -6336,12 +6356,6 @@ async function doOnboarding(avatarId) {
             description: '',
             position: persona_description_positions.IN_PROMPT,
         };
-    }
-
-    if (simpleUiMode) {
-        power_user.ui_mode = ui_mode.SIMPLE;
-        $('#ui_mode_select').val(power_user.ui_mode);
-        switchSimpleMode();
     }
 }
 
@@ -6466,6 +6480,7 @@ export async function getSettings() {
         // Load power user settings
         await loadPowerUserSettings(settings, data);
 
+        // Apply theme toggles from power user settings
         applyPowerUserSettings();
 
         // Load character tags
@@ -6673,7 +6688,7 @@ function updateMessage(div) {
 function openMessageDelete(fromSlashCommand) {
     closeMessageEditor();
     hideSwipeButtons();
-    if (fromSlashCommand || (this_chid != undefined && !is_send_press) || (selected_group && !is_group_generating)) {
+    if (fromSlashCommand || (!is_send_press) || (selected_group && !is_group_generating)) {
         $('#dialogue_del_mes').css('display', 'block');
         $('#send_form').css('display', 'none');
         $('.del_checkbox').each(function () {
@@ -7462,6 +7477,53 @@ export function hideSwipeButtons() {
     $('#chat').find('.swipe_left').css('display', 'none');
 }
 
+/**
+ * Deletes a swipe from the chat.
+ *
+ * @param {number?} swipeId - The ID of the swipe to delete. If not provided, the current swipe will be deleted.
+ * @returns {Promise<number>|undefined} - The ID of the new swipe after deletion.
+ */
+export async function deleteSwipe(swipeId = null) {
+    if (swipeId && (isNaN(swipeId) || swipeId < 0)) {
+        toastr.warning(`Invalid swipe ID: ${swipeId + 1}`);
+        return;
+    }
+
+    const lastMessage = chat[chat.length - 1];
+    if (!lastMessage || !Array.isArray(lastMessage.swipes) || !lastMessage.swipes.length) {
+        toastr.warning('No messages to delete swipes from.');
+        return;
+    }
+
+    if (lastMessage.swipes.length <= 1) {
+        toastr.warning('Can\'t delete the last swipe.');
+        return;
+    }
+
+    swipeId = swipeId ?? lastMessage.swipe_id;
+
+    if (swipeId < 0 || swipeId >= lastMessage.swipes.length) {
+        toastr.warning(`Invalid swipe ID: ${swipeId + 1}`);
+        return;
+    }
+
+    lastMessage.swipes.splice(swipeId, 1);
+
+    if (Array.isArray(lastMessage.swipe_info) && lastMessage.swipe_info.length) {
+        lastMessage.swipe_info.splice(swipeId, 1);
+    }
+
+    // Select the next swip, or the one before if it was the last one
+    const newSwipeId = Math.min(swipeId, lastMessage.swipes.length - 1);
+    lastMessage.swipe_id = newSwipeId;
+    lastMessage.mes = lastMessage.swipes[newSwipeId];
+
+    await saveChatConditional();
+    await reloadCurrentChat();
+
+    return newSwipeId;
+}
+
 export async function saveMetadata() {
     if (selected_group) {
         await editGroup(selected_group, true, false);
@@ -8005,7 +8067,7 @@ window['SillyTavern'].getContext = function () {
         registerHelper: () => { },
         registerMacro: MacrosParser.registerMacro.bind(MacrosParser),
         unregisterMacro: MacrosParser.unregisterMacro.bind(MacrosParser),
-        registedDebugFunction: registerDebugFunction,
+        registerDebugFunction: registerDebugFunction,
         /** @deprecated Use renderExtensionTemplateAsync instead. */
         renderExtensionTemplate: renderExtensionTemplate,
         renderExtensionTemplateAsync: renderExtensionTemplateAsync,
@@ -8179,6 +8241,11 @@ function swipe_left() {      // when we swipe left..but no generation.
  * @returns {Promise<string>} Branch file name
  */
 async function branchChat(mesId) {
+    if (this_chid === undefined && !selected_group) {
+        toastr.info('No character selected.', 'Branch creation aborted');
+        return;
+    }
+
     const fileName = await createBranch(mesId);
     await saveItemizedPrompts(fileName);
 
@@ -8446,7 +8513,7 @@ async function selectContextCallback(_, name) {
     const result = fuse.search(name);
 
     if (result.length === 0) {
-        toastr.warning(`Context preset "${name}" not found`);
+        toastr.warning(`Context template "${name}" not found`);
         return '';
     }
 
@@ -8465,7 +8532,7 @@ async function selectInstructCallback(_, name) {
     const result = fuse.search(name);
 
     if (result.length === 0) {
-        toastr.warning(`Instruct preset "${name}" not found`);
+        toastr.warning(`Instruct template "${name}" not found`);
         return '';
     }
 
@@ -8916,6 +8983,14 @@ async function removeCharacterFromUI() {
     saveSettingsDebounced();
 }
 
+async function newAssistantChat() {
+    await clearChat();
+    chat.splice(0, chat.length);
+    chat_metadata = {};
+    setCharacterName(neutralCharacterName);
+    sendSystemMessage(system_message_types.ASSISTANT_NOTE);
+}
+
 function doTogglePanels() {
     $('#option_settings').trigger('click');
     return '';
@@ -8939,6 +9014,12 @@ function addDebugFunctions() {
         await saveChatConditional();
         await reloadCurrentChat();
     };
+
+    registerDebugFunction('forceOnboarding', 'Force onboarding', 'Forces the onboarding process to restart.', async () => {
+        firstRun = true;
+        await saveSettings();
+        location.reload();
+    });
 
     registerDebugFunction('backfillTokenCounts', 'Backfill token counters',
         `Recalculates token counts of all messages in the current chat to refresh the counters.
@@ -8975,8 +9056,8 @@ API: ${getSettingsContents.main_api}
 API Type: ${getSettingsContents[getSettingsContents.main_api + '_settings'].type}
 API server: ${getSettingsContents.api_server}
 Model: ${getContextContents.onlineStatus}
-Context Preset: ${power_user.context.preset}
-Instruct Preset: ${power_user.instruct.preset}
+Context Template: ${power_user.context.preset}
+Instruct Template: ${power_user.instruct.preset}
 API Settings: ${JSON.stringify(getSettingsContents[getSettingsContents.main_api + '_settings'], null, 2)}
 \`\`\`
     `;
@@ -9101,6 +9182,27 @@ jQuery(async function () {
         helpString: 'Closes the current chat.',
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'tempchat',
+        callback: () => {
+            return new Promise((resolve, reject) => {
+                const eventCallback = async (chatId) => {
+                    if (chatId) {
+                        return reject('Not in a temporary chat');
+                    }
+                    await newAssistantChat();
+                    return resolve('');
+                };
+                eventSource.once(event_types.CHAT_CHANGED, eventCallback);
+                doCloseChat();
+                setTimeout(() => {
+                    reject('Failed to open temporary chat');
+                    eventSource.removeListener(event_types.CHAT_CHANGED, eventCallback);
+                }, debounce_timeout.relaxed);
+            });
+        },
+        helpString: 'Opens a temporary chat with Assistant.',
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'panels',
         callback: doTogglePanels,
         aliases: ['togglepanels'],
@@ -9114,17 +9216,17 @@ jQuery(async function () {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'instruct',
         callback: selectInstructCallback,
-        returns: 'current preset',
+        returns: 'current template',
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'instruct preset name',
+                description: 'instruct template name',
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: () => instruct_presets.map(preset => new SlashCommandEnumValue(preset.name, null, enumTypes.enum, enumIcons.preset)),
             }),
         ],
         helpString: `
             <div>
-                Selects instruct mode preset by name. Gets the current instruct if no name is provided.
+                Selects instruct mode template by name. Gets the current instruct template if no name is provided.
             </div>
             <div>
                 <strong>Example:</strong>
@@ -9152,7 +9254,7 @@ jQuery(async function () {
         returns: 'template name',
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'context preset name',
+                description: 'context template name',
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: () => context_presets.map(preset => new SlashCommandEnumValue(preset.name, null, enumTypes.enum, enumIcons.preset)),
             }),
@@ -9755,6 +9857,9 @@ jQuery(async function () {
 
                 await doNewChat({ deleteCurrentChat: deleteCurrentChat });
             }
+            if (!selected_group && this_chid === undefined && !is_send_press) {
+                await newAssistantChat();
+            }
         }
 
         else if (id == 'option_regenerate') {
@@ -9805,8 +9910,9 @@ jQuery(async function () {
                 $('#rm_button_selected_ch').children('h2').text('');
                 select_rm_characters();
                 sendSystemMessage(system_message_types.WELCOME);
-                eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
+                sendSystemMessage(system_message_types.WELCOME_PROMPT);
                 await getClientVersion();
+                await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
             } else {
                 toastr.info('Please stop the message generation first.');
             }
@@ -10003,7 +10109,7 @@ jQuery(async function () {
     }
     else {
         $(document).on('pointerup', '.mes_copy', function () {
-            if (this_chid !== undefined || selected_group) {
+            if (this_chid !== undefined || selected_group || name2 === neutralCharacterName) {
                 try {
                     const messageId = $(this).closest('.mes').attr('mesid');
                     const text = chat[messageId]['mes'];
@@ -10027,7 +10133,7 @@ jQuery(async function () {
     //********************
     //***Message Editor***
     $(document).on('click', '.mes_edit', async function () {
-        if (this_chid !== undefined || selected_group) {
+        if (this_chid !== undefined || selected_group || name2 === neutralCharacterName) {
             // Previously system messages we're allowed to be edited
             /*const message = $(this).closest(".mes");
 
@@ -10148,7 +10254,7 @@ jQuery(async function () {
         }
     });
 
-    $(document).on('click', '.mes_edit_cancel', function () {
+    $(document).on('click', '.mes_edit_cancel', async function () {
         let text = chat[this_edit_mes_id]['mes'];
 
         $(this).closest('.mes_block').find('.mes_text').empty();
@@ -10166,6 +10272,8 @@ jQuery(async function () {
             ));
         appendMediaToMessage(chat[this_edit_mes_id], $(this).closest('.mes'));
         addCopyToCodeBlocks($(this).closest('.mes'));
+
+        await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
         this_edit_mes_id = undefined;
     });
 
@@ -10277,19 +10385,12 @@ jQuery(async function () {
         if (deleteOnlySwipe) {
             const message = chat[this_edit_mes_id];
             const swipe_id = message.swipe_id;
-            message.swipes.splice(swipe_id, 1);
-            if (Array.isArray(message.swipe_info) && message.swipe_info.length) {
-                message.swipe_info.splice(swipe_id, 1);
-            }
-            if (swipe_id > 0) {
-                $('.swipe_left:last').click();
-            } else {
-                $('.swipe_right:last').click();
-            }
-        } else {
-            chat.splice(this_edit_mes_id, 1);
-            messageElement.remove();
+            await deleteSwipe(swipe_id);
+            return;
         }
+
+        chat.splice(this_edit_mes_id, 1);
+        messageElement.remove();
 
         let startFromZero = Number(this_edit_mes_id) === 0;
 
@@ -10515,10 +10616,12 @@ jQuery(async function () {
             }
 
             // Set the height of "autoSetHeight" textareas within the drawer to their scroll height
-            $(this).closest('.drawer').find('.drawer-content textarea.autoSetHeight').each(async function () {
-                await resetScrollHeight($(this));
-                return;
-            });
+            if (!CSS.supports('field-sizing', 'content')) {
+                $(this).closest('.drawer').find('.drawer-content textarea.autoSetHeight').each(async function () {
+                    await resetScrollHeight($(this));
+                    return;
+                });
+            }
 
         } else if (drawerWasOpenAlready) { //to close manually
             icon.toggleClass('closedIcon openIcon');
@@ -10590,10 +10693,12 @@ jQuery(async function () {
         $(this).closest('.inline-drawer').find('.inline-drawer-content').stop().slideToggle();
 
         // Set the height of "autoSetHeight" textareas within the inline-drawer to their scroll height
-        $(this).closest('.inline-drawer').find('.inline-drawer-content textarea.autoSetHeight').each(async function () {
-            await resetScrollHeight($(this));
-            return;
-        });
+        if (!CSS.supports('field-sizing', 'content')) {
+            $(this).closest('.inline-drawer').find('.inline-drawer-content textarea.autoSetHeight').each(async function () {
+                await resetScrollHeight($(this));
+                return;
+            });
+        }
     });
 
     $(document).on('click', '.inline-drawer-maximize', function () {
@@ -10624,7 +10729,7 @@ jQuery(async function () {
             });
         }
 
-        const avatarSrc = isDataURL(thumbURL) ? thumbURL : charsPath + targetAvatarImg;
+        const avatarSrc = (isDataURL(thumbURL) || /^\/?img\/(?:.+)/.test(thumbURL)) ? thumbURL : charsPath + targetAvatarImg;
         if ($(`.zoomed_avatar[forChar="${charname}"]`).length) {
             console.debug('removing container as it already existed');
             $(`.zoomed_avatar[forChar="${charname}"]`).fadeOut(animation_duration, () => {
