@@ -47,6 +47,7 @@ import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
 import { getEventSourceStream } from './sse-stream.js';
 import {
+    createThumbnail,
     delay,
     download,
     getBase64Async,
@@ -1796,7 +1797,7 @@ async function sendOpenAIRequest(type, messages, signal) {
     const isQuiet = type === 'quiet';
     const isImpersonate = type === 'impersonate';
     const isContinue = type === 'continue';
-    const stream = oai_settings.stream_openai && !isQuiet && !isScale && !(isGoogle && oai_settings.google_model.includes('bison'));
+    const stream = oai_settings.stream_openai && !isQuiet && !isScale && !(isGoogle && oai_settings.google_model.includes('bison')) && !(isOAI && oai_settings.openai_model.startsWith('o1-'));
     const useLogprobs = !!power_user.request_token_probabilities;
     const canMultiSwipe = oai_settings.n > 1 && !isContinue && !isImpersonate && !isQuiet && (isOAI || isCustom);
 
@@ -1959,11 +1960,34 @@ async function sendOpenAIRequest(type, messages, signal) {
         generate_data['seed'] = oai_settings.seed;
     }
 
-    await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
-
     if (isFunctionCallingSupported() && !stream) {
         await registerFunctionTools(type, generate_data);
     }
+
+    if (isOAI && oai_settings.openai_model.startsWith('o1-')) {
+        generate_data.messages.forEach((msg) => {
+            if (msg.role === 'system') {
+                msg.role = 'user';
+            }
+        });
+        generate_data.max_completion_tokens = generate_data.max_tokens;
+        delete generate_data.max_tokens;
+        delete generate_data.stream;
+        delete generate_data.logprobs;
+        delete generate_data.top_logprobs;
+        delete generate_data.n;
+        delete generate_data.temperature;
+        delete generate_data.top_p;
+        delete generate_data.frequency_penalty;
+        delete generate_data.presence_penalty;
+        delete generate_data.tools;
+        delete generate_data.tool_choice;
+        delete generate_data.stop;
+        // It does support logit_bias, but the tokenizer used and its effect is yet unknown.
+        // delete generate_data.logit_bias;
+    }
+
+    await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
 
     const generate_url = '/api/backends/chat-completions/generate';
     const response = await fetch(generate_url, {
@@ -2110,7 +2134,6 @@ async function checkFunctionToolCalls(data) {
             const args = toolCall.function;
             console.log('Function tool call:', toolCall);
             await eventSource.emit(event_types.LLM_FUNCTION_TOOL_CALL, args);
-            data.allowEmptyResponse = true;
         }
     }
 
@@ -2124,7 +2147,6 @@ async function checkFunctionToolCalls(data) {
                 /** @type {FunctionToolCall} */
                 const args = { name: content.name, arguments: JSON.stringify(content.input) };
                 await eventSource.emit(event_types.LLM_FUNCTION_TOOL_CALL, args);
-                data.allowEmptyResponse = true;
             }
         }
     }
@@ -2139,7 +2161,6 @@ async function checkFunctionToolCalls(data) {
             const args = { name: toolCall.name, arguments: JSON.stringify(toolCall.parameters) };
             console.log('Function tool call:', toolCall);
             await eventSource.emit(event_types.LLM_FUNCTION_TOOL_CALL, args);
-            data.allowEmptyResponse = true;
         }
     }
 }
@@ -2440,14 +2461,13 @@ class Message {
                 if (!response.ok) throw new Error('Failed to fetch image');
                 const blob = await response.blob();
                 image = await getBase64Async(blob);
-                if (oai_settings.chat_completion_source === chat_completion_sources.MAKERSUITE) {
-                    image = image.split(',')[1];
-                }
             } catch (error) {
                 console.error('Image adding skipped', error);
                 return;
             }
         }
+
+        image = await this.compressImage(image);
 
         const quality = oai_settings.inline_image_quality || default_settings.inline_image_quality;
         this.content = [
@@ -2455,10 +2475,38 @@ class Message {
             { type: 'image_url', image_url: { 'url': image, 'detail': quality } },
         ];
 
-        const tokens = await this.getImageTokenCost(image, quality);
-        this.tokens += tokens;
+        try {
+            const tokens = await this.getImageTokenCost(image, quality);
+            this.tokens += tokens;
+        } catch (error) {
+            this.tokens += Message.tokensPerImage;
+            console.error('Failed to get image token cost', error);
+        }
     }
 
+    /**
+     * Compress an image if it exceeds the size threshold for the current chat completion source.
+     * @param {string} image Data URL of the image.
+     * @returns {Promise<string>} Compressed image as a Data URL.
+     */
+    async compressImage(image) {
+        if ([chat_completion_sources.OPENROUTER, chat_completion_sources.MAKERSUITE].includes(oai_settings.chat_completion_source)) {
+            const sizeThreshold = 2 * 1024 * 1024;
+            const dataSize = image.length * 0.75;
+            const maxSide = 1024;
+            if (dataSize > sizeThreshold) {
+                image = await createThumbnail(image, maxSide);
+            }
+        }
+        return image;
+    }
+
+    /**
+     * Get the token cost of an image.
+     * @param {string} dataUrl Data URL of the image.
+     * @param {string} quality String representing the quality of the image. Can be 'low', 'auto', or 'high'.
+     * @returns {Promise<number>} The token cost of the image.
+     */
     async getImageTokenCost(dataUrl, quality) {
         if (quality === 'low') {
             return Message.tokensPerImage;
@@ -3876,6 +3924,9 @@ function onSettingsPresetChange() {
 function getMaxContextOpenAI(value) {
     if (oai_settings.max_context_unlocked) {
         return unlocked_max;
+    }
+    else if (value.startsWith('o1-')) {
+        return max_128k;
     }
     else if (value.includes('chatgpt-4o-latest') || value.includes('gpt-4-turbo') || value.includes('gpt-4o') || value.includes('gpt-4-1106') || value.includes('gpt-4-0125') || value.includes('gpt-4-vision')) {
         return max_128k;

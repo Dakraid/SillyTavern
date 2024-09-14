@@ -83,6 +83,9 @@ const showPopupHelper = {
         const content = PopupUtils.BuildTextWithHeader(header, text);
         const popup = new Popup(content, POPUP_TYPE.INPUT, defaultValue, popupOptions);
         const value = await popup.show();
+        // Return values: If empty string, we explicitly handle that as returning that empty string as "success" provided.
+        // Otherwise, all non-truthy values (false, null, undefined) are treated as "cancel" and return null.
+        if (value === '') return '';
         return value ? String(value) : null;
     },
 
@@ -92,7 +95,7 @@ const showPopupHelper = {
      * @param {string?} header - The header text for the popup.
      * @param {string?} text - The main text for the popup.
      * @param {PopupOptions} [popupOptions={}] - Options for the popup.
-     * @return {Promise<POPUP_RESULT>} A Promise that resolves with the result of the user's interaction.
+     * @return {Promise<POPUP_RESULT?>} A Promise that resolves with the result of the user's interaction.
      */
     confirm: async (header, text, popupOptions = {}) => {
         const content = PopupUtils.BuildTextWithHeader(header, text);
@@ -107,7 +110,7 @@ const showPopupHelper = {
      * @param {string?} header - The header text for the popup.
      * @param {string?} text - The main text for the popup.
      * @param {PopupOptions} [popupOptions={}] - Options for the popup.
-     * @return {Promise<POPUP_RESULT>} A Promise that resolves with the result of the user's interaction.
+     * @return {Promise<POPUP_RESULT?>} A Promise that resolves with the result of the user's interaction.
      */
     text: async (header, text, popupOptions = {}) => {
         const content = PopupUtils.BuildTextWithHeader(header, text);
