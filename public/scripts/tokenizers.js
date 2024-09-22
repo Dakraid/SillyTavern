@@ -30,21 +30,27 @@ export const tokenizers = {
     JAMBA: 14,
     QWEN2: 15,
     COMMAND_R: 16,
+    NEMO: 17,
     BEST_MATCH: 99,
 };
 
-export const SENTENCEPIECE_TOKENIZERS = [
+// A list of local tokenizers that support encoding and decoding token ids.
+export const ENCODE_TOKENIZERS = [
     tokenizers.LLAMA,
     tokenizers.MISTRAL,
     tokenizers.YI,
     tokenizers.LLAMA3,
     tokenizers.GEMMA,
     tokenizers.JAMBA,
+    tokenizers.QWEN2,
+    tokenizers.COMMAND_R,
+    tokenizers.NEMO,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,
 ];
 
+// A list of Text Completion sources that support remote tokenization.
 export const TEXTGEN_TOKENIZERS = [OOBA, TABBY, KOBOLDCPP, LLAMACPP, VLLM, APHRODITE];
 
 const TOKENIZER_URLS = {
@@ -116,6 +122,11 @@ const TOKENIZER_URLS = {
         encode: '/api/tokenizers/command-r/encode',
         decode: '/api/tokenizers/command-r/decode',
         count: '/api/tokenizers/command-r/encode',
+    },
+    [tokenizers.NEMO]: {
+        encode: '/api/tokenizers/nemo/encode',
+        decode: '/api/tokenizers/nemo/decode',
+        count: '/api/tokenizers/nemo/encode',
     },
     [tokenizers.API_TEXTGENERATIONWEBUI]: {
         encode: '/api/tokenizers/remote/textgenerationwebui/encode',
@@ -531,6 +542,7 @@ export function getTokenizerModel() {
     const jambaTokenizer = 'jamba';
     const qwen2Tokenizer = 'qwen2';
     const commandRTokenizer = 'command-r';
+    const nemoTokenizer = 'nemo';
 
     // Assuming no one would use it for different models.. right?
     if (oai_settings.chat_completion_source == chat_completion_sources.SCALE) {
@@ -624,6 +636,9 @@ export function getTokenizerModel() {
     }
 
     if (oai_settings.chat_completion_source == chat_completion_sources.MISTRALAI) {
+        if (oai_settings.mistralai_model.includes('nemo') || oai_settings.mistralai_model.includes('pixtral')) {
+            return nemoTokenizer;
+        }
         return mistralTokenizer;
     }
 
@@ -869,7 +884,7 @@ function getTextgenAPITokenizationParams(str) {
         text: str,
         api_type: textgen_settings.type,
         url: getTextGenServer(),
-        legacy_api: textgen_settings.legacy_api && (textgen_settings.type === OOBA || textgen_settings.type === APHRODITE),
+        legacy_api: textgen_settings.legacy_api && textgen_settings.type === OOBA,
         vllm_model: textgen_settings.vllm_model,
         aphrodite_model: textgen_settings.aphrodite_model,
     };

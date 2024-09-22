@@ -225,7 +225,7 @@ import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_set
 import { hideLoader, showLoader } from './scripts/loader.js';
 import { BulkEditOverlay, CharacterContextMenu } from './scripts/BulkEditOverlay.js';
 import { loadFeatherlessModels, loadMancerModels, loadOllamaModels, loadTogetherAIModels, loadInfermaticAIModels, loadOpenRouterModels, loadVllmModels, loadAphroditeModels, loadDreamGenModels, initTextGenModels, loadTabbyModels } from './scripts/textgen-models.js';
-import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, getCurrentEntityId } from './scripts/chats.js';
+import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, getCurrentEntityId, preserveNeutralChat, restoreNeutralChat } from './scripts/chats.js';
 import { initPresetManager } from './scripts/preset-manager.js';
 import { MacrosParser, evaluateMacros, getLastMessageId } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
@@ -510,6 +510,7 @@ let saveCharactersPage = 0;
 export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
 export const comment_avatar = 'img/quill.png';
+export const default_user_avatar = 'img/user-default.png';
 export let CLIENT_VERSION = 'SillyTavern:UNKNOWN:Cohee#1207'; // For Horde header
 let optionsPopper = Popper.createPopper(document.getElementById('options_button'), document.getElementById('options'), {
     placement: 'top-start',
@@ -1166,7 +1167,7 @@ async function getStatusTextgen() {
             body: JSON.stringify({
                 api_server: endpoint,
                 api_type: textgen_settings.type,
-                legacy_api: textgen_settings.legacy_api && (textgen_settings.type === OOBA || textgen_settings.type === APHRODITE),
+                legacy_api: textgen_settings.legacy_api && textgen_settings.type === OOBA,
             }),
             signal: abortStatusCheck.signal,
         });
@@ -1846,6 +1847,7 @@ export async function deleteLastMessage() {
 }
 
 export async function reloadCurrentChat() {
+    preserveNeutralChat();
     await clearChat();
     chat.length = 0;
 
@@ -1857,6 +1859,7 @@ export async function reloadCurrentChat() {
     }
     else {
         resetChatState();
+        restoreNeutralChat();
         await getCharacters();
         await printMessages();
         await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
@@ -3333,7 +3336,6 @@ function removeLastMessage() {
  */
 export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName } = {}, dryRun = false) {
     console.log('Generate entered');
-    await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
     setGenerationProgress(0);
     generation_started = new Date();
 
@@ -3356,6 +3358,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
     }
 
+    await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
+
     if (main_api == 'kobold' && kai_settings.streaming_kobold && !kai_flags.can_use_streaming) {
         toastr.error('Streaming is enabled, but the version of Kobold used does not support token streaming.', undefined, { timeOut: 10000, preventDuplicates: true });
         unblockGeneration(type);
@@ -3365,7 +3369,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     if (main_api === 'textgenerationwebui' &&
         textgen_settings.streaming &&
         textgen_settings.legacy_api &&
-        (textgen_settings.type === OOBA || textgen_settings.type === APHRODITE)) {
+        textgen_settings.type === OOBA) {
         toastr.error('Streaming is not supported for the Legacy API. Update Ooba and use new API to enable streaming.', undefined, { timeOut: 10000, preventDuplicates: true });
         unblockGeneration(type);
         return Promise.resolve();
@@ -4344,6 +4348,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             main_api: main_api,
             instruction: isInstruct ? substituteParams(power_user.prefer_character_prompt && system ? system : power_user.instruct.system_prompt) : '',
             userPersona: (power_user.persona_description_position == persona_description_positions.IN_PROMPT ? (persona || '') : ''),
+            tokenizer: getFriendlyTokenizerName(main_api).tokenizerName || '',
         };
 
         //console.log(additionalPromptStuff);
@@ -5030,7 +5035,7 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
         params.promptBiasTokensPercentage = ((params.promptBiasTokens / (params.totalTokensInPrompt)) * 100).toFixed(2);
         params.worldInfoStringTokensPercentage = ((params.worldInfoStringTokens / (params.totalTokensInPrompt)) * 100).toFixed(2);
         params.allAnchorsTokensPercentage = ((params.allAnchorsTokens / (params.totalTokensInPrompt)) * 100).toFixed(2);
-        params.selectedTokenizer = getFriendlyTokenizerName(params.this_main_api).tokenizerName;
+        params.selectedTokenizer = itemizedPrompts[thisPromptSet]?.tokenizer || getFriendlyTokenizerName(params.this_main_api).tokenizerName;
     }
     return params;
 }
@@ -5699,10 +5704,10 @@ export function deactivateSendButtons() {
 }
 
 export function resetChatState() {
+    // replaces deleted charcter name with system user since it will be displayed next.
+    name2 = (this_chid === undefined && neutralCharacterName) ? neutralCharacterName : systemUserName;
     //unsets expected chid before reloading (related to getCharacters/printCharacters from using old arrays)
     this_chid = undefined;
-    // replaces deleted charcter name with system user since it will be displayed next.
-    name2 = systemUserName;
     // sets up system user to tell user about having deleted a character
     chat.splice(0, chat.length, ...SAFETY_CHAT);
     // resets chat metadata
@@ -6918,15 +6923,13 @@ export async function displayPastChats() {
             }
             // Check whether `text` {string} includes all of the `fragments` {string[]}.
             function matchFragments(fragments, text) {
-                if (!text) {
-                    return false;
-                }
-                return fragments.every(item => text.includes(item));
+                if (!text || !text.toLowerCase) return false;
+                return fragments.every(item => text.toLowerCase().includes(item));
             }
             const fragments = makeQueryFragments(searchQuery);
             // At least one chat message must match *all* the fragments.
             // Currently, this doesn't match if the fragment matches are distributed across several chat messages.
-            return chatContent && Object.values(chatContent).some(message => matchFragments(fragments, message?.mes?.toLowerCase()));
+            return chatContent && Object.values(chatContent).some(message => matchFragments(fragments, message?.mes));
         });
 
         console.debug(filteredData);
@@ -8566,20 +8569,27 @@ async function connectAPISlash(args, text) {
         return '';
     }
 
-    $(`#main_api option[value='${apiConfig.selected || text}']`).prop('selected', true);
-    $('#main_api').trigger('change');
+    let connectionRequired = false;
 
-    if (apiConfig.source) {
+    if (main_api !== apiConfig.selected) {
+        $(`#main_api option[value='${apiConfig.selected || text}']`).prop('selected', true);
+        $('#main_api').trigger('change');
+        connectionRequired = true;
+    }
+
+    if (apiConfig.source && oai_settings.chat_completion_source !== apiConfig.source) {
         $(`#chat_completion_source option[value='${apiConfig.source}']`).prop('selected', true);
         $('#chat_completion_source').trigger('change');
+        connectionRequired = true;
     }
 
-    if (apiConfig.type) {
+    if (apiConfig.type && textgen_settings.type !== apiConfig.type) {
         $(`#textgen_type option[value='${apiConfig.type}']`).prop('selected', true);
         $('#textgen_type').trigger('change');
+        connectionRequired = true;
     }
 
-    if (apiConfig.button) {
+    if (connectionRequired && apiConfig.button) {
         $(apiConfig.button).trigger('click');
     }
 
@@ -8804,7 +8814,7 @@ export async function renameChat(oldFileName, newName) {
         is_group: !!selected_group,
         avatar_url: characters[this_chid]?.avatar,
         original_file: `${oldFileName}.jsonl`,
-        renamed_file: `${newName}.jsonl`,
+        renamed_file: `${newName.trim()}.jsonl`,
     };
 
     try {
@@ -8823,6 +8833,10 @@ export async function renameChat(oldFileName, newName) {
 
         if (data.error) {
             throw new Error('Server returned an error.');
+        }
+
+        if (data.sanitizedFileName) {
+            newName = data.sanitizedFileName;
         }
 
         if (selected_group) {
@@ -8946,15 +8960,12 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
  * It also ensures to save the settings after all the operations.
  */
 async function removeCharacterFromUI() {
+    preserveNeutralChat();
     await clearChat();
-    $('#character_cross').click();
-    this_chid = undefined;
-    characters.length = 0;
-    name2 = systemUserName;
-    chat.splice(0, chat.length, ...SAFETY_CHAT);
-    chat_metadata = {};
+    $('#character_cross').trigger('click');
+    resetChatState();
     $(document.getElementById('rm_button_selected_ch')).children('h2').text('');
-    this_chid = undefined;
+    restoreNeutralChat();
     await getCharacters();
     await printMessages();
     saveSettingsDebounced();
