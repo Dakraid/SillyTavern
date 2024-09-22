@@ -211,7 +211,7 @@ import {
     selectContextPreset,
 } from './scripts/instruct-mode.js';
 import { initLocales, t, translate } from './scripts/i18n.js';
-import { getFriendlyTokenizerName, getTokenCount, getTokenCountAsync, getTokenizerModel, initTokenizers, saveTokenCache } from './scripts/tokenizers.js';
+import { getFriendlyTokenizerName, getTokenCount, getTokenCountAsync, getTokenizerModel, initTokenizers, saveTokenCache, TOKENIZER_SUPPORTED_KEY } from './scripts/tokenizers.js';
 import {
     user_avatar,
     getUserAvatars,
@@ -244,6 +244,7 @@ import { SlashCommandEnumValue, enumTypes } from './scripts/slash-commands/Slash
 import { commonEnumProviders, enumIcons } from './scripts/slash-commands/SlashCommandCommonEnumsProvider.js';
 import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
+import { initSystemPrompts } from './scripts/sysprompt.js';
 
 //exporting functions and vars for mods
 export {
@@ -934,6 +935,8 @@ async function firstLoadInit() {
     initDefaultSlashCommands();
     initTextGenModels();
     initOpenAI();
+    initSystemPrompts();
+    await initPresetManager();
     await getSystemMessages();
     sendSystemMessage(system_message_types.WELCOME);
     sendSystemMessage(system_message_types.WELCOME_PROMPT);
@@ -946,7 +949,6 @@ async function firstLoadInit() {
     await getCharacters();
     await getBackgrounds();
     await initTokenizers();
-    await initPresetManager();
     initBackgrounds();
     initAuthorsNote();
     initPersonas();
@@ -1215,6 +1217,9 @@ async function getStatusTextgen() {
 
         // Determine instruct mode preset
         autoSelectInstructPreset(online_status);
+
+        const supportsTokenization = response.headers.get('x-supports-tokenization') === 'true';
+        supportsTokenization ? sessionStorage.setItem(TOKENIZER_SUPPORTED_KEY, 'true') : sessionStorage.removeItem(TOKENIZER_SUPPORTED_KEY);
 
         // We didn't get a 200 status code, but the endpoint has an explanation. Which means it DID connect, but I digress.
         if (online_status === 'no_connection' && data.response) {
@@ -3522,9 +3527,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         jailbreak,
     } = getCharacterCardFields();
 
-    if (isInstruct) {
-        system = power_user.prefer_character_prompt && system ? system : baseChatReplace(power_user.instruct.system_prompt, name1, name2);
-        system = formatInstructModeSystemPrompt(substituteParams(system, name1, name2, power_user.instruct.system_prompt));
+    if (power_user.sysprompt.enabled) {
+        system = power_user.prefer_character_prompt && system ? system : baseChatReplace(power_user.sysprompt.content, name1, name2);
+        system = isInstruct ? formatInstructModeSystemPrompt(substituteParams(system, name1, name2, power_user.sysprompt.content)) : system;
+    } else {
+        // Nullify if it's not enabled
+        system = '';
     }
 
     // Depth prompt (character-specific A/N)
@@ -3777,7 +3785,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         personality: personality,
         persona: power_user.persona_description_position == persona_description_positions.IN_PROMPT ? persona : '',
         scenario: scenario,
-        system: isInstruct ? system : '',
+        system: system,
         char: name2,
         user: name1,
         wiBefore: worldInfoBefore,
@@ -4351,7 +4359,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             this_max_context: this_max_context,
             padding: power_user.token_padding,
             main_api: main_api,
-            instruction: isInstruct ? substituteParams(power_user.prefer_character_prompt && system ? system : power_user.instruct.system_prompt) : '',
+            instruction: power_user.sysprompt.enabled ? substituteParams(power_user.prefer_character_prompt && system ? system : power_user.sysprompt.content) : '',
             userPersona: (power_user.persona_description_position == persona_description_positions.IN_PROMPT ? (persona || '') : ''),
             tokenizer: getFriendlyTokenizerName(main_api).tokenizerName || '',
         };
@@ -5477,7 +5485,7 @@ export function cleanUpMessage(getMessage, isImpersonate, isContinue, displayInc
     }
 
     if (!displayIncompleteSentences && power_user.trim_sentences) {
-        getMessage = trimToEndSentence(getMessage, power_user.include_newline);
+        getMessage = trimToEndSentence(getMessage);
     }
 
     if (power_user.trim_spaces) {
