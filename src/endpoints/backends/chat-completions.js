@@ -2238,7 +2238,7 @@ router.post('/generate', async function (request, response) {
                 bodyParams['reasoning'] = { effort: effort };
             }
 
-            const isClaude = /^claude-/.test(request.body.model);
+            const isClaude = /(?:^|\/)claude[-_]/.test(request.body.model);
             if (enableSystemPromptCache && isClaude) {
                 bodyParams['cache_control'] = {
                     'enabled': true,
