@@ -849,7 +849,7 @@ async function refinePrompt(prompt, args = null) {
                 cancelButton: t`Cancel`,
                 customInputs,
                 onClose: (popup) => {
-                    if (!popup.result || !args) {
+                    if (!popup.result || !(popup.inputResults instanceof Map) || !args) {
                         return;
                     }
 
