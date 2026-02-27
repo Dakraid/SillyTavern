@@ -1,4 +1,4 @@
-FROM node:lts-alpine3.23
+FROM nikolaik/python-nodejs:python3.13-nodejs24-alpine
 
 # Arguments
 ARG APP_HOME=/home/node/app
@@ -9,13 +9,12 @@ RUN apk add --no-cache gcompat tini git git-lfs su-exec shadow dos2unix
 
 # Create app directory and set ownership
 WORKDIR ${APP_HOME}
-RUN chown node:node ${APP_HOME}
 
 # Set NODE_ENV to production
 ENV NODE_ENV=production
 
 # Bundle app source and set ownership
-COPY --chown=node:node . ./
+COPY . ./
 
 RUN \
   echo "*** Install npm packages ***" && \
@@ -26,7 +25,6 @@ RUN \
 RUN \
   rm -f "config.yaml" || true && \
   mkdir -p config data plugins public/scripts/extensions/third-party backups && \
-  chown -R node:node config data plugins public/scripts/extensions/third-party backups && \
   ln -s "./config/config.yaml" "config.yaml"
 
 # Pre-compile public libraries
