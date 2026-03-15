@@ -31,7 +31,7 @@ import { copyText, escapeRegex, isFalseBoolean, isTrueBoolean, setDatasetPropert
  */
 export const reasoning_templates = [];
 
-export const DEFAULT_REASONING_TEMPLATE = 'DeepSeek';
+export const DEFAULT_REASONING_TEMPLATE = 'Think XML';
 
 /**
  * @type {Record<string, JQuery<HTMLElement>>} List of UI elements for reasoning settings
