@@ -5234,14 +5234,6 @@ async function createCharacterCallback(args) {
         toastr.warning(t`Character name is required`);
         return '';
     }
-    if (!description || typeof description !== 'string') {
-        toastr.warning(t`Character description is required`);
-        return '';
-    }
-    if (!firstMessage || typeof firstMessage !== 'string') {
-        toastr.warning(t`Character first message is required`);
-        return '';
-    }
 
     // Build the character data object matching the server's expected format
     const characterData = {
