@@ -9,11 +9,25 @@ import FormData from 'form-data';
 import urlJoin from 'url-join';
 import _ from 'lodash';
 import mime from 'mime-types';
+import civitaiPkg from '@civitai/client';
 
 import { delay, getBasicAuthHeader, isValidUrl, tryParse } from '../util.js';
+import {
+    buildCivitaiAir,
+    buildCivitaiWorkflowRequest,
+    parseCivitaiLookupInput,
+    pickCivitaiPreviewUrl,
+} from './civitai-utils.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { AIMLAPI_HEADERS } from '../constants.js';
+
+const { Air, CivitaiClient } = civitaiPkg;
+const CIVITAI_BASE_URL = 'https://civitai.com';
+const CIVITAI_ORCHESTRATION_URL = 'https://orchestration.civitai.com';
+const CIVITAI_USER_AGENT = 'SillyTavern/1.17.0 (+https://github.com/SillyTavern/SillyTavern)';
+const CIVITAI_MAX_POLL_ATTEMPTS = 80;
+const CIVITAI_POLL_DELAY_MS = 1500;
 
 /**
  * Gets the comfy workflows.
@@ -25,6 +39,208 @@ function getComfyWorkflows(directories) {
         .readdirSync(directories.comfyWorkflows)
         .filter(file => file[0] !== '.' && file.toLowerCase().endsWith('.json'))
         .sort(Intl.Collator().compare);
+}
+
+/**
+ * @typedef {'model'|'lora'} CivitaiLookupKind
+ */
+
+/**
+ * @param {string} apiKey
+ */
+function createCivitaiConsumerClient(apiKey) {
+    const client = new CivitaiClient({ auth: apiKey });
+
+    for (const value of Object.values(client)) {
+        if (value?.httpRequest?.config) {
+            value.httpRequest.config.BASE = CIVITAI_ORCHESTRATION_URL;
+        }
+    }
+
+    return client;
+}
+
+/**
+ * @param {string} pathOrUrl
+ * @param {string} [apiKey]
+ */
+async function fetchCivitaiJson(pathOrUrl, apiKey = '') {
+    const url = isValidUrl(pathOrUrl) ? pathOrUrl : urlJoin(CIVITAI_BASE_URL, pathOrUrl);
+    const headers = {
+        'Accept': 'application/json',
+        'User-Agent': CIVITAI_USER_AGENT,
+    };
+
+    if (apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`;
+    }
+
+    const result = await fetch(url, { headers });
+
+    if (!result.ok) {
+        const text = await result.text();
+        throw new Error(text || `CivitAI request failed with status ${result.status}`);
+    }
+
+    return await result.json();
+}
+
+/**
+ * @param {any} modelData
+ * @param {any} versionData
+ * @param {CivitaiLookupKind} kind
+ */
+function buildCivitaiLookupPreview(modelData, versionData, kind) {
+    const modelId = Number(versionData?.modelId || modelData?.id || 0);
+    const versionId = Number(versionData?.id || 0);
+    const baseModel = String(versionData?.baseModel || '');
+    const type = String(modelData?.type || versionData?.model?.type || '');
+    const air = String(versionData?.air || buildCivitaiAir({
+        modelId,
+        versionId,
+        type,
+        baseModel,
+    }));
+    const versions = Array.isArray(modelData?.modelVersions) ? modelData.modelVersions : [];
+
+    return {
+        kind,
+        modelId: modelId || null,
+        versionId: versionId || null,
+        air,
+        type,
+        name: String(modelData?.name || versionData?.model?.name || ''),
+        versionName: String(versionData?.name || ''),
+        creator: String(modelData?.creator?.username || ''),
+        baseModel,
+        trainedWords: Array.isArray(versionData?.trainedWords) ? versionData.trainedWords.filter(Boolean) : [],
+        imageUrl: pickCivitaiPreviewUrl(versionData?.images) || pickCivitaiPreviewUrl(modelData?.images),
+        sourceUrl: modelId && versionId ? `${CIVITAI_BASE_URL}/models/${modelId}?modelVersionId=${versionId}` : '',
+        versions: versions.map(version => ({
+            id: Number(version?.id || 0),
+            air: String(version?.air || buildCivitaiAir({
+                modelId: Number(version?.modelId || modelId || 0),
+                versionId: Number(version?.id || 0),
+                type,
+                baseModel: String(version?.baseModel || baseModel),
+            })),
+            name: String(version?.name || ''),
+            baseModel: String(version?.baseModel || ''),
+            imageUrl: pickCivitaiPreviewUrl(version?.images),
+            trainedWords: Array.isArray(version?.trainedWords) ? version.trainedWords.filter(Boolean) : [],
+        })).filter(version => version.id > 0),
+    };
+}
+
+/**
+ * @param {number} modelVersionId
+ * @param {CivitaiLookupKind} kind
+ * @param {string} [apiKey]
+ */
+async function resolveCivitaiVersion(modelVersionId, kind, apiKey = '') {
+    const versionData = await fetchCivitaiJson(`/api/v1/model-versions/${modelVersionId}`, apiKey);
+    const modelData = await fetchCivitaiJson(`/api/v1/models/${Number(versionData?.modelId)}`, apiKey);
+    const expectedType = kind === 'lora' ? 'LORA' : 'Checkpoint';
+
+    if (String(modelData?.type || '').toLowerCase() !== expectedType.toLowerCase()) {
+        throw new Error(`Expected a CivitAI ${expectedType}, but received ${modelData?.type || 'unknown'}.`);
+    }
+
+    return buildCivitaiLookupPreview(modelData, versionData, kind);
+}
+
+/**
+ * @param {number} modelId
+ * @param {CivitaiLookupKind} kind
+ * @param {number | undefined} preferredVersionId
+ * @param {string} [apiKey]
+ */
+async function resolveCivitaiModel(modelId, kind, preferredVersionId, apiKey = '') {
+    const modelData = await fetchCivitaiJson(`/api/v1/models/${modelId}`, apiKey);
+    const expectedType = kind === 'lora' ? 'LORA' : 'Checkpoint';
+
+    if (String(modelData?.type || '').toLowerCase() !== expectedType.toLowerCase()) {
+        throw new Error(`Expected a CivitAI ${expectedType}, but received ${modelData?.type || 'unknown'}.`);
+    }
+
+    const versions = Array.isArray(modelData?.modelVersions) ? modelData.modelVersions : [];
+    const selectedVersion = versions.find(version => Number(version?.id) === Number(preferredVersionId)) || versions[0];
+
+    if (!selectedVersion?.id) {
+        throw new Error('This CivitAI resource does not expose any usable versions.');
+    }
+
+    return buildCivitaiLookupPreview(modelData, selectedVersion, kind);
+}
+
+/**
+ * @param {string} value
+ * @param {CivitaiLookupKind} kind
+ * @param {string} [apiKey]
+ */
+async function resolveCivitaiLookup(value, kind, apiKey = '') {
+    const lookup = parseCivitaiLookupInput(value);
+
+    if (lookup.modelVersionId) {
+        try {
+            return await resolveCivitaiVersion(lookup.modelVersionId, kind, apiKey);
+        } catch (error) {
+            if (!lookup.modelId) {
+                return await resolveCivitaiModel(lookup.modelVersionId, kind, undefined, apiKey);
+            }
+            throw error;
+        }
+    }
+
+    if (lookup.modelId) {
+        return await resolveCivitaiModel(lookup.modelId, kind, undefined, apiKey);
+    }
+
+    if (/^(?:urn:)?air:/i.test(String(value || '').trim())) {
+        const normalized = String(value).startsWith('urn:') ? String(value) : `urn:${String(value)}`;
+        const parsed = Air.parse(normalized);
+        const versionId = Number(parsed.version);
+        if (!Number.isFinite(versionId)) {
+            throw new Error('CivitAI AIR values must include a model version ID.');
+        }
+        return await resolveCivitaiVersion(versionId, kind, apiKey);
+    }
+
+    throw new Error('Enter a valid CivitAI model URL, version URL, AIR, or numeric ID.');
+}
+
+/**
+ * @param {any} workflow
+ */
+function getCivitaiWorkflowImageUrl(workflow) {
+    const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+    const imageStep = steps.find(step => step?.$type === 'textToImage' && Array.isArray(step?.output?.images));
+    const images = Array.isArray(imageStep?.output?.images) ? imageStep.output.images : [];
+    const image = images.find(candidate => candidate?.available && candidate?.url) || images.find(candidate => candidate?.url);
+    return String(image?.url || '');
+}
+
+/**
+ * @param {import('@civitai/client').CivitaiClient} client
+ * @param {string} workflowId
+ */
+async function waitForCivitaiWorkflow(client, workflowId) {
+    for (let attempt = 0; attempt < CIVITAI_MAX_POLL_ATTEMPTS; attempt++) {
+        const workflow = await client.workflows.getWorkflow({ workflowId });
+        const status = String(workflow?.status || '').toLowerCase();
+
+        if (status === 'succeeded') {
+            return workflow;
+        }
+
+        if (['failed', 'expired', 'canceled', 'cancelled'].includes(status)) {
+            throw new Error(`CivitAI workflow ${status}.`);
+        }
+
+        await delay(CIVITAI_POLL_DELAY_MS);
+    }
+
+    throw new Error('Timed out waiting for CivitAI image generation.');
 }
 
 export const router = express.Router();
@@ -1062,6 +1278,107 @@ pollinations.post('/generate', async (request, response) => {
     }
 });
 
+const civitai = express.Router();
+
+civitai.post('/resolve', async (request, response) => {
+    try {
+        const key = readSecret(request.user.directories, SECRET_KEYS.CIVITAI);
+        const value = String(request.body?.value || '').trim();
+        const kind = String(request.body?.kind || 'model').trim().toLowerCase() === 'lora' ? 'lora' : 'model';
+
+        if (!value) {
+            return response.status(400).send('CivitAI reference is required.');
+        }
+
+        const preview = await resolveCivitaiLookup(value, kind, key || '');
+        return response.send(preview);
+    } catch (error) {
+        console.error('CivitAI lookup failed:', error);
+        return response.status(500).send(error.message);
+    }
+});
+
+civitai.post('/generate', async (request, response) => {
+    try {
+        const key = readSecret(request.user.directories, SECRET_KEYS.CIVITAI);
+
+        if (!key) {
+            console.warn('CivitAI key not found.');
+            return response.sendStatus(400);
+        }
+
+        const modelAir = String(request.body?.model || '').trim();
+        const prompt = String(request.body?.prompt || '').trim();
+        const width = Number(request.body?.width);
+        const height = Number(request.body?.height);
+
+        if (!modelAir) {
+            return response.status(400).send('CivitAI model AIR is required.');
+        }
+
+        if (!prompt) {
+            return response.status(400).send('Prompt is required.');
+        }
+
+        if (!Number.isFinite(width) || !Number.isFinite(height)) {
+            return response.status(400).send('Image width and height are required.');
+        }
+
+        const client = createCivitaiConsumerClient(key);
+        const workflowTemplate = buildCivitaiWorkflowRequest({
+            modelAir,
+            prompt,
+            negativePrompt: String(request.body?.negative_prompt || ''),
+            width,
+            height,
+            steps: Number(request.body?.steps),
+            cfgScale: Number(request.body?.guidance),
+            seed: Number(request.body?.seed),
+            clipSkip: Number(request.body?.clip_skip),
+            loras: Array.isArray(request.body?.loras) ? request.body.loras : [],
+        });
+
+        const submission = await client.workflows.submitWorkflow({
+            requestBody: workflowTemplate,
+        });
+
+        const workflowId = String(submission?.id || '').trim();
+        if (!workflowId) {
+            throw new Error('CivitAI did not return a workflow ID.');
+        }
+
+        const workflow = await waitForCivitaiWorkflow(client, workflowId);
+        const imageUrl = getCivitaiWorkflowImageUrl(workflow);
+
+        if (!imageUrl || !isValidUrl(imageUrl)) {
+            throw new Error('CivitAI workflow did not return a downloadable image URL.');
+        }
+
+        const result = await fetch(imageUrl, {
+            headers: {
+                'Accept': 'image/*',
+                'Authorization': `Bearer ${key}`,
+                'User-Agent': CIVITAI_USER_AGENT,
+            },
+        });
+
+        if (!result.ok) {
+            const text = await result.text();
+            throw new Error(text || 'Failed to fetch CivitAI image output.');
+        }
+
+        const format = mime.extension(result.headers.get('content-type') || 'image/jpeg') || 'jpg';
+        const buffer = await result.arrayBuffer();
+        return response.send({
+            image: Buffer.from(buffer).toString('base64'),
+            format,
+        });
+    } catch (error) {
+        console.error('CivitAI generation failed:', error);
+        return response.status(500).send(error.message);
+    }
+});
+
 const stability = express.Router();
 
 stability.post('/generate', async (request, response) => {
@@ -2019,6 +2336,7 @@ router.use('/together', together);
 router.use('/sdcpp', sdcpp);
 router.use('/drawthings', drawthings);
 router.use('/pollinations', pollinations);
+router.use('/civitai', civitai);
 router.use('/stability', stability);
 router.use('/huggingface', huggingface);
 router.use('/chutes', chutes);

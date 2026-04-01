@@ -44,6 +44,7 @@
                 <option value="aimlapi">AI/ML API</option>
                 <option value="bfl">BFL (Black Forest Labs)</option>
                 <option value="chutes">Chutes</option>
+                <option value="civitai">CivitAI</option>
                 <option value="comfy">ComfyUI</option>
                 <option value="drawthings">DrawThings HTTP API</option>
                 <option value="electronhub">Electron Hub</option>
@@ -117,6 +118,41 @@
             </div>
             <div data-sd-source="chutes">
                 <i data-i18n="Hint: Save an API key in the Chutes (Chat Completion) API settings to use it here.">Hint: Save an API key in the Chutes (Chat Completion) API settings to use it here.</i>
+            </div>
+            <div data-sd-source="civitai">
+                <div class="flex-container flexnowrap alignItemsBaseline marginBot5">
+                    <a href="https://github.com/civitai/civitai/wiki/REST-API-Reference" target="_blank" rel="noopener noreferrer">
+                        <strong>CivitAI</strong>
+                        <i class="fa-solid fa-share-from-square"></i>
+                    </a>
+                    <div id="sd_civitai_key" class="menu_button menu_button_icon manage-api-keys" data-key="api_key_civitai">
+                        <i class="fa-fw fa-solid fa-key"></i>
+                        <span data-i18n="Click to set">Click to set</span>
+                    </div>
+                </div>
+                <label for="sd_civitai_model_ref">Base model URL / ID</label>
+                <div class="flex-container flexnowrap">
+                    <input id="sd_civitai_model_ref" type="text" class="text_pole flex1" placeholder="https://civitai.com/models/... or model ID" value="" />
+                    <div id="sd_civitai_model_lookup" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <span>Lookup</span>
+                    </div>
+                </div>
+                <div id="sd_civitai_model_version_row" class="marginTop5" style="display:none;">
+                    <label for="sd_civitai_model_version">Version</label>
+                    <select id="sd_civitai_model_version"></select>
+                </div>
+                <div id="sd_civitai_model_preview" class="marginTop5 neutral_warning"></div>
+                <div id="sd_civitai_model_trained_words" class="flex-container flexwrap gap5 marginTop5" style="display:none;"></div>
+
+                <div class="flex-container flexnowrap alignItemsBaseline marginTop5">
+                    <strong class="flex1">LoRAs</strong>
+                    <div id="sd_civitai_add_lora" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-plus"></i>
+                        <span>Add LoRA</span>
+                    </div>
+                </div>
+                <div id="sd_civitai_loras" class="marginTop5"></div>
             </div>
             <div data-sd-source="electronhub">
                 <i data-i18n="Hint: Save an API key in the Electron Hub (Chat Completion) API settings to use it here.">Hint: Save an API key in the Electron Hub (Chat Completion) API settings to use it here.</i>

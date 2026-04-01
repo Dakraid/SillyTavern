@@ -42,6 +42,7 @@ export const SECRET_KEYS = {
     AZURE_TTS: 'api_key_azure_tts',
     FEATHERLESS: 'api_key_featherless',
     HUGGINGFACE: 'api_key_huggingface',
+    CIVITAI: 'api_key_civitai',
     STABILITY: 'api_key_stability',
     CUSTOM_OPENAI_TTS: 'api_key_custom_openai_tts',
     TAVILY: 'api_key_tavily',

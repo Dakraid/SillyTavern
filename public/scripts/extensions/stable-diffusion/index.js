@@ -84,6 +84,7 @@ const sources = {
     vlad: 'vlad',
     openai: 'openai',
     aimlapi: 'aimlapi',
+    civitai: 'civitai',
     comfy: 'comfy',
     togetherai: 'togetherai',
     drawthings: 'drawthings',
@@ -357,6 +358,11 @@ const defaultSettings = {
     // Stability AI settings
     stability_style_preset: 'anime',
 
+    // CivitAI settings
+    civitai_model_ref: '',
+    civitai_model_preview: null,
+    civitai_loras: [],
+
     // BFL API settings
     bfl_upsampling: false,
 
@@ -368,6 +374,47 @@ const defaultSettings = {
 
 const writePromptFieldsDebounced = debounce(writePromptFields, debounce_timeout.relaxed);
 const isVideo = (/** @type {string} */ format) => VIDEO_EXTENSIONS.includes(String(format || '').trim().toLowerCase());
+
+/**
+ * @returns {{ref: string, air: string, name: string, versionId: string, versionName: string, baseModel: string, imageUrl: string, trainedWords: string[], strength: number, versions: any[]}}
+ */
+function createDefaultCivitaiLora() {
+    return {
+        ref: '',
+        air: '',
+        name: '',
+        versionId: '',
+        versionName: '',
+        baseModel: '',
+        imageUrl: '',
+        trainedWords: [],
+        strength: 1,
+        versions: [],
+    };
+}
+
+/**
+ * @param {any} preview
+ * @returns {any}
+ */
+function normalizeCivitaiPreview(preview) {
+    if (!preview || typeof preview !== 'object') {
+        return null;
+    }
+
+    return {
+        ...preview,
+        air: String(preview.air || ''),
+        versionId: String(preview.versionId || ''),
+        versionName: String(preview.versionName || ''),
+        name: String(preview.name || ''),
+        baseModel: String(preview.baseModel || ''),
+        creator: String(preview.creator || ''),
+        imageUrl: String(preview.imageUrl || ''),
+        trainedWords: Array.isArray(preview.trainedWords) ? preview.trainedWords.filter(Boolean).map(String) : [],
+        versions: Array.isArray(preview.versions) ? preview.versions : [],
+    };
+}
 
 /**
  * Generate interceptor for interactive mode triggers.
@@ -499,6 +546,16 @@ async function loadSettings() {
         extension_settings.sd.styles = defaultStyles;
     }
 
+    extension_settings.sd.civitai_model_preview = normalizeCivitaiPreview(extension_settings.sd.civitai_model_preview);
+    extension_settings.sd.civitai_loras = Array.isArray(extension_settings.sd.civitai_loras)
+        ? extension_settings.sd.civitai_loras.map(lora => ({
+            ...createDefaultCivitaiLora(),
+            ...lora,
+            trainedWords: Array.isArray(lora?.trainedWords) ? lora.trainedWords.filter(Boolean).map(String) : [],
+            versions: Array.isArray(lora?.versions) ? lora.versions : [],
+        }))
+        : [];
+
     // Preserve an original seed if exists
     if (extension_settings.sd.original_seed >= 0) {
         extension_settings.sd.seed = extension_settings.sd.original_seed;
@@ -561,6 +618,7 @@ async function loadSettings() {
     $('#sd_huggingface_model_id').val(extension_settings.sd.huggingface_model_id);
     $('#sd_function_tool').prop('checked', extension_settings.sd.function_tool);
     $('#sd_bfl_upsampling').prop('checked', extension_settings.sd.bfl_upsampling);
+    $('#sd_civitai_model_ref').val(extension_settings.sd.civitai_model_ref || '');
     $('#sd_google_api').val(extension_settings.sd.google_api);
     $('#sd_google_enhance').prop('checked', extension_settings.sd.google_enhance);
     $('#sd_google_duration').val(extension_settings.sd.google_duration);
@@ -579,6 +637,8 @@ async function loadSettings() {
     toggleSourceControls();
     addPromptTemplates();
     registerFunctionTool();
+    renderCivitaiModelPreview();
+    renderCivitaiLoras();
 
     await loadSettingOptions();
 }
@@ -617,6 +677,248 @@ async function loadSettingOptions() {
         loadVaes(),
         loadComfyWorkflows(),
     ]);
+}
+
+function getCivitaiModelDisplayText() {
+    const preview = normalizeCivitaiPreview(extension_settings.sd.civitai_model_preview);
+    if (!preview?.air) {
+        return t`<Resolve base model below>`;
+    }
+
+    const versionLabel = preview.versionName ? ` / ${preview.versionName}` : '';
+    return `${preview.name}${versionLabel}`;
+}
+
+async function loadCivitaiModels() {
+    $('#sd_civitai_key').toggleClass('success', !!secret_state[SECRET_KEYS.CIVITAI]);
+    return [
+        {
+            value: String(extension_settings.sd.civitai_model_preview?.air || ''),
+            text: getCivitaiModelDisplayText(),
+        },
+    ];
+}
+
+function renderCivitaiTrainedWords($container, words) {
+    $container.empty();
+    const normalizedWords = Array.isArray(words) ? words.filter(Boolean).map(String) : [];
+
+    if (normalizedWords.length === 0) {
+        $container.hide();
+        return;
+    }
+
+    for (const word of normalizedWords) {
+        const chip = $('<button type="button"></button>')
+            .addClass('menu_button menu_button_icon')
+            .text(word)
+            .attr('title', t`Insert into prompt prefix`)
+            .on('click', () => {
+                const current = String($('#sd_prompt_prefix').val() || '').trim();
+                const parts = current ? current.split(',').map(part => part.trim()).filter(Boolean) : [];
+                if (!parts.includes(word)) {
+                    parts.push(word);
+                    $('#sd_prompt_prefix').val(`${parts.join(', ')},`).trigger('input');
+                }
+            });
+        $container.append(chip);
+    }
+
+    $container.show();
+}
+
+function renderCivitaiModelPreview() {
+    const preview = normalizeCivitaiPreview(extension_settings.sd.civitai_model_preview);
+    const $details = $('#sd_civitai_model_preview');
+    const $versionSelect = $('#sd_civitai_model_version');
+    const $versionsRow = $('#sd_civitai_model_version_row');
+    const $trainedWords = $('#sd_civitai_model_trained_words');
+
+    $details.empty();
+    $versionSelect.empty();
+
+    if (!preview) {
+        $details.text(t`No CivitAI model resolved yet.`);
+        $versionsRow.hide();
+        renderCivitaiTrainedWords($trainedWords, []);
+        return;
+    }
+
+    const lines = [
+        preview.name || t`Resolved model`,
+        preview.versionName ? `Version: ${preview.versionName}` : '',
+        preview.creator ? `Creator: ${preview.creator}` : '',
+        preview.baseModel ? `Base model: ${preview.baseModel}` : '',
+        preview.air ? `AIR: ${preview.air}` : '',
+    ].filter(Boolean);
+
+    if (preview.imageUrl) {
+        $details.append($('<img />').attr('src', preview.imageUrl).attr('alt', preview.name || 'CivitAI preview').css({ maxWidth: '100%', borderRadius: '6px', marginBottom: '8px' }));
+    }
+
+    for (const line of lines) {
+        $details.append($('<div></div>').text(line));
+    }
+
+    for (const version of preview.versions || []) {
+        const option = document.createElement('option');
+        option.value = String(version.id);
+        option.textContent = version.baseModel ? `${version.name} (${version.baseModel})` : version.name;
+        option.selected = String(version.id) === preview.versionId;
+        $versionSelect.append(option);
+    }
+
+    $versionsRow.toggle(($versionSelect.children().length || 0) > 1);
+    renderCivitaiTrainedWords($trainedWords, preview.trainedWords);
+}
+
+function renderCivitaiLoras() {
+    const $container = $('#sd_civitai_loras');
+    $container.empty();
+
+    extension_settings.sd.civitai_loras = Array.isArray(extension_settings.sd.civitai_loras)
+        ? extension_settings.sd.civitai_loras.map(lora => ({ ...createDefaultCivitaiLora(), ...lora, trainedWords: Array.isArray(lora?.trainedWords) ? lora.trainedWords : [] }))
+        : [];
+
+    extension_settings.sd.civitai_loras.forEach((lora, index) => {
+        const $row = $('<div></div>').addClass('marginBot10').attr('data-civitai-lora-index', String(index));
+        const $header = $('<div></div>').addClass('flex-container flexnowrap alignItemsBaseline');
+        const $input = $('<input />').addClass('text_pole flex1').attr('type', 'text').attr('placeholder', 'CivitAI LoRA URL, AIR, or ID').val(lora.ref || '');
+        const $resolveButton = $('<button type="button"></button>').addClass('menu_button').text(t`Resolve`);
+        const $removeButton = $('<button type="button"></button>').addClass('menu_button').text(t`Remove`);
+        const $versionSelect = $('<select></select>').addClass('text_pole marginTop5').toggle(Array.isArray(lora.versions) && lora.versions.length > 1);
+        const $strength = $('<input />').addClass('text_pole marginTop5').attr({ type: 'number', min: '0', max: '2', step: '0.05' }).val(String(lora.strength ?? 1));
+        const $preview = $('<div></div>').addClass('neutral_warning marginTop5');
+        const $trainedWords = $('<div></div>').addClass('flex-container flexwrap gap5 marginTop5').hide();
+
+        for (const version of Array.isArray(lora.versions) ? lora.versions : []) {
+            const option = document.createElement('option');
+            option.value = String(version.id);
+            option.textContent = version.baseModel ? `${version.name} (${version.baseModel})` : version.name;
+            option.selected = String(version.id) === String(lora.versionId || '');
+            $versionSelect.append(option);
+        }
+
+        if (lora.name || lora.air) {
+            const previewLines = [
+                lora.name || t`Resolved LoRA`,
+                lora.versionName ? `Version: ${lora.versionName}` : '',
+                lora.baseModel ? `Base model: ${lora.baseModel}` : '',
+                lora.air ? `AIR: ${lora.air}` : '',
+            ].filter(Boolean);
+            for (const line of previewLines) {
+                $preview.append($('<div></div>').text(line));
+            }
+        } else {
+            $preview.text(t`No LoRA resolved yet.`);
+        }
+
+        renderCivitaiTrainedWords($trainedWords, lora.trainedWords);
+
+        $input.on('input', function () {
+            extension_settings.sd.civitai_loras[index].ref = String($(this).val());
+            saveSettingsDebounced();
+        });
+
+        $resolveButton.on('click', async () => {
+            await resolveCivitaiLora(index);
+        });
+
+        $removeButton.on('click', () => {
+            extension_settings.sd.civitai_loras.splice(index, 1);
+            saveSettingsDebounced();
+            renderCivitaiLoras();
+        });
+
+        $versionSelect.on('change', async function () {
+            extension_settings.sd.civitai_loras[index].versionId = String($(this).val());
+            await resolveCivitaiLora(index, extension_settings.sd.civitai_loras[index].versionId);
+        });
+
+        $strength.on('input', function () {
+            extension_settings.sd.civitai_loras[index].strength = Number($(this).val()) || 1;
+            saveSettingsDebounced();
+        });
+
+        $header.append($input, $resolveButton, $removeButton);
+        $row.append($header);
+        $row.append($('<label></label>').addClass('marginTop5').text(t`Version`), $versionSelect);
+        $row.append($('<label></label>').addClass('marginTop5').text(t`Strength`), $strength);
+        $row.append($preview, $trainedWords);
+        $container.append($row);
+    });
+}
+
+async function resolveCivitaiModel(versionId = '') {
+    const value = versionId || String($('#sd_civitai_model_ref').val() || '').trim();
+
+    if (!value) {
+        toastr.warning('Enter a CivitAI model URL, AIR, or ID first.');
+        return;
+    }
+
+    const result = await fetch('/api/sd/civitai/resolve', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            kind: 'model',
+            value,
+        }),
+    });
+
+    if (!result.ok) {
+        throw new Error(await result.text());
+    }
+
+    const preview = normalizeCivitaiPreview(await result.json());
+    extension_settings.sd.civitai_model_ref = String($('#sd_civitai_model_ref').val() || '').trim();
+    extension_settings.sd.civitai_model_preview = preview;
+    extension_settings.sd.model = preview?.air || '';
+    saveSettingsDebounced();
+    renderCivitaiModelPreview();
+    await loadModels();
+}
+
+async function resolveCivitaiLora(index, versionId = '') {
+    const lora = extension_settings.sd.civitai_loras[index];
+    if (!lora) {
+        return;
+    }
+
+    const value = versionId || String(lora.ref || '').trim();
+    if (!value) {
+        toastr.warning('Enter a CivitAI LoRA URL, AIR, or ID first.');
+        return;
+    }
+
+    const result = await fetch('/api/sd/civitai/resolve', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            kind: 'lora',
+            value,
+        }),
+    });
+
+    if (!result.ok) {
+        throw new Error(await result.text());
+    }
+
+    const preview = normalizeCivitaiPreview(await result.json());
+    extension_settings.sd.civitai_loras[index] = {
+        ...extension_settings.sd.civitai_loras[index],
+        ref: extension_settings.sd.civitai_loras[index].ref,
+        air: preview?.air || '',
+        name: preview?.name || '',
+        versionId: preview?.versionId || '',
+        versionName: preview?.versionName || '',
+        baseModel: preview?.baseModel || '',
+        imageUrl: preview?.imageUrl || '',
+        trainedWords: preview?.trainedWords || [],
+        versions: preview?.versions || [],
+    };
+    saveSettingsDebounced();
+    renderCivitaiLoras();
 }
 
 function addPromptTemplates() {
@@ -1138,7 +1440,9 @@ function onSwapDimensionsClick() {
 
 async function onSourceChange() {
     extension_settings.sd.source = $('#sd_source').find(':selected').val();
-    extension_settings.sd.model = null;
+    extension_settings.sd.model = extension_settings.sd.source === sources.civitai
+        ? String(extension_settings.sd.civitai_model_preview?.air || '')
+        : null;
     extension_settings.sd.sampler = null;
     extension_settings.sd.scheduler = null;
     extension_settings.sd.vae = null;
@@ -1319,6 +1623,35 @@ function onComfyRunPodUrlInput() {
 function onHFModelInput() {
     extension_settings.sd.huggingface_model_id = $('#sd_huggingface_model_id').val();
     saveSettingsDebounced();
+}
+
+function onCivitaiModelRefInput() {
+    extension_settings.sd.civitai_model_ref = String($('#sd_civitai_model_ref').val() || '');
+    saveSettingsDebounced();
+}
+
+async function onCivitaiModelResolveClick() {
+    try {
+        await resolveCivitaiModel();
+        toastr.success('CivitAI model resolved.');
+    } catch (error) {
+        toastr.error(`Could not resolve CivitAI model: ${error.message}`);
+    }
+}
+
+async function onCivitaiModelVersionChange() {
+    try {
+        await resolveCivitaiModel(String($('#sd_civitai_model_version').val() || ''));
+        toastr.success('CivitAI model version resolved.');
+    } catch (error) {
+        toastr.error(`Could not resolve CivitAI model version: ${error.message}`);
+    }
+}
+
+function onCivitaiAddLoraClick() {
+    extension_settings.sd.civitai_loras.push(createDefaultCivitaiLora());
+    saveSettingsDebounced();
+    renderCivitaiLoras();
 }
 
 function onComfyWorkflowChange() {
@@ -1705,6 +2038,9 @@ async function loadSamplers() {
         case sources.aimlapi:
             samplers = ['N/A'];
             break;
+        case sources.civitai:
+            samplers = ['N/A'];
+            break;
         case sources.comfy:
             samplers = await loadComfySamplers();
             break;
@@ -1926,6 +2262,9 @@ async function loadModels() {
             break;
         case sources.aimlapi:
             models = await loadAimlapiModels();
+            break;
+        case sources.civitai:
+            models = await loadCivitaiModels();
             break;
         case sources.comfy:
             models = await loadComfyModels();
@@ -2539,6 +2878,9 @@ async function loadSchedulers() {
         case sources.aimlapi:
             schedulers = ['N/A'];
             break;
+        case sources.civitai:
+            schedulers = ['N/A'];
+            break;
         case sources.togetherai:
             schedulers = ['N/A'];
             break;
@@ -2657,6 +2999,9 @@ async function loadVaes() {
             vaes = ['N/A'];
             break;
         case sources.aimlapi:
+            vaes = ['N/A'];
+            break;
+        case sources.civitai:
             vaes = ['N/A'];
             break;
         case sources.togetherai:
@@ -3352,6 +3697,9 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
                 break;
             case sources.aimlapi:
                 result = await generateAimlapiImage(prefixedPrompt, signal);
+                break;
+            case sources.civitai:
+                result = await generateCivitaiImage(prefixedPrompt, negativePrompt, signal);
                 break;
             case sources.comfy:
                 switch (extension_settings.sd.comfy_type) {
@@ -4345,6 +4693,48 @@ async function generateHuggingFaceImage(prompt, signal) {
 }
 
 /**
+ * Generates an image using the CivitAI workflow API.
+ * @param {string} prompt
+ * @param {string} negativePrompt
+ * @param {AbortSignal} signal
+ * @returns {Promise<{format: string, data: string}>}
+ */
+async function generateCivitaiImage(prompt, negativePrompt, signal) {
+    const loras = (Array.isArray(extension_settings.sd.civitai_loras) ? extension_settings.sd.civitai_loras : [])
+        .filter(lora => String(lora?.air || '').trim())
+        .map(lora => ({
+            air: String(lora.air).trim(),
+            strength: Number.isFinite(Number(lora.strength)) ? Number(lora.strength) : 1,
+        }));
+
+    const result = await fetch('/api/sd/civitai/generate', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal,
+        body: JSON.stringify({
+            model: extension_settings.sd.model,
+            prompt,
+            negative_prompt: negativePrompt,
+            width: extension_settings.sd.width,
+            height: extension_settings.sd.height,
+            steps: extension_settings.sd.steps,
+            guidance: extension_settings.sd.scale,
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
+            clip_skip: extension_settings.sd.clip_skip,
+            loras,
+        }),
+    });
+
+    if (result.ok) {
+        const data = await result.json();
+        return { format: data?.format || 'jpg', data: data?.image };
+    }
+
+    const text = await result.text();
+    throw new Error(text);
+}
+
+/**
  * Generates an image using the Chutes API.
  * @param {string} prompt - The main instruction used to guide the image generation.
  * @param {string} negativePrompt - The instruction used to restrict the image generation.
@@ -5055,6 +5445,8 @@ function isValidState() {
             return secret_state[SECRET_KEYS.OPENAI];
         case sources.aimlapi:
             return secret_state[SECRET_KEYS.AIMLAPI];
+        case sources.civitai:
+            return secret_state[SECRET_KEYS.CIVITAI] && !!extension_settings.sd.model;
         case sources.comfy:
             switch (extension_settings.sd.comfy_type) {
                 case comfyTypes.runpod_serverless:
@@ -5835,6 +6227,10 @@ jQuery(async () => {
     $('#sd_swap_dimensions').on('click', onSwapDimensionsClick);
     $('#sd_stability_style_preset').on('change', onStabilityStylePresetChange);
     $('#sd_huggingface_model_id').on('input', onHFModelInput);
+    $('#sd_civitai_model_ref').on('input', onCivitaiModelRefInput);
+    $('#sd_civitai_model_lookup').on('click', onCivitaiModelResolveClick);
+    $('#sd_civitai_model_version').on('change', onCivitaiModelVersionChange);
+    $('#sd_civitai_add_lora').on('click', onCivitaiAddLoraClick);
     $('#sd_function_tool').on('input', onFunctionToolInput);
     $('#sd_bfl_upsampling').on('input', onBflUpsamplingInput);
 
@@ -5891,6 +6287,7 @@ jQuery(async () => {
                 [sources.falai]: SECRET_KEYS.FALAI,
                 [sources.stability]: SECRET_KEYS.STABILITY,
                 [sources.aimlapi]: SECRET_KEYS.AIMLAPI,
+                [sources.civitai]: SECRET_KEYS.CIVITAI,
                 [sources.comfy]: SECRET_KEYS.COMFY_RUNPOD,
                 [sources.pollinations]: SECRET_KEYS.POLLINATIONS,
             };
