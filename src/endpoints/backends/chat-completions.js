@@ -372,7 +372,7 @@ async function sendClaudeRequest(request, response) {
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response
-            forwardFetchResponse(generateResponse, response);
+            await forwardFetchResponse(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const generateResponseText = await generateResponse.text();
@@ -682,7 +682,7 @@ async function sendMakerSuiteRequest(request, response) {
         if (stream) {
             try {
                 // Pipe remote SSE stream to Express response
-                forwardFetchResponse(generateResponse, response);
+                await forwardFetchResponse(generateResponse, response);
             } catch (error) {
                 console.error('Error forwarding streaming response:', error);
                 if (!response.headersSent) {
@@ -793,7 +793,7 @@ async function sendAI21Request(request, response) {
     try {
         const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardFetchResponse(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -883,7 +883,7 @@ async function sendMistralAIRequest(request, response) {
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardFetchResponse(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -982,7 +982,7 @@ async function sendCohereRequest(request, response) {
 
         if (request.body.stream) {
             const stream = await fetch(apiUrl, config);
-            forwardFetchResponse(stream, response);
+            await forwardFetchResponse(stream, response);
         } else {
             const generateResponse = await fetch(apiUrl, config);
             if (!generateResponse.ok) {
@@ -1093,7 +1093,7 @@ async function sendDeepSeekRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardFetchResponse(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1199,7 +1199,7 @@ async function sendXaiRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardFetchResponse(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1304,7 +1304,7 @@ async function sendAimlapiRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardFetchResponse(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1416,7 +1416,7 @@ async function sendElectronHubRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardFetchResponse(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1517,7 +1517,7 @@ async function sendChutesRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardFetchResponse(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1612,7 +1612,7 @@ async function sendAzureOpenAIRequest(request, response) {
         const fetchResponse = await fetch(endpointUrl, config);
 
         if (request.body.stream) {
-            return forwardFetchResponse(fetchResponse, response);
+            return await forwardFetchResponse(fetchResponse, response);
         }
 
         if (fetchResponse.ok) {
@@ -2411,7 +2411,7 @@ router.post('/generate', async function (request, response) {
 
         if (request.body.stream) {
             console.info('Streaming request in progress');
-            return forwardFetchResponse(fetchResponse, response);
+            return await forwardFetchResponse(fetchResponse, response);
         }
 
         if (fetchResponse.ok) {
