@@ -5862,7 +5862,7 @@ function registerFunctionTool() {
     });
 }
 
-jQuery(async () => {
+export async function init() {
     await addSDGenButtons();
 
     const getSelectEnumProvider = (id, text) => () => Array.from(document.querySelectorAll(`#${id} > [value]`)).map(x => new SlashCommandEnumValue(x.getAttribute('value'), text ? x.textContent : null));
@@ -6374,4 +6374,4 @@ jQuery(async () => {
             t`Character's negative Image Generation prompt prefix`,
         );
     }
-});
+}
