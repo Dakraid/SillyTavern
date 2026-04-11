@@ -12,6 +12,7 @@ import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
 import { t } from './i18n.js';
 import { isMobile } from './RossAscends-mods.js';
+import { getTokenCountAsync } from './tokenizers.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -363,6 +364,9 @@ class PromptManager {
 
         // The current token handler instance
         this.tokenHandler = null;
+
+        // Token counts for prompts excluded from the active chat completion
+        this.disabledCounts = {};
 
         // Token usage of last dry run
         this.tokenUsage = 0;
@@ -1574,12 +1578,41 @@ class PromptManager {
         this.overriddenPrompts = chatCompletion.getOverriddenPrompts();
     }
 
+    async populateDisabledPromptCounts() {
+        const counts = this.tokenHandler?.getCounts();
+        if (!counts || !this.activeCharacter) return;
+
+        const prompts = this.getPromptsForCharacter(this.activeCharacter);
+        for (const prompt of prompts) {
+            if (!prompt) continue;
+            // Skip prompts that already have a count from the normal pass
+            if (prompt.identifier in counts) continue;
+            // Skip prompts already counted in disabledCounts
+            if (this.disabledCounts[prompt.identifier] !== undefined) continue;
+
+            const content = typeof prompt.content === 'string' ? prompt.content : '';
+            if (content.length === 0) {
+                this.disabledCounts[prompt.identifier] = 0;
+                continue;
+            }
+
+            try {
+                const tokens = await getTokenCountAsync(content);
+                this.disabledCounts[prompt.identifier] = tokens;
+            } catch (error) {
+                console.warn('Failed to count tokens for disabled prompt', prompt.identifier, error);
+                this.disabledCounts[prompt.identifier] = 0;
+            }
+        }
+    }
+
     /**
      * Populates the token handler
      *
      * @param {import('./openai.js').MessageCollection} messages
      */
     populateTokenCounts(messages) {
+        this.disabledCounts = {};
         this.tokenHandler.resetCounts();
         const counts = this.tokenHandler.getCounts();
         messages.getCollection().forEach(message => {
@@ -1668,7 +1701,8 @@ class PromptManager {
             const enabledClass = listEntry.enabled ? '' : `${prefix}prompt_manager_prompt_disabled`;
             const draggableClass = `${prefix}prompt_manager_prompt_draggable`;
             const markerClass = prompt.marker ? `${prefix}prompt_manager_marker` : '';
-            const tokens = this.tokenHandler?.getCounts()[prompt.identifier] ?? 0;
+            const mainCounts = this.tokenHandler?.getCounts() ?? {};
+            const tokens = mainCounts[prompt.identifier] ?? this.disabledCounts[prompt.identifier] ?? 0;
 
             // Warn the user if the chat history goes below certain token thresholds.
             let warningClass = '';
@@ -1689,7 +1723,7 @@ class PromptManager {
                 }
             }
 
-            const calculatedTokens = tokens ? tokens : '-';
+            const calculatedTokens = tokens;
 
             let detachSpanHtml = '';
             if (this.isPromptDeletionAllowed(prompt)) {

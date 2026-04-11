@@ -307,13 +307,10 @@ export function getFriendlyTokenizerName(forApi) {
         }
     }
 
-    tokenizerName = forApi == 'openai'
-        ? getTokenizerModel()
-        : tokenizerName;
-
-    tokenizerId = forApi == 'openai'
-        ? tokenizers.OPENAI
-        : tokenizerId;
+    if (forApi == 'openai' && power_user.tokenizer !== tokenizers.CUSTOM) {
+        tokenizerName = getTokenizerModel();
+        tokenizerId = tokenizers.OPENAI;
+    }
 
     const tokenizerKey = Object.entries(tokenizers).find(([_, value]) => value === tokenizerId)[0].toLocaleLowerCase();
 
@@ -492,7 +489,9 @@ export async function getTokenCountAsync(str, padding = undefined) {
     let modelHash = '';
 
     if (main_api === 'openai') {
-        if (padding === power_user.token_padding) {
+        if (power_user.tokenizer === tokenizers.CUSTOM) {
+            tokenizerType = tokenizers.CUSTOM;
+        } else if (padding === power_user.token_padding) {
             // For main "shadow" prompt building
             tokenizerType = tokenizers.NONE;
         } else {
@@ -548,7 +547,9 @@ export function getTokenCount(str, padding = undefined) {
     let modelHash = '';
 
     if (main_api === 'openai') {
-        if (padding === power_user.token_padding) {
+        if (power_user.tokenizer === tokenizers.CUSTOM) {
+            tokenizerType = tokenizers.CUSTOM;
+        } else if (padding === power_user.token_padding) {
             // For main "shadow" prompt building
             tokenizerType = tokenizers.NONE;
         } else {

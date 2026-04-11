@@ -1581,6 +1581,7 @@ export async function prepareOpenAIMessages({
     } finally {
         // Pass chat completion to prompt manager for inspection
         promptManager.setChatCompletion(chatCompletion);
+        await promptManager.populateDisabledPromptCounts();
 
         if (oai_settings.squash_system_messages && dryRun == false) {
             await chatCompletion.squashSystemMessages();
