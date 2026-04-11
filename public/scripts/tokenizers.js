@@ -34,6 +34,7 @@ export const tokenizers = {
     NEMO: 17,
     DEEPSEEK: 18,
     COMMAND_A: 19,
+    CUSTOM: 20,
     BEST_MATCH: 99,
 };
 
@@ -50,6 +51,7 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.COMMAND_A,
     tokenizers.NEMO,
     tokenizers.DEEPSEEK,
+    tokenizers.CUSTOM,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,
@@ -151,6 +153,11 @@ const TOKENIZER_URLS = {
         encode: '/api/tokenizers/remote/textgenerationwebui/encode',
         count: '/api/tokenizers/remote/textgenerationwebui/encode',
     },
+    [tokenizers.CUSTOM]: {
+        encode: '/api/tokenizers/custom/encode',
+        decode: '/api/tokenizers/custom/decode',
+        count: '/api/tokenizers/custom/encode',
+    },
 };
 
 const textEncoder = new TextEncoder();
@@ -187,15 +194,51 @@ export async function saveTokenCache() {
     }
 }
 
-async function resetTokenCache() {
+async function resetTokenCache(showToast = true) {
     try {
         console.debug('Chat Completions: resetting token cache');
         Object.keys(tokenCache).forEach(key => delete tokenCache[key]);
         await objectStore.removeItem('tokenCache');
-        toastr.success('Token cache cleared. Please reload the chat to re-tokenize it.');
+        if (showToast) {
+            toastr.success('Token cache cleared. Please reload the chat to re-tokenize it.');
+        }
     } catch (e) {
         console.log('Chat Completions: unable to reset token cache', e);
     }
+}
+
+export async function invalidateTokenCache(showToast = false) {
+    await resetTokenCache(showToast);
+}
+
+export async function loadCustomTokenizer(source, url, json) {
+    return await jQuery.ajax({
+        async: true,
+        type: 'POST',
+        url: '/api/tokenizers/custom/load',
+        data: JSON.stringify({ source, url, json }),
+        dataType: 'json',
+        contentType: 'application/json',
+    });
+}
+
+export async function getCustomTokenizerStatus() {
+    return await jQuery.ajax({
+        async: true,
+        type: 'GET',
+        url: '/api/tokenizers/custom/status',
+        dataType: 'json',
+    });
+}
+
+export async function unloadCustomTokenizer() {
+    return await jQuery.ajax({
+        async: true,
+        type: 'POST',
+        url: '/api/tokenizers/custom/unload',
+        dataType: 'json',
+        contentType: 'application/json',
+    });
 }
 
 /**
@@ -1223,4 +1266,3 @@ export async function initTokenizers() {
     await loadTokenCache();
     registerDebugFunction('resetTokenCache', 'Reset token cache', 'Purges the calculated token counts. Use this if you want to force a full re-tokenization of all chats or suspect the token counts are wrong.', resetTokenCache);
 }
-

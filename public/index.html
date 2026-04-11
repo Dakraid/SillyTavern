@@ -4507,6 +4507,7 @@
                                     <option value="8">Yi</option>
                                     <option value="11">Claude 1/2</option>
                                     <option value="18">DeepSeek V3</option>
+                                    <option value="20">Custom (HuggingFace)</option>
                                     <option value="6">API (WebUI / koboldcpp)</option>
                                 </select>
                             </div>
@@ -4517,6 +4518,28 @@
                                     </small>
                                 </div>
                                 <input id="token_padding" class="text_pole textarea_compact" type="number" min="-2048" max="2048" step="1" />
+                            </div>
+                            <div id="custom_tokenizer_config" class="displayNone">
+                                <div class="flex-container flexGap10 alignItemsCenter marginTop5">
+                                    <label class="checkbox_label" for="custom_tokenizer_source_url">
+                                        <input id="custom_tokenizer_source_url" type="radio" name="custom_tokenizer_source" value="url" checked>
+                                        <small data-i18n="URL">URL</small>
+                                    </label>
+                                    <label class="checkbox_label" for="custom_tokenizer_source_paste">
+                                        <input id="custom_tokenizer_source_paste" type="radio" name="custom_tokenizer_source" value="paste">
+                                        <small data-i18n="Paste">Paste</small>
+                                    </label>
+                                </div>
+                                <div id="custom_tokenizer_url_block" class="marginTop5">
+                                    <input id="custom_tokenizer_url" class="text_pole textarea_compact" type="text" placeholder="org/model-name or HuggingFace URL" />
+                                </div>
+                                <div id="custom_tokenizer_paste_block" class="marginTop5 displayNone">
+                                    <textarea id="custom_tokenizer_json" class="text_pole textarea_compact monospace autoSetHeight" placeholder="Paste tokenizer.json here"></textarea>
+                                </div>
+                                <div class="flex-container alignItemsCenter flexGap10 marginTop5">
+                                    <input id="custom_tokenizer_load" class="menu_button" type="button" value="Load Tokenizer" />
+                                    <small id="custom_tokenizer_status">Not loaded</small>
+                                </div>
                             </div>
                         </div>
                         <div>

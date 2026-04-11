@@ -9,6 +9,7 @@ import fetch from 'node-fetch';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { Tokenizer } from '@agnai/web-tokenizers';
+import { Tokenizer as HFTokenizer } from '@huggingface/tokenizers';
 import { SentencePieceProcessor } from '@agnai/sentencepiece-js';
 import tiktoken from 'tiktoken';
 
@@ -60,6 +61,10 @@ export const TEXT_COMPLETION_MODELS = [
 const BYTES_PER_TOKEN = 3.35;
 const IS_DOWNLOAD_ALLOWED = getConfigValue('enableDownloadableTokenizers', true, 'boolean');
 const gunzip = promisify(zlib.gunzip);
+const CUSTOM_TOKENIZER_DIR = () => path.join(globalThis.DATA_ROOT, '_cache', 'custom-tokenizer');
+const CUSTOM_TOKENIZER_JSON = () => path.join(CUSTOM_TOKENIZER_DIR(), 'tokenizer.json');
+const CUSTOM_TOKENIZER_CONFIG_JSON = () => path.join(CUSTOM_TOKENIZER_DIR(), 'tokenizer_config.json');
+const CUSTOM_TOKENIZER_META = () => path.join(CUSTOM_TOKENIZER_DIR(), 'meta.json');
 
 /**
  * Guesstimates the token count for a string.
@@ -249,6 +254,77 @@ class WebTokenizer {
     }
 }
 
+/**
+ * HuggingFace tokenizer for tokenizing text.
+ */
+class HuggingFaceTokenizer {
+    /**
+     * @type {HFTokenizer|null} HuggingFace tokenizer instance
+     */
+    #instance = null;
+    /**
+     * @type {string} Tokenizer name
+     */
+    #name = '';
+
+    /**
+     * Loads the HuggingFace tokenizer instance.
+     * @param {object|string} tokenizerJson Tokenizer JSON data
+     * @param {object|string|null|undefined} tokenizerConfigJson Tokenizer config JSON data
+     * @param {string} name Tokenizer name
+     */
+    async load(tokenizerJson, tokenizerConfigJson, name) {
+        const parsedTokenizerJson = typeof tokenizerJson === 'string' ? JSON.parse(tokenizerJson) : tokenizerJson;
+        const parsedTokenizerConfigJson = typeof tokenizerConfigJson === 'string'
+            ? JSON.parse(tokenizerConfigJson)
+            : (tokenizerConfigJson || {});
+
+        if (!parsedTokenizerJson || typeof parsedTokenizerJson !== 'object' || Array.isArray(parsedTokenizerJson)) {
+            throw new Error('Invalid tokenizer.json payload');
+        }
+
+        if (!parsedTokenizerConfigJson || typeof parsedTokenizerConfigJson !== 'object' || Array.isArray(parsedTokenizerConfigJson)) {
+            throw new Error('Invalid tokenizer_config.json payload');
+        }
+
+        this.#instance = new HFTokenizer(parsedTokenizerJson, parsedTokenizerConfigJson);
+        this.#name = String(name || '').trim();
+        console.info('Instantiated the tokenizer for', this.#name || 'custom');
+    }
+
+    /**
+     * Gets the HuggingFace tokenizer instance.
+     * @returns {HFTokenizer|null} HuggingFace tokenizer instance
+     */
+    get() {
+        return this.#instance;
+    }
+
+    /**
+     * Returns whether the tokenizer is loaded.
+     * @returns {boolean}
+     */
+    isLoaded() {
+        return this.#instance !== null;
+    }
+
+    /**
+     * Gets the tokenizer name.
+     * @returns {string}
+     */
+    getName() {
+        return this.#name;
+    }
+
+    /**
+     * Unloads the tokenizer instance.
+     */
+    unload() {
+        this.#instance = null;
+        this.#name = '';
+    }
+}
+
 const spp_llama = new SentencePieceTokenizer('src/tokenizers/llama.model');
 const spp_nerd = new SentencePieceTokenizer('src/tokenizers/nerdstash.model');
 const spp_nerd_v2 = new SentencePieceTokenizer('src/tokenizers/nerdstash_v2.model');
@@ -263,6 +339,92 @@ const commandATokenizer = new WebTokenizer('https://github.com/SillyTavern/Silly
 const qwen2Tokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz', 'src/tokenizers/llama3.json');
 const nemoTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/nemo.json.gz', 'src/tokenizers/llama3.json');
 const deepseekTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/deepseek.json.gz', 'src/tokenizers/llama3.json');
+const hfTokenizer = new HuggingFaceTokenizer();
+
+(async () => {
+    try {
+        if (!fs.existsSync(CUSTOM_TOKENIZER_JSON())) {
+            return;
+        }
+
+        const tokenizerJson = await fs.promises.readFile(CUSTOM_TOKENIZER_JSON(), 'utf8');
+        const tokenizerConfigJson = fs.existsSync(CUSTOM_TOKENIZER_CONFIG_JSON())
+            ? await fs.promises.readFile(CUSTOM_TOKENIZER_CONFIG_JSON(), 'utf8')
+            : undefined;
+        const meta = fs.existsSync(CUSTOM_TOKENIZER_META())
+            ? JSON.parse(await fs.promises.readFile(CUSTOM_TOKENIZER_META(), 'utf8'))
+            : {};
+
+        await hfTokenizer.load(tokenizerJson, tokenizerConfigJson, meta.name || 'Custom tokenizer');
+    } catch (error) {
+        console.error('Custom tokenizer failed to auto-load', error);
+        hfTokenizer.unload();
+    }
+})();
+
+function getCustomTokenizerNameFromUrl(url) {
+    try {
+        const parsedUrl = new URL(url);
+        const match = parsedUrl.pathname.match(/^\/([^/]+\/[^/]+)\/resolve\/[^/]+\/tokenizer(?:_config)?\.json$/);
+        return match?.[1] || path.basename(parsedUrl.pathname) || parsedUrl.hostname;
+    } catch {
+        return url;
+    }
+}
+
+function getCustomTokenizerUrls(input) {
+    const value = String(input || '').trim().replace(/\/$/, '');
+
+    if (!value) {
+        throw new Error('Tokenizer URL or model ID is required');
+    }
+
+    if (isValidUrl(value)) {
+        const parsedUrl = new URL(value);
+        if (!['https:', 'http:'].includes(parsedUrl.protocol)) {
+            throw new Error('Invalid URL protocol');
+        }
+
+        if (parsedUrl.pathname.endsWith('/tokenizer.json')) {
+            const tokenizerUrl = parsedUrl.toString();
+            const configUrl = new URL(parsedUrl.toString());
+            configUrl.pathname = configUrl.pathname.replace(/\/tokenizer\.json$/, '/tokenizer_config.json');
+            return {
+                tokenizerUrl,
+                configUrl: configUrl.toString(),
+                name: getCustomTokenizerNameFromUrl(tokenizerUrl),
+            };
+        }
+
+        if (parsedUrl.pathname.endsWith('/tokenizer_config.json')) {
+            const configUrl = parsedUrl.toString();
+            const tokenizerUrl = new URL(parsedUrl.toString());
+            tokenizerUrl.pathname = tokenizerUrl.pathname.replace(/\/tokenizer_config\.json$/, '/tokenizer.json');
+            return {
+                tokenizerUrl: tokenizerUrl.toString(),
+                configUrl,
+                name: getCustomTokenizerNameFromUrl(tokenizerUrl.toString()),
+            };
+        }
+
+        throw new Error('URL must point to tokenizer.json or tokenizer_config.json');
+    }
+
+    const baseUrl = `https://huggingface.co/${value}/resolve/main`;
+    return {
+        tokenizerUrl: `${baseUrl}/tokenizer.json`,
+        configUrl: `${baseUrl}/tokenizer_config.json`,
+        name: value,
+    };
+}
+
+async function downloadCustomTokenizer(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+    }
+    return await response.text();
+}
 
 export const sentencepieceTokenizers = [
     'llama',
@@ -768,6 +930,145 @@ router.post('/command-r/decode', createWebTokenizerDecodingHandler(commandRToken
 router.post('/command-a/decode', createWebTokenizerDecodingHandler(commandATokenizer));
 router.post('/nemo/decode', createWebTokenizerDecodingHandler(nemoTokenizer));
 router.post('/deepseek/decode', createWebTokenizerDecodingHandler(deepseekTokenizer));
+
+router.post('/custom/encode', async function (request, response) {
+    try {
+        if (!request.body) {
+            return response.sendStatus(400);
+        }
+
+        const text = request.body.text || '';
+        const instance = hfTokenizer.get();
+
+        if (!instance) {
+            return response.send({ ids: [], tokens: [], count: 0, chunks: [] });
+        }
+
+        const encoded = instance.encode(text);
+        return response.send({ ids: encoded.ids, tokens: encoded.tokens, count: encoded.ids.length, chunks: encoded.tokens });
+    } catch (error) {
+        console.error(error);
+        return response.send({ ids: [], tokens: [], count: 0, chunks: [] });
+    }
+});
+
+router.post('/custom/decode', async function (request, response) {
+    try {
+        if (!request.body) {
+            return response.sendStatus(400);
+        }
+
+        const ids = Array.isArray(request.body.ids) ? request.body.ids : [];
+
+        if (!ids || ids.length === 0) {
+            return response.send({ text: '', chunks: [] });
+        }
+
+        const instance = hfTokenizer.get();
+
+        if (!instance) {
+            return response.send({ text: '', chunks: [] });
+        }
+
+        const text = instance.decode(ids);
+        const chunks = ids.map(id => instance.decode([id]));
+        return response.send({ text, chunks });
+    } catch (error) {
+        console.error(error);
+        return response.send({ text: '', chunks: [] });
+    }
+});
+
+router.post('/custom/load', async function (request, response) {
+    try {
+        if (!request.body) {
+            return response.sendStatus(400);
+        }
+
+        const source = String(request.body.source || '').trim();
+
+        if (!source || !['url', 'paste'].includes(source)) {
+            throw new Error('Invalid tokenizer source');
+        }
+
+        await fs.promises.mkdir(CUSTOM_TOKENIZER_DIR(), { recursive: true });
+
+        /** @type {string} */
+        let tokenizerJson = '';
+        /** @type {string|undefined} */
+        let tokenizerConfigJson;
+        let name = 'Custom tokenizer';
+        /** @type {Record<string, any>} */
+        let meta = { source };
+
+        if (source === 'url') {
+            const url = String(request.body.url || '').trim();
+            const { tokenizerUrl, configUrl, name: resolvedName } = getCustomTokenizerUrls(url);
+            name = resolvedName;
+            meta = { ...meta, url, tokenizerUrl, configUrl };
+
+            tokenizerJson = await downloadCustomTokenizer(tokenizerUrl);
+
+            try {
+                tokenizerConfigJson = await downloadCustomTokenizer(configUrl);
+            } catch (error) {
+                const isNotFound = error instanceof Error && /: 404\b/.test(error.message);
+                if (!isNotFound) {
+                    throw error;
+                }
+                tokenizerConfigJson = undefined;
+            }
+        }
+
+        if (source === 'paste') {
+            const pastedJson = request.body.json;
+            const parsedTokenizerJson = typeof pastedJson === 'string' ? JSON.parse(pastedJson) : pastedJson;
+            if (!parsedTokenizerJson || typeof parsedTokenizerJson !== 'object' || Array.isArray(parsedTokenizerJson)) {
+                throw new Error('Invalid tokenizer JSON');
+            }
+
+            tokenizerJson = JSON.stringify(parsedTokenizerJson, null, 2);
+            tokenizerConfigJson = undefined;
+            name = String(parsedTokenizerJson?.model?.type || parsedTokenizerJson?.model?.vocab?.type || 'Pasted tokenizer');
+        }
+
+        await hfTokenizer.load(tokenizerJson, tokenizerConfigJson, name);
+
+        await fs.promises.writeFile(CUSTOM_TOKENIZER_JSON(), tokenizerJson, 'utf8');
+
+        if (tokenizerConfigJson) {
+            await fs.promises.writeFile(CUSTOM_TOKENIZER_CONFIG_JSON(), tokenizerConfigJson, 'utf8');
+        } else if (fs.existsSync(CUSTOM_TOKENIZER_CONFIG_JSON())) {
+            await fs.promises.unlink(CUSTOM_TOKENIZER_CONFIG_JSON());
+        }
+
+        await fs.promises.writeFile(CUSTOM_TOKENIZER_META(), JSON.stringify({ ...meta, name }, null, 2), 'utf8');
+
+        return response.send({ success: true, name: hfTokenizer.getName() || name });
+    } catch (error) {
+        console.error(error);
+        return response.send({ success: false, error: error.message || 'Failed to load custom tokenizer' });
+    }
+});
+
+router.get('/custom/status', async function (_request, response) {
+    try {
+        return response.send({ loaded: hfTokenizer.isLoaded(), name: hfTokenizer.isLoaded() ? hfTokenizer.getName() : null });
+    } catch (error) {
+        console.error(error);
+        return response.send({ loaded: false, name: null });
+    }
+});
+
+router.post('/custom/unload', async function (_request, response) {
+    try {
+        hfTokenizer.unload();
+        return response.send({ success: true });
+    } catch (error) {
+        console.error(error);
+        return response.send({ success: false, error: error.message || 'Failed to unload custom tokenizer' });
+    }
+});
 
 router.post('/openai/encode', async function (req, res) {
     try {

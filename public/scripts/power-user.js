@@ -46,7 +46,7 @@ import {
 } from './instruct-mode.js';
 
 import { getTagsList, tag_import_setting, tag_map, tag_sort_mode, tags } from './tags.js';
-import { tokenizers } from './tokenizers.js';
+import { getCustomTokenizerStatus, invalidateTokenCache, loadCustomTokenizer, tokenizers } from './tokenizers.js';
 import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
 
@@ -126,6 +126,8 @@ export const power_user = {
     charListGrid: false,
     tokenizer: tokenizers.BEST_MATCH,
     token_padding: 64,
+    custom_tokenizer_source: 'url',
+    custom_tokenizer_url: '',
     collapse_newlines: false,
     pin_examples: false,
     strip_examples: false,
@@ -1559,6 +1561,31 @@ function getExampleMessagesBehavior() {
     return 'normal';
 }
 
+function setCustomTokenizerConfigVisibility(isVisible) {
+    $('#custom_tokenizer_config').toggleClass('displayNone', !isVisible);
+}
+
+function setCustomTokenizerSourceVisibility(source) {
+    const isPaste = source === 'paste';
+    $('#custom_tokenizer_url_block').toggleClass('displayNone', isPaste);
+    $('#custom_tokenizer_paste_block').toggleClass('displayNone', !isPaste);
+}
+
+function setCustomTokenizerStatusText(text) {
+    $('#custom_tokenizer_status').text(text || 'Not loaded');
+}
+
+async function refreshCustomTokenizerStatus() {
+    try {
+        const status = await getCustomTokenizerStatus();
+        setCustomTokenizerStatusText(status.loaded ? `Loaded: ${status.name || 'Custom tokenizer'}` : 'Not loaded');
+        return status;
+    } catch {
+        setCustomTokenizerStatusText('Status unavailable');
+        return { loaded: false, name: null };
+    }
+}
+
 //MARK: loadPowerUser
 export async function loadPowerUserSettings(settings, data) {
     const defaultStscript = JSON.parse(JSON.stringify(power_user.stscript));
@@ -1691,6 +1718,11 @@ export async function loadPowerUserSettings(settings, data) {
     $('#bogus_folders').prop('checked', power_user.bogus_folders);
     $('#zoomed_avatar_magnification').prop('checked', power_user.zoomed_avatar_magnification);
     $(`#tokenizer option[value="${power_user.tokenizer}"]`).prop('selected', true);
+    $(`input[name="custom_tokenizer_source"][value="${power_user.custom_tokenizer_source}"]`).prop('checked', true);
+    $('#custom_tokenizer_url').val(power_user.custom_tokenizer_url);
+    setCustomTokenizerSourceVisibility(power_user.custom_tokenizer_source);
+    setCustomTokenizerConfigVisibility(power_user.tokenizer === tokenizers.CUSTOM);
+    await refreshCustomTokenizerStatus();
     $(`#send_on_enter option[value=${power_user.send_on_enter}]`).prop('selected', true);
     $('#confirm_message_delete').prop('checked', power_user.confirm_message_delete !== undefined ? !!power_user.confirm_message_delete : true);
     $('#spoiler_free_mode').prop('checked', power_user.spoiler_free_mode);
@@ -3633,14 +3665,73 @@ jQuery(() => {
         saveSettingsDebounced();
     });
 
-    $('#tokenizer').on('change', function () {
+    $('#tokenizer').on('change', async function () {
+        const previousTokenizer = power_user.tokenizer;
         const value = $(this).find(':selected').val();
         power_user.tokenizer = Number(value);
+        const isCustomTokenizer = power_user.tokenizer === tokenizers.CUSTOM;
+        setCustomTokenizerConfigVisibility(isCustomTokenizer);
         BIAS_CACHE.clear();
+        await invalidateTokenCache();
         saveSettingsDebounced();
+
+        if (isCustomTokenizer) {
+            const status = await refreshCustomTokenizerStatus();
+            if (previousTokenizer !== tokenizers.CUSTOM && !status.loaded) {
+                toastr.warning('Custom tokenizer selected, but no HuggingFace tokenizer is loaded yet.');
+            }
+        }
 
         // Trigger character editor re-tokenize
         forceCharacterEditorTokenize();
+    });
+
+    $('input[name="custom_tokenizer_source"]').on('change', function () {
+        power_user.custom_tokenizer_source = String($(this).val() || 'url');
+        setCustomTokenizerSourceVisibility(power_user.custom_tokenizer_source);
+        saveSettingsDebounced();
+    });
+
+    $('#custom_tokenizer_url').on('input', function () {
+        power_user.custom_tokenizer_url = String($(this).val() || '');
+        saveSettingsDebounced();
+    });
+
+    $('#custom_tokenizer_load').on('click', async function () {
+        const source = power_user.custom_tokenizer_source || 'url';
+        const url = source === 'url' ? power_user.custom_tokenizer_url : undefined;
+        const json = source === 'paste' ? String($('#custom_tokenizer_json').val() || '') : undefined;
+
+        if (source === 'url' && !url?.trim()) {
+            toastr.warning('Enter a HuggingFace model ID or tokenizer URL first.');
+            return;
+        }
+
+        if (source === 'paste' && !json.trim()) {
+            toastr.warning('Paste tokenizer.json content first.');
+            return;
+        }
+
+        setCustomTokenizerStatusText('Loading...');
+
+        try {
+            const result = await loadCustomTokenizer(source, url, json);
+
+            if (!result?.success) {
+                setCustomTokenizerStatusText('Load failed');
+                toastr.error(result?.error || 'Failed to load custom tokenizer.');
+                return;
+            }
+
+            setCustomTokenizerStatusText(`Loaded: ${result.name || 'Custom tokenizer'}`);
+            await invalidateTokenCache();
+            forceCharacterEditorTokenize();
+            toastr.success(`Custom tokenizer loaded: ${result.name || 'Custom tokenizer'}`);
+        } catch (error) {
+            console.error(error);
+            setCustomTokenizerStatusText('Load failed');
+            toastr.error(error?.responseJSON?.error || error?.message || 'Failed to load custom tokenizer.');
+        }
     });
 
     $('#send_on_enter').on('change', function () {
