@@ -555,6 +555,12 @@ label[for="bind_preset_to_connection"]:has(input:checked) {
     display: flex;
 }
 
+/* Grey out data-cc-null elements when Chat Completion API is active, unless tokenizer override is active */
+#top-settings-holder:has(#main_api option[value="openai"]:checked) #AdvancedFormatting [data-cc-null]:not(.tokenizer-override-active) {
+    opacity: 0.4;
+    pointer-events: none;
+}
+
 #request_images_block:has(#openai_request_images:not(:checked)) #request_images_settings {
     display: none;
 }

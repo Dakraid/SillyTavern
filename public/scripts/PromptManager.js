@@ -163,6 +163,9 @@ class Prompt {
      */
     marker;
 
+    /** @type {number|undefined} Cached token count */
+    tokenCount;
+
     /**
      * Create a new Prompt instance.
      *
@@ -180,7 +183,7 @@ class Prompt {
      * @param {boolean} [param0.forbid_overrides] - Indicates if the prompt should not be overridden.
      * @param {boolean} [param0.extension] - Prompt is added by an extension.
      */
-    constructor({ identifier, role, content, name, system_prompt, position, injection_depth, injection_position, forbid_overrides, extension, injection_order, injection_trigger } = {}) {
+    constructor({ identifier, role, content, name, system_prompt, position, injection_depth, injection_position, forbid_overrides, extension, injection_order, injection_trigger, tokenCount } = {}) {
         this.identifier = identifier;
         this.role = role;
         this.content = content;
@@ -193,6 +196,7 @@ class Prompt {
         this.extension = extension ?? false;
         this.injection_order = injection_order ?? DEFAULT_ORDER;
         this.injection_trigger = injection_trigger ?? [];
+        this.tokenCount = tokenCount;
     }
 }
 
@@ -449,7 +453,7 @@ class PromptManager {
             const promptOrderEntry = this.getPromptOrderEntry(this.activeCharacter, promptID);
             const counts = this.tokenHandler.getCounts();
 
-            counts[promptID] = null;
+            delete counts[promptID];
             promptOrderEntry.enabled = !promptOrderEntry.enabled;
             this.render();
             this.saveServiceSettings();
@@ -1587,6 +1591,11 @@ class PromptManager {
             if (!prompt) continue;
             // Skip prompts that already have a count from the normal pass
             if (prompt.identifier in counts) continue;
+            // Use cached tokenCount from the prompt object if available
+            if (prompt.tokenCount !== undefined && prompt.tokenCount !== null) {
+                this.disabledCounts[prompt.identifier] = prompt.tokenCount;
+                continue;
+            }
             // Skip prompts already counted in disabledCounts
             if (this.disabledCounts[prompt.identifier] !== undefined) continue;
 
@@ -1617,6 +1626,10 @@ class PromptManager {
         const counts = this.tokenHandler.getCounts();
         messages.getCollection().forEach(message => {
             counts[message.identifier] = message.getTokens();
+            const prompt = this.getPromptById(message.identifier);
+            if (prompt) {
+                prompt.tokenCount = message.getTokens();
+            }
         });
 
         this.tokenUsage = this.tokenHandler.getTotal();

@@ -128,6 +128,7 @@ export const power_user = {
     token_padding: 64,
     custom_tokenizer_source: 'url',
     custom_tokenizer_url: '',
+    custom_tokenizer_override_cc: false,
     collapse_newlines: false,
     pin_examples: false,
     strip_examples: false,
@@ -1565,6 +1566,11 @@ function setCustomTokenizerConfigVisibility(isVisible) {
     $('#custom_tokenizer_config').toggleClass('displayNone', !isVisible);
 }
 
+function updateTokenizerOverrideVisibility() {
+    const isActive = Number($('#tokenizer').find(':selected').val()) === 20 && power_user.custom_tokenizer_override_cc === true;
+    $('[name="tokenizerSettingsBlock"]').toggleClass('tokenizer-override-active', isActive);
+}
+
 function setCustomTokenizerSourceVisibility(source) {
     const isPaste = source === 'paste';
     $('#custom_tokenizer_url_block').toggleClass('displayNone', isPaste);
@@ -1720,8 +1726,10 @@ export async function loadPowerUserSettings(settings, data) {
     $(`#tokenizer option[value="${power_user.tokenizer}"]`).prop('selected', true);
     $(`input[name="custom_tokenizer_source"][value="${power_user.custom_tokenizer_source}"]`).prop('checked', true);
     $('#custom_tokenizer_url').val(power_user.custom_tokenizer_url);
+    $('#custom_tokenizer_override_cc').prop('checked', power_user.custom_tokenizer_override_cc ?? false);
     setCustomTokenizerSourceVisibility(power_user.custom_tokenizer_source);
     setCustomTokenizerConfigVisibility(power_user.tokenizer === tokenizers.CUSTOM);
+    updateTokenizerOverrideVisibility();
     await refreshCustomTokenizerStatus();
     $(`#send_on_enter option[value=${power_user.send_on_enter}]`).prop('selected', true);
     $('#confirm_message_delete').prop('checked', power_user.confirm_message_delete !== undefined ? !!power_user.confirm_message_delete : true);
@@ -3671,6 +3679,7 @@ jQuery(() => {
         power_user.tokenizer = Number(value);
         const isCustomTokenizer = power_user.tokenizer === tokenizers.CUSTOM;
         setCustomTokenizerConfigVisibility(isCustomTokenizer);
+        updateTokenizerOverrideVisibility();
         BIAS_CACHE.clear();
         await invalidateTokenCache();
         saveSettingsDebounced();
@@ -3694,6 +3703,12 @@ jQuery(() => {
 
     $('#custom_tokenizer_url').on('input', function () {
         power_user.custom_tokenizer_url = String($(this).val() || '');
+        saveSettingsDebounced();
+    });
+
+    $('#custom_tokenizer_override_cc').on('input', function () {
+        power_user.custom_tokenizer_override_cc = !!$(this).prop('checked');
+        updateTokenizerOverrideVisibility();
         saveSettingsDebounced();
     });
 

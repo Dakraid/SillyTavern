@@ -3243,7 +3243,7 @@ class TokenHandler {
     }
 
     resetCounts() {
-        Object.keys(this.counts).forEach((key) => this.counts[key] = 0);
+        this.counts = {};
     }
 
     setCounts(counts) {

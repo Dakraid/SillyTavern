@@ -307,7 +307,7 @@ export function getFriendlyTokenizerName(forApi) {
         }
     }
 
-    if (forApi == 'openai' && power_user.tokenizer !== tokenizers.CUSTOM) {
+    if (forApi == 'openai' && !(power_user.tokenizer === tokenizers.CUSTOM && power_user.custom_tokenizer_override_cc)) {
         tokenizerName = getTokenizerModel();
         tokenizerId = tokenizers.OPENAI;
     }
@@ -489,7 +489,7 @@ export async function getTokenCountAsync(str, padding = undefined) {
     let modelHash = '';
 
     if (main_api === 'openai') {
-        if (power_user.tokenizer === tokenizers.CUSTOM) {
+        if (power_user.tokenizer === tokenizers.CUSTOM && power_user.custom_tokenizer_override_cc) {
             tokenizerType = tokenizers.CUSTOM;
         } else if (padding === power_user.token_padding) {
             // For main "shadow" prompt building
@@ -547,7 +547,7 @@ export function getTokenCount(str, padding = undefined) {
     let modelHash = '';
 
     if (main_api === 'openai') {
-        if (power_user.tokenizer === tokenizers.CUSTOM) {
+        if (power_user.tokenizer === tokenizers.CUSTOM && power_user.custom_tokenizer_override_cc) {
             tokenizerType = tokenizers.CUSTOM;
         } else if (padding === power_user.token_padding) {
             // For main "shadow" prompt building
