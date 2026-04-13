@@ -1827,6 +1827,16 @@ async function duplicatePersona(avatarId) {
     };
 
     await uploadUserAvatar(getUserAvatar(avatarId), newAvatarId);
+
+    const eventData = {
+        avatarId: newAvatarId,
+        name: personaName,
+        description: descriptor?.description ?? '',
+        title: descriptor?.title ?? '',
+        duplicatedFromAvatarId: avatarId,
+    };
+    await eventSource.emit(event_types.PERSONA_CREATED, eventData);
+
     await getUserAvatars(true, newAvatarId);
     saveSettingsDebounced();
 }
