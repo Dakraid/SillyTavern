@@ -24,7 +24,7 @@ export let openRouterModels = [];
  * List of OpenRouter providers.
  * @type {string[]}
  */
-const OPENROUTER_PROVIDERS = [
+const OPENROUTER_PROVIDERS_FALLBACK = [
     // Providers endpoint: https://openrouter.ai/api/v1/providers
     // The list should resemble the sidebar from https://openrouter.ai/models
     // Their docs no longer displays the list, which had "super dead" ones at top, thankfully gone from /v1/providers
@@ -130,6 +130,26 @@ export function updateOpenRouterProvidersWarning(providersSelector) {
     const showWarning = !allowFallback && selectedCount > 0 && applicableSelectedCount === 0;
 
     $warning.toggleClass('displayNone', !showWarning);
+}
+
+export async function loadOpenRouterProviders() {
+    try {
+        const response = await fetch('/api/openrouter/providers', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+        });
+
+        if (response.ok) {
+            const providers = await response.json();
+            if (Array.isArray(providers) && providers.length > 0) {
+                return providers;
+            }
+        }
+    } catch (error) {
+        console.warn('Failed to load OpenRouter providers dynamically, using fallback list', error);
+    }
+
+    return OPENROUTER_PROVIDERS_FALLBACK;
 }
 
 export async function syncOpenRouterProvidersForModel(modelId, providersSelector) {
@@ -1054,7 +1074,7 @@ export function getCurrentDreamGenModelTokenizer() {
     }
 }
 
-export function initTextGenModels() {
+export async function initTextGenModels() {
     $('#mancer_model').on('change', onMancerModelSelect);
     $('#model_togetherai_select').on('change', onTogetherModelSelect);
     $('#model_infermaticai_select').on('change', onInfermaticAIModelSelect);
@@ -1070,12 +1090,13 @@ export function initTextGenModels() {
     $('#featherless_model').on('change', () => onFeatherlessModelSelect(String($('#featherless_model').val())));
 
     const providersSelect = $('.openrouter_providers');
-    for (const provider of OPENROUTER_PROVIDERS) {
-        providersSelect.append($('<option>', {
-            value: provider,
-            text: provider,
-        }));
-    }
+    const providers = await loadOpenRouterProviders();
+    providersSelect.each(function () {
+        $(this).empty();
+        providers.forEach(provider => {
+            $(this).append(new Option(provider, provider, false, false));
+        });
+    });
 
     if (!isMobile()) {
         $('#mancer_model').select2({

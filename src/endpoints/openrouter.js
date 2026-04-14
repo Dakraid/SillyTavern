@@ -135,6 +135,9 @@ router.post('/image/generate', async (req, res) => {
                 modalities: ['image', 'text'],
                 image_config: {
                     aspect_ratio: req.body.aspect_ratio || '1:1',
+                    ...(req.body.output_format && { output_format: req.body.output_format }),
+                    ...(req.body.quality && { quality: req.body.quality }),
+                    ...(req.body.n && { n: req.body.n }),
                 },
             }),
         });
@@ -167,6 +170,204 @@ router.post('/image/generate', async (req, res) => {
         };
 
         return res.json(result);
+    } catch (error) {
+        console.error(error);
+        return res.sendStatus(500);
+    }
+});
+
+router.post('/providers', async (_req, res) => {
+    try {
+        const response = await fetch(`${API_OPENROUTER}/providers`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+        });
+
+        if (!response.ok) {
+            console.warn('OpenRouter providers request failed', response.statusText);
+            return res.json([]);
+        }
+
+        /** @type {any} */
+        const data = await response.json();
+        const providers = Array.isArray(data?.data)
+            ? data.data.map(p => p.name).filter(Boolean).sort()
+            : [];
+
+        return res.json(providers);
+    } catch (error) {
+        console.error(error);
+        return res.sendStatus(500);
+    }
+});
+
+router.post('/models/audio', async (req, res) => {
+    try {
+        const { type } = req.body;
+
+        let models;
+        if (type === 'tts') {
+            models = await fetchModelsByModality('/models', 'text', 'audio');
+        } else if (type === 'stt') {
+            models = await fetchModelsByModality('/models', 'audio', 'text');
+        } else {
+            const [ttsModels, sttModels] = await Promise.all([
+                fetchModelsByModality('/models', 'text', 'audio'),
+                fetchModelsByModality('/models', 'audio', 'text'),
+            ]);
+            const seen = new Set();
+            models = [];
+
+            for (const m of [...ttsModels, ...sttModels]) {
+                if (!seen.has(m.id)) {
+                    seen.add(m.id);
+                    models.push(m);
+                }
+            }
+        }
+
+        return res.json(models.map(m => ({ value: m.id, text: m.name || m.id })));
+    } catch (error) {
+        console.error(error);
+        return res.sendStatus(500);
+    }
+});
+
+router.post('/generate-voice', async (req, res) => {
+    try {
+        const key = readSecret(req.user.directories, SECRET_KEYS.OPENROUTER);
+
+        if (!key) {
+            console.warn('OpenRouter API key not found');
+            return res.status(400).json({ error: 'OpenRouter API key not found' });
+        }
+
+        const { text, voice, model, format } = req.body;
+
+        if (!text || !voice || !model) {
+            return res.status(400).json({ error: 'Text, voice, and model are required' });
+        }
+
+        const response = await fetch(`${API_OPENROUTER}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                ...OPENROUTER_HEADERS,
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${key}`,
+            },
+            body: JSON.stringify({
+                model: model,
+                modalities: ['text', 'audio'],
+                audio: { voice: voice, format: format || 'mp3' },
+                messages: [
+                    {
+                        role: 'user',
+                        content: text,
+                    },
+                ],
+            }),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.warn('OpenRouter TTS failed', response.status, errorText);
+            return res.status(500).json({ error: `OpenRouter TTS failed: ${errorText}` });
+        }
+
+        /** @type {any} */
+        const data = await response.json();
+        const audioData = data?.choices?.[0]?.message?.audio?.data;
+
+        if (!audioData) {
+            console.warn('No audio data in OpenRouter TTS response', JSON.stringify(data).substring(0, 500));
+            return res.status(500).json({ error: 'No audio data in response' });
+        }
+
+        const audioBuffer = Buffer.from(audioData, 'base64');
+        const audioFormat = format || data?.choices?.[0]?.message?.audio?.format || 'mp3';
+        const contentType = mime.lookup(audioFormat) || 'audio/mpeg';
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', audioBuffer.length);
+        return res.end(audioBuffer);
+    } catch (error) {
+        console.error(error);
+        return res.sendStatus(500);
+    }
+});
+
+router.post('/transcribe', async (req, res) => {
+    try {
+        const key = readSecret(req.user.directories, SECRET_KEYS.OPENROUTER);
+
+        if (!key) {
+            console.warn('OpenRouter API key not found');
+            return res.status(400).json({ error: 'OpenRouter API key not found' });
+        }
+
+        const { audio, model, lang } = req.body;
+
+        if (!audio || !model) {
+            return res.status(400).json({ error: 'Audio data and model are required' });
+        }
+
+        const match = /^data:audio\/([^;]+);base64,(.+)$/.exec(audio);
+        if (!match) {
+            return res.status(400).json({ error: 'Invalid audio data URI format' });
+        }
+
+        const audioFormat = match[1];
+        const base64Data = match[2];
+        const promptText = lang
+            ? `Transcribe this audio in ${lang}. Respond with only the transcription.`
+            : 'Transcribe this audio. Respond with only the transcription.';
+
+        const response = await fetch(`${API_OPENROUTER}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                ...OPENROUTER_HEADERS,
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${key}`,
+            },
+            body: JSON.stringify({
+                model: model,
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            {
+                                type: 'input_audio',
+                                input_audio: {
+                                    data: base64Data,
+                                    format: audioFormat,
+                                },
+                            },
+                            {
+                                type: 'text',
+                                text: promptText,
+                            },
+                        ],
+                    },
+                ],
+            }),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.warn('OpenRouter STT failed', response.status, errorText);
+            return res.status(500).json({ error: `OpenRouter STT failed: ${errorText}` });
+        }
+
+        /** @type {any} */
+        const data = await response.json();
+        const transcript = data?.choices?.[0]?.message?.content;
+
+        if (!transcript) {
+            console.warn('No transcript in OpenRouter STT response');
+            return res.status(500).json({ error: 'No transcript in response' });
+        }
+
+        return res.json({ text: transcript });
     } catch (error) {
         console.error(error);
         return res.sendStatus(500);

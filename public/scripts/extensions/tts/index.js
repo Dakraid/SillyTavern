@@ -12,6 +12,7 @@ import { SystemTtsProvider } from './system.js';
 import { NovelTtsProvider } from './novel.js';
 import { power_user } from '../../power-user.js';
 import { OpenAITtsProvider } from './openai.js';
+import { OpenRouterTtsProvider } from './openrouter.js';
 import { OpenAICompatibleTtsProvider } from './openai-compatible.js';
 import { XTTSTtsProvider } from './xtts.js';
 import { VITSTtsProvider } from './vits.js';
@@ -140,6 +141,7 @@ const ttsProviders = {
     MiniMax: MiniMaxTtsProvider,
     Novel: NovelTtsProvider,
     OpenAI: OpenAITtsProvider,
+    OpenRouter: OpenRouterTtsProvider,
     'OpenAI Compatible': OpenAICompatibleTtsProvider,
     Pollinations: PollinationsTtsProvider,
     SBVits2: SBVits2TtsProvider,

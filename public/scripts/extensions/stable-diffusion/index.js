@@ -334,6 +334,8 @@ const defaultSettings = {
     openai_quality: 'standard',
     openai_quality_gpt: 'auto',
     openai_duration: '8',
+    openrouter_output_format: 'png',
+    openrouter_quality: 'medium',
 
     style: 'Default',
     styles: defaultStyles,
@@ -600,6 +602,8 @@ async function loadSettings() {
     $('#sd_openai_quality').val(extension_settings.sd.openai_quality);
     $('#sd_openai_quality_gpt').val(extension_settings.sd.openai_quality_gpt);
     $('#sd_openai_duration').val(extension_settings.sd.openai_duration);
+    $('#sd_openrouter_output_format').val(extension_settings.sd.openrouter_output_format);
+    $('#sd_openrouter_quality').val(extension_settings.sd.openrouter_quality);
     $('#sd_comfy_type').val(extension_settings.sd.comfy_type);
     $('#sd_comfy_url').val(extension_settings.sd.comfy_url);
     $('#sd_comfy_prompt').val(extension_settings.sd.comfy_prompt);
@@ -1474,6 +1478,16 @@ async function onOpenAiQualitySelect() {
 
 async function onOpenAiDurationSelect() {
     extension_settings.sd.openai_duration = String($('#sd_openai_duration').find(':selected').val());
+    saveSettingsDebounced();
+}
+
+function onOpenRouterOutputFormatSelect() {
+    extension_settings.sd.openrouter_output_format = String($('#sd_openrouter_output_format').find(':selected').val());
+    saveSettingsDebounced();
+}
+
+function onOpenRouterQualitySelect() {
+    extension_settings.sd.openrouter_quality = String($('#sd_openrouter_quality').find(':selected').val());
     saveSettingsDebounced();
 }
 
@@ -5126,12 +5140,14 @@ async function generateOpenRouterImage(prompt, signal) {
             model: extension_settings.sd.model,
             prompt: prompt,
             aspect_ratio: getClosestAspectRatio(extension_settings.sd.width, extension_settings.sd.height, 'stability'),
+            output_format: extension_settings.sd.openrouter_output_format,
+            quality: extension_settings.sd.openrouter_quality,
         }),
     });
 
     if (result.ok) {
         const data = await result.json();
-        return { format: 'jpg', data: data.image };
+        return { format: data?.format || extension_settings.sd.openrouter_output_format || 'png', data: data.image };
     }
 
     const text = await result.text();
@@ -6242,6 +6258,8 @@ export async function init() {
     $('#sd_openai_style').on('change', onOpenAiStyleSelect);
     $('#sd_openai_quality').on('change', onOpenAiQualitySelect);
     $('#sd_openai_duration').on('input', onOpenAiDurationSelect);
+    $('#sd_openrouter_output_format').on('change', onOpenRouterOutputFormatSelect);
+    $('#sd_openrouter_quality').on('change', onOpenRouterQualitySelect);
     $('#sd_multimodal_captioning').on('input', onMultimodalCaptioningInput);
     $('#sd_snap').on('input', onSnapInput);
     $('#sd_minimal_prompt_processing').on('input', onMinimalPromptProcessing);
