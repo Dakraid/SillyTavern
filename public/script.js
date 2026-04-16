@@ -517,6 +517,10 @@ async function getClientVersion() {
     }
 }
 
+export function getCurrentVersion() {
+    return currentVersion;
+}
+
 export function reloadMarkdownProcessor() {
     converter = new showdown.Converter({
         emoji: true,
@@ -3771,6 +3775,10 @@ class StreamingProcessor {
             eventSource.emit(event_types.MESSAGE_RECEIVED, this.messageId, this.type);
             eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, this.messageId, this.type);
         }
+
+        saveChatConditional().catch(err =>
+            console.error('Failed to save partial message after streaming error', err),
+        );
     }
 
     setFirstSwipe(messageId) {
@@ -7246,7 +7254,8 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
             });
 
             if (getChatResponse.ok) {
-                const currentChat = await getChatResponse.json();
+                const responseData = await getChatResponse.json();
+                const currentChat = Array.isArray(responseData) ? responseData : (responseData.data || []);
 
                 for (const message of currentChat) {
                     if (message.is_user || message.is_system || message.extra?.type == system_message_types.NARRATOR) {
@@ -7373,6 +7382,20 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         const result = await fetch('/api/chats/save', saveChatRequest);
 
         if (result.ok) {
+            const responseData = await result.json();
+
+            if (responseData.version) {
+                const clientVersion = getCurrentVersion();
+
+                if (responseData.version !== clientVersion) {
+                    toastr.warning(
+                        `The server has been updated to v${responseData.version}. You are running v${clientVersion}. Please reload the page to avoid data corruption.`,
+                        'Server Version Changed',
+                        { timeOut: 0, extendedTimeOut: 0 },
+                    );
+                }
+            }
+
             return;
         }
 
@@ -7382,27 +7405,171 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             throw new Error(result.statusText);
         }
 
-        const popupResult = await Popup.show.input(
-            t`ERROR: Chat integrity check failed while saving the file.`,
-            t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-              <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-            '',
-            { okButton: 'OK', cancelButton: false },
-        );
+        try {
+            const diskResponse = await fetch('/api/chats/disk', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    avatar_url: characters[this_chid].avatar,
+                    file_name: fileName,
+                }),
+            });
 
-        const forceSaveConfirmed = popupResult === 'OVERWRITE';
+            if (!diskResponse.ok) {
+                toastr.error('Could not compare chat versions. Reloading...', 'Integrity Error');
+                window.location.reload();
+                return;
+            }
 
-        if (!forceSaveConfirmed) {
-            console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
+            const diskData = await diskResponse.json();
+            const diskMessages = Array.isArray(diskData) ? diskData : (diskData.data || []);
+            diskMessages.shift();
+
+            const mergedMessages = await showIntegrityDiffPopup([...trimmedChat], diskMessages);
+
+            if (mergedMessages === null) {
+                window.location.reload();
+                return;
+            }
+
+            await saveChat({ chatName, withMetadata, mesId: mergedMessages.length, force: true, chatData: mergedMessages });
+        } catch (err) {
+            console.error('Error during integrity diff:', err);
             window.location.reload();
-            return;
         }
 
-        await saveChat({ chatName, withMetadata, mesId, force: true });
+        return;
     } catch (error) {
         console.error(error);
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);
     }
+}
+
+export async function showIntegrityDiffPopup(memoryMessages, diskMessages) {
+    const makeKey = (msg) => `${msg.send_date || ''}|${msg.name || ''}|${(msg.mes || '').substring(0, 100)}`;
+    const memoryMap = new Map();
+    const diskMap = new Map();
+
+    memoryMessages.forEach((msg, index) => memoryMap.set(makeKey(msg), { msg, index }));
+    diskMessages.forEach((msg, index) => diskMap.set(makeKey(msg), { msg, index }));
+
+    const memoryKeys = new Set(memoryMap.keys());
+    const diskKeys = new Set(diskMap.keys());
+    const sharedKeys = [...memoryKeys].filter(key => diskKeys.has(key));
+    const memoryOnlyKeys = [...memoryKeys].filter(key => !diskKeys.has(key));
+    const diskOnlyKeys = [...diskKeys].filter(key => !memoryKeys.has(key));
+
+    const container = document.createElement('div');
+    container.style.textAlign = 'left';
+    container.style.fontSize = '14px';
+
+    const summary = document.createElement('div');
+    summary.innerHTML = `<p><strong>Your tab:</strong> ${memoryMessages.length} messages | <strong>Saved file:</strong> ${diskMessages.length} messages</p>
+        <p>${sharedKeys.length} messages are identical.</p>`;
+    container.append(summary);
+
+    const createMessageSection = (title, keys, map, source, background) => {
+        if (keys.length === 0) {
+            return;
+        }
+
+        const section = document.createElement('div');
+        section.innerHTML = `<hr><h4>${title}</h4>`;
+
+        for (const key of keys) {
+            const { msg } = map.get(key);
+            const preview = (msg.mes || '').substring(0, 200);
+            const item = document.createElement('div');
+            item.style.margin = '4px 0';
+            item.style.padding = '6px';
+            item.style.background = background;
+            item.style.borderRadius = '4px';
+
+            const label = document.createElement('label');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = true;
+            checkbox.dataset.source = source;
+            checkbox.dataset.key = key;
+
+            label.append(checkbox);
+            label.insertAdjacentHTML(
+                'beforeend',
+                ` <strong>${escapeHtml(msg.name || 'Unknown')}</strong> (${escapeHtml(msg.send_date || 'no date')}): ${escapeHtml(preview)}${msg.mes && msg.mes.length > 200 ? '...' : ''}`,
+            );
+            item.append(label);
+            section.append(item);
+        }
+
+        container.append(section);
+    };
+
+    createMessageSection(`Messages only in your tab (${memoryOnlyKeys.length}):`, memoryOnlyKeys, memoryMap, 'memory', 'rgba(0,200,0,0.1)');
+    createMessageSection(`Messages only in saved file (${diskOnlyKeys.length}):`, diskOnlyKeys, diskMap, 'disk', 'rgba(0,100,255,0.1)');
+
+    const popup = new Popup(container, POPUP_TYPE.TEXT, '', {
+        okButton: 'Save Merged',
+        cancelButton: 'Reload Page',
+        wider: true,
+        large: true,
+        leftAlign: true,
+        allowVerticalScrolling: true,
+        onClosing: async (popupInstance) => {
+            if (popupInstance.result !== POPUP_RESULT.AFFIRMATIVE) {
+                return true;
+            }
+
+            const selectedKeys = new Set([...popupInstance.dlg.querySelectorAll('input[type="checkbox"]:checked')]
+                .map(input => input instanceof HTMLInputElement ? input.dataset.key : undefined)
+                .filter(Boolean));
+
+            const merged = [];
+
+            for (const msg of memoryMessages) {
+                const key = makeKey(msg);
+
+                if (diskKeys.has(key) || selectedKeys.has(key)) {
+                    merged.push(msg);
+                }
+            }
+
+            for (const key of diskOnlyKeys) {
+                if (!selectedKeys.has(key)) {
+                    continue;
+                }
+
+                const diskMsg = diskMap.get(key);
+                const insertIndex = merged.findIndex(msg => (msg.send_date || '') > (diskMsg.msg.send_date || ''));
+
+                if (insertIndex >= 0) {
+                    merged.splice(insertIndex, 0, diskMsg.msg);
+                } else {
+                    merged.push(diskMsg.msg);
+                }
+            }
+
+            merged.sort((a, b) => {
+                const dateDiff = String(a.send_date || '').localeCompare(String(b.send_date || ''));
+
+                if (dateDiff !== 0) {
+                    return dateDiff;
+                }
+
+                return memoryMessages.indexOf(a) - memoryMessages.indexOf(b);
+            });
+
+            popupInstance.value = merged;
+            return true;
+        },
+    });
+
+    const popupResult = await popup.show();
+
+    if (popupResult !== POPUP_RESULT.AFFIRMATIVE) {
+        return null;
+    }
+
+    return Array.isArray(popup.value) ? popup.value : null;
 }
 
 /**
@@ -7577,17 +7744,31 @@ export async function getChat() {
         }
 
         const data = await response.json();
-        if (Array.isArray(data) && data.length > 0) {
+        const responseData = data;
+        const chatArray = Array.isArray(responseData) ? responseData : (responseData.data || []);
+        const corruptLines = responseData.corruptLines || [];
+
+        if (chatArray.length > 0) {
             /** @type {ChatHeader} */
-            const chatHeader = data.shift();
+            const chatHeader = chatArray.shift();
             chat_metadata = chatHeader?.chat_metadata ?? {};
-            chat.splice(0, chat.length, ...data);
+            chat.splice(0, chat.length, ...chatArray);
             chat.forEach(ensureMessageMediaIsArray);
         } else {
             // An empty/corrupted chat file
             chat.splice(0, chat.length);
             chat_metadata = {};
         }
+
+        if (corruptLines.length > 0) {
+            toastr.warning(
+                `Found ${corruptLines.length} corrupt message(s) in this chat. These messages could not be loaded.`,
+                'Chat Data Warning',
+                { timeOut: 10000 },
+            );
+            console.warn('Corrupt chat lines:', corruptLines);
+        }
+
         if (!chat_metadata.integrity) {
             chat_metadata.integrity = uuidv4();
         }
@@ -8394,11 +8575,12 @@ export async function getChatsFromFiles(data, isGroupChat) {
                 }
 
                 const currentChat = await chatResponse.json();
+                const chatData = Array.isArray(currentChat) ? currentChat : (currentChat.data || []);
                 if (!isGroupChat) {
                     // remove the first message, which is metadata, only for individual chats
-                    currentChat.shift();
+                    chatData.shift();
                 }
-                chat_dict[file_name] = currentChat;
+                chat_dict[file_name] = chatData;
             } catch (error) {
                 console.error(error);
             }
@@ -9330,11 +9512,43 @@ export async function saveMetadata() {
 }
 
 export async function saveChatConditional() {
+    const MAX_RETRIES = 3;
+    const BASE_DELAY = 5000;
+
     try {
-        await waitUntilCondition(() => !isChatSaving, DEFAULT_SAVE_EDIT_TIMEOUT, 100);
+        await waitUntilCondition(() => !isChatSaving, debounce_timeout.relaxed, 100);
     } catch {
-        console.warn('Timeout waiting for chat to save');
-        return;
+        console.warn('Timeout waiting for chat to save, retrying...');
+
+        let lockAcquired = false;
+
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            const delay_ms = BASE_DELAY * Math.pow(2, attempt - 1);
+            toastr.warning(
+                `Chat save is waiting for a locked operation (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${delay_ms / 1000}s...`,
+                'Save Pending',
+            );
+            await delay(delay_ms);
+
+            try {
+                await waitUntilCondition(() => !isChatSaving, 2000, 100);
+                lockAcquired = true;
+                break;
+            } catch {
+                if (attempt === MAX_RETRIES) {
+                    toastr.error(
+                        `Could not save chat after ${MAX_RETRIES} attempts. Your changes may be lost on page reload.`,
+                        'Save Failed',
+                        { timeOut: 0, extendedTimeOut: 0 },
+                    );
+                    return;
+                }
+            }
+        }
+
+        if (!lockAcquired) {
+            return;
+        }
     }
 
     try {
@@ -9353,6 +9567,7 @@ export async function saveChatConditional() {
         saveItemizedPrompts(getCurrentChatId());
     } catch (error) {
         console.error('Error saving chat', error);
+        toastr.error('Check the server connection and reload the page to prevent data loss.', 'Chat could not be saved');
     } finally {
         isChatSaving = false;
     }

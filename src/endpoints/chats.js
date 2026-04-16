@@ -27,6 +27,7 @@ const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean'
 const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
 const throttleInterval = Number(getConfigValue('backups.chat.throttleInterval', 10_000, 'number'));
 const checkIntegrity = !!getConfigValue('backups.chat.checkIntegrity', true, 'boolean');
+const SERVER_VERSION = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
 export const CHAT_BACKUPS_PREFIX = 'chat_';
 
@@ -480,7 +481,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
 
         if (Array.isArray(chatData)) {
             await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
-            return response.send({ ok: true });
+            return response.send({ ok: true, version: SERVER_VERSION });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
@@ -497,21 +498,42 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
 /**
  * Gets the chat as an object.
  * @param {string} chatFilePath The full chat file path.
- * @returns {Array}} If the chatFilePath cannot be read, this will return [].
+ * @returns {{ data: Array<object>, corruptLines: Array<{ line: number, content: string }> }}
  */
 export function getChatData(chatFilePath) {
-    let chatData = [];
+    const chatData = [];
+    const corruptLines = [];
 
     const chatJSON = tryReadFileSync(chatFilePath) ?? '';
     if (chatJSON.length > 0) {
         const lines = chatJSON.split('\n');
-        // Iterate through the array of strings and parse each line as JSON
-        chatData = lines.map(line => tryParse(line)).filter(x => x);
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+
+            if (line.length === 0) {
+                continue;
+            }
+
+            const parsed = tryParse(line);
+
+            if (parsed) {
+                chatData.push(parsed);
+            } else {
+                corruptLines.push({
+                    line: i + 1,
+                    content: line.length > 100 ? line.substring(0, 100) + '...' : line,
+                });
+            }
+        }
+
+        if (corruptLines.length > 0) {
+            console.warn(`Corrupt lines detected in ${chatFilePath}:`, corruptLines);
+        }
     } else {
         console.warn(`File not found: ${chatFilePath}. The chat does not exist or is empty.`);
     }
 
-    return chatData;
+    return { data: chatData, corruptLines };
 }
 
 router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
@@ -535,11 +557,34 @@ router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
 
         const chatFileName = `${String(request.body.file_name)}.jsonl`;
         const chatFilePath = path.join(directoryPath, sanitize(chatFileName));
+        const { data, corruptLines } = getChatData(chatFilePath);
 
-        return response.send(getChatData(chatFilePath));
+        if (data.length > 0) {
+            return response.send({ data, corruptLines });
+        }
+
+        return response.send({ data: [], corruptLines });
     } catch (error) {
         console.error(error);
         return response.send({});
+    }
+});
+
+router.post('/disk', validateAvatarUrlMiddleware, function (request, response) {
+    try {
+        const cardName = String(request.body.avatar_url).replace('.png', '');
+        const chatFileName = `${String(request.body.file_name)}.jsonl`;
+        const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
+
+        if (!isPathUnderParent(request.user.directories.chats, chatFilePath)) {
+            return response.sendStatus(400);
+        }
+
+        const { data, corruptLines } = getChatData(chatFilePath);
+        return response.send({ data, corruptLines });
+    } catch (error) {
+        console.error(error);
+        return response.status(500).send({ error: String(error.message) });
     }
 });
 
@@ -802,7 +847,25 @@ router.post('/group/get', (request, response) => {
     const id = request.body.id;
     const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
 
-    return response.send(getChatData(chatFilePath));
+    const { data, corruptLines } = getChatData(chatFilePath);
+    return response.send({ data, corruptLines });
+});
+
+router.post('/group/disk', (request, response) => {
+    try {
+        if (!request.body || !request.body.id) {
+            return response.sendStatus(400);
+        }
+
+        const id = request.body.id;
+        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
+        const { data, corruptLines } = getChatData(chatFilePath);
+
+        return response.send({ data, corruptLines });
+    } catch (error) {
+        console.error(error);
+        return response.status(500).send({ error: String(error.message) });
+    }
 });
 
 router.post('/group/info', async (request, response) => {
@@ -857,7 +920,7 @@ router.post('/group/save', async function (request, response) {
 
         if (Array.isArray(chatData)) {
             await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
-            return response.send({ ok: true });
+            return response.send({ ok: true, version: SERVER_VERSION });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }

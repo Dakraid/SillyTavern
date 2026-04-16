@@ -65,6 +65,7 @@ import {
     eventSource,
     event_types,
     getCurrentChatId,
+    getCurrentVersion,
     setCharacterSettingsOverrides,
     system_avatar,
     isChatSaving,
@@ -75,6 +76,7 @@ import {
     loadItemizedPrompts,
     animation_duration,
     depth_prompt_role_default,
+    showIntegrityDiffPopup,
     shouldAutoContinue,
     unshallowCharacter,
     chatElement,
@@ -200,11 +202,20 @@ async function loadGroupChat(chatId) {
     });
 
     if (response.ok) {
-        const data = await response.json();
-        if (!Array.isArray(data)) {
-            return [];
+        const responseData = await response.json();
+        const chatArray = Array.isArray(responseData) ? responseData : (responseData.data || []);
+        const corruptLines = Array.isArray(responseData) ? [] : (responseData.corruptLines || []);
+
+        if (corruptLines.length > 0) {
+            toastr.warning(
+                `Found ${corruptLines.length} corrupt message(s) in this group chat. These messages could not be loaded.`,
+                'Chat Data Warning',
+                { timeOut: 10000 },
+            );
+            console.warn('Corrupt group chat lines:', corruptLines);
         }
-        return data;
+
+        return chatArray;
     }
 
     return [];
@@ -641,7 +652,21 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
     });
     const response = await fetch('/api/chats/group/save', saveGroupChatRequest);
 
-    if (!response.ok) {
+    if (response.ok) {
+        const responseData = await response.json();
+
+        if (responseData.version) {
+            const clientVersion = getCurrentVersion();
+
+            if (responseData.version !== clientVersion) {
+                toastr.warning(
+                    `The server has been updated to v${responseData.version}. You are running v${clientVersion}. Please reload the page to avoid data corruption.`,
+                    'Server Version Changed',
+                    { timeOut: 0, extendedTimeOut: 0 },
+                );
+            }
+        }
+    } else {
         const errorData = await response.json();
         const isIntegrityError = errorData?.error === 'integrity' && !force;
         if (!isIntegrityError) {
@@ -650,23 +675,90 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
             return;
         }
 
-        const popupResult = await Popup.show.input(
-            t`ERROR: Chat integrity check failed while saving the file.`,
-            t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-              <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-            '',
-            { okButton: 'OK', cancelButton: false },
-        );
+        try {
+            const diskResponse = await fetch('/api/chats/group/disk', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ id: chatId }),
+            });
 
-        const forceSaveConfirmed = popupResult === 'OVERWRITE';
+            if (!diskResponse.ok) {
+                toastr.error('Could not compare group chat versions. Reloading...', 'Integrity Error');
+                window.location.reload();
+                return;
+            }
 
-        if (!forceSaveConfirmed) {
-            console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
+            const diskData = await diskResponse.json();
+            const diskMessages = Array.isArray(diskData) ? diskData : (diskData.data || []);
+            diskMessages.shift();
+
+            const mergedMessages = await showIntegrityDiffPopup([...chat], diskMessages);
+
+            if (mergedMessages === null) {
+                window.location.reload();
+                return;
+            }
+
+            await saveGroupChatWithData(groupId, shouldSaveGroup, mergedMessages, true);
+        } catch (err) {
+            console.error('Error during group integrity diff:', err);
             window.location.reload();
+        }
+
+        return;
+    }
+
+    if (shouldSaveGroup) {
+        await editGroup(groupId, false, false);
+    }
+}
+
+async function saveGroupChatWithData(groupId, shouldSaveGroup, chatData, force = false) {
+    const group = groups.find(x => x.id == groupId);
+
+    if (!group) {
+        console.warn('Group not found', groupId);
+        return;
+    }
+
+    const chatId = group.chat_id;
+    group.date_last_chat = Date.now();
+    const chatHeader = {
+        chat_metadata: { ...chat_metadata },
+        user_name: 'unused',
+        character_name: 'unused',
+    };
+    const saveGroupChatRequest = await compressRequest({
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ id: chatId, chat: [chatHeader, ...chatData], force: force }),
+    });
+    const response = await fetch('/api/chats/group/save', saveGroupChatRequest);
+
+    if (!response.ok) {
+        const errorData = await response.json();
+        if (errorData?.error === 'integrity' && !force) {
+            await saveGroupChat(groupId, shouldSaveGroup, true);
             return;
         }
 
-        await saveGroupChat(groupId, shouldSaveGroup, true);
+        toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group Chat could not be saved`);
+        console.error('Group chat could not be saved', response);
+        return;
+    }
+
+    const responseData = await response.json();
+
+    if (responseData.version) {
+        const clientVersion = getCurrentVersion();
+
+        if (responseData.version !== clientVersion) {
+            toastr.warning(
+                `The server has been updated to v${responseData.version}. You are running v${clientVersion}. Please reload the page to avoid data corruption.`,
+                'Server Version Changed',
+                { timeOut: 0, extendedTimeOut: 0 },
+            );
+        }
     }
 
     if (shouldSaveGroup) {
