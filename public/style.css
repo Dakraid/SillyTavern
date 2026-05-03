@@ -6454,3 +6454,18 @@ body:not(.movingUI) .drawer-content.maximized {
         border-width: 2px;
     }
 }
+
+/* DESIGN: specs/design/DESIGN.md#wrapper-format-prompt-build-and-display */
+.prompt-wrapper-tag {
+    opacity: 0.75;
+    font-family: var(--monoFontFamily, monospace);
+    white-space: nowrap;
+}
+
+.prompt-wrapper-tag-open {
+    margin-right: 0.25em;
+}
+
+.prompt-wrapper-tag-close {
+    margin-left: 0.25em;
+}

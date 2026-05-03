@@ -2,7 +2,7 @@
 
 import { DOMPurify } from '../lib.js';
 
-import { applyPromptWrapperSettingsToChat, event_types, eventSource, getActiveCharacterPromptWrapperTag, getActiveCharacterPromptWrapperTagOverride, getActiveChatPromptWrapperSettings, is_send_press, main_api, saveChatConditional, setActiveChatPromptWrapperEnabled, setActiveCharacterPromptWrapperTagOverride, substituteParams } from '../script.js';
+import { event_types, eventSource, getActiveCharacterPromptWrapperTag, getActiveCharacterPromptWrapperTagOverride, getActiveChatPromptWrapperSettings, is_send_press, main_api, printMessages, saveChatConditional, setActiveChatPromptWrapperEnabled, setActiveCharacterPromptWrapperTagOverride, substituteParams } from '../script.js';
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
@@ -1200,6 +1200,46 @@ class PromptManager {
     }
 
     /**
+     * Ensures the currently active prompt order exists and contains only stored prompt identifiers.
+     * @returns {{promptOrder: Partial<Prompt>[], changed: boolean}} Active prompt order and whether it was repaired.
+     */
+    ensureActivePromptOrder() {
+        if ('global' === this.configuration.promptOrder.strategy) {
+            this.activeCharacter = { id: this.configuration.promptOrder.dummyId };
+        }
+
+        if (!this.activeCharacter) return { promptOrder: [], changed: false };
+
+        let changed = false;
+        let list = this.serviceSettings.prompt_order.find(entry => String(entry.character_id) === String(this.activeCharacter.id));
+        if (!list) {
+            this.addPromptOrderForCharacter(this.activeCharacter, promptManagerDefaultPromptOrder);
+            list = this.serviceSettings.prompt_order.find(entry => String(entry.character_id) === String(this.activeCharacter.id));
+            changed = true;
+        }
+
+        const promptOrder = Array.isArray(list?.order) ? list.order : [];
+        if (list && !Array.isArray(list.order)) {
+            list.order = promptOrder;
+            changed = true;
+        }
+
+        for (let i = promptOrder.length - 1; i >= 0; i--) {
+            if (!promptOrder[i]?.identifier || !this.getPromptById(promptOrder[i].identifier)) {
+                promptOrder.splice(i, 1);
+                changed = true;
+            }
+        }
+
+        if (promptOrder.length === 0) {
+            promptOrder.push(...JSON.parse(JSON.stringify(promptManagerDefaultPromptOrder)));
+            changed = true;
+        }
+
+        return { promptOrder, changed };
+    }
+
+    /**
      * Get the prompts for a specific character. Can be filtered to only include enabled prompts.
      * @returns {Prompt[]} The prompts for the character.
      * @param character
@@ -1642,7 +1682,7 @@ class PromptManager {
     }
 
     /**
-     * Renders wrapper settings and binds persistence/rewrite handlers.
+     * Renders wrapper settings and binds metadata-only wrapper handlers.
      * @param {HTMLElement} promptManagerDiv Prompt manager root.
      */
     async renderWrapperSettings(promptManagerDiv) {
@@ -1677,20 +1717,18 @@ class PromptManager {
         const next = input.checked;
         if (previous === next) return;
 
-        const confirmed = await Popup.show.confirm(
-            next ? t`Wrap existing matching chat messages and swipes?` : t`Remove wrappers from existing matching chat messages and swipes?`,
-            t`This rewrites the current chat after applying Completion Prompt Manager wrapper settings.`,
-        );
-        if (!confirmed) {
+        try {
+            setActiveChatPromptWrapperEnabled(role, next);
+            await saveChatConditional();
+            await printMessages();
+            toastr.success(t`Wrapper setting saved for this chat.`);
+            this.renderDebounced(false);
+        } catch (error) {
+            console.error('Failed to save wrapper setting.', error);
             input.checked = previous;
-            return;
+            setActiveChatPromptWrapperEnabled(role, previous);
+            toastr.error(t`Failed to save wrapper setting.`);
         }
-
-        setActiveChatPromptWrapperEnabled(role, next);
-        const changed = await applyPromptWrapperSettingsToChat();
-        if (changed === 0) await saveChatConditional();
-        toastr.success(t`Updated ${changed} chat message entries.`);
-        this.renderDebounced(false);
     }
 
     /**
@@ -1701,27 +1739,21 @@ class PromptManager {
         setActiveCharacterPromptWrapperTagOverride(input.value);
         $('#character_prompt_wrapper_tag').val(input.value);
 
-        if (!getActiveChatPromptWrapperSettings().assistant) return;
-
-        const confirmed = await Popup.show.confirm(
-            t`Apply the new character wrapper tag to existing assistant messages and swipes?`,
-            t`This rewrites managed wrappers in the current chat.`,
-        );
-        if (!confirmed) return;
-
-        const changed = await applyPromptWrapperSettingsToChat();
-        toastr.success(t`Updated ${changed} chat message entries.`);
+        if (getActiveChatPromptWrapperSettings().assistant) await printMessages();
+        this.renderDebounced(false);
     }
 
     /**
      * Opens the approved bulk operations wizard.
      */
     async showBulkWizard() {
+        const { changed: repairedOrder } = this.ensureActivePromptOrder();
         const prompts = this.getPromptsForCharacter(this.activeCharacter);
         if (!prompts.length) {
             toastr.warning(t`No prompts are currently shown.`);
             return;
         }
+        if (repairedOrder) await this.saveServiceSettings();
 
         const content = await renderTemplateAsync('promptManagerBulkWizard', { prefix: this.configuration.prefix, count: prompts.length });
         const popup = new Popup(content, POPUP_TYPE.TEXT, null, {
@@ -1743,10 +1775,15 @@ class PromptManager {
         );
         if (!confirmed) return;
 
-        const changed = this.applyBulkOperation(prompts, popup.value);
-        this.render(false);
-        this.saveServiceSettings();
-        toastr.success(t`Bulk prompt operation applied to ${changed} prompts.`);
+        try {
+            const changed = this.applyBulkOperation(prompts, popup.value);
+            this.render(false);
+            await this.saveServiceSettings();
+            toastr.success(t`Bulk prompt operation applied to ${changed} prompts.`);
+        } catch (error) {
+            console.error('Failed to apply bulk prompt operation.', error);
+            toastr.error(t`Failed to apply bulk prompt operation.`);
+        }
     }
 
     /**

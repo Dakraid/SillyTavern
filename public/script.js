@@ -273,7 +273,7 @@ import { extractReasoningFromData, extractReasoningSignatureFromData, initReason
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
-import { applyPromptWrapperToText, getChatPromptWrapperSettings, getPromptWrapperSettings, normalizePromptWrapperTag, unwrapPromptWrapperText, wrapPromptWrapperText } from './scripts/prompt-wrappers.js';
+import { cleanupPersistedPromptWrapperSlot, getChatPromptWrapperSettings, getPromptWrapperDisplayParts, getPromptWrapperRole, getPromptWrapperSettings, normalizePromptWrapperTag, resolvePromptWrapperState } from './scripts/prompt-wrappers.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -1983,8 +1983,7 @@ function insertSVGIcon(mes, extra) {
 export function updateMessageBlock(messageId, message, { rerenderMessage = true } = {}) {
     const messageElement = chatElement.find(`[mesid="${messageId}"]`);
     if (rerenderMessage) {
-        const text = message?.extra?.display_text ?? message.mes;
-        messageElement.find('.mes_text').html(messageFormatting(text, message.name, message.is_system, message.is_user, messageId, {}, false));
+        messageElement.find('.mes_text').html(getMessageTextHTML(message, { messageId }));
     }
 
     updateReasoningUI(messageElement);
@@ -2475,7 +2474,7 @@ function getMessageTextHTML(message, { messageId = chat.indexOf(message) }) {
     /** @type {Partial<DOMPurify.Config>} */
     const sanitizerOverrides = message.extra?.uses_system_ui ? { MESSAGE_ALLOW_SYSTEM_UI: true } : {};
 
-    return messageFormatting(
+    const formatted = messageFormatting(
         message.extra?.display_text || message.mes,
         message.name,
         message.is_system,
@@ -2484,6 +2483,10 @@ function getMessageTextHTML(message, { messageId = chat.indexOf(message) }) {
         sanitizerOverrides,
         false,
     );
+    const wrapper = getPromptWrapperDisplayForMessage(message);
+    if (!wrapper) return formatted;
+
+    return `<span class="prompt-wrapper-tag prompt-wrapper-tag-open">${escapeHtml(wrapper.opening)}</span>${formatted}<span class="prompt-wrapper-tag prompt-wrapper-tag-close">${escapeHtml(wrapper.closing)}</span>`;
 }
 
 /**
@@ -5873,108 +5876,64 @@ export function setActiveChatPromptWrapperEnabled(role, enabled) {
  * @param {ChatMessage} message Chat message.
  * @returns {{enabled: boolean, tag: string}}
  */
-function getPromptWrapperStateForMessage(role, message) {
+export function getPromptWrapperStateForMessage(role, message) {
     const chatSettings = getActiveChatPromptWrapperSettings();
     const globalSettings = getPromptWrapperSettings(extension_settings);
 
     if (role === 'user') {
-        return { enabled: chatSettings.user, tag: normalizePromptWrapperTag(message?.name || name1 || 'Unknown') };
+        return resolvePromptWrapperState({ enabled: chatSettings.user, tag: message?.name || name1 || 'Unknown' });
     }
 
     const avatar = message?.original_avatar || characters[this_chid]?.avatar;
     const override = avatar ? globalSettings.chara[avatar] : '';
-    return { enabled: chatSettings.assistant, tag: normalizePromptWrapperTag(override || message?.name || name2 || 'Unknown') };
+    return resolvePromptWrapperState({ enabled: chatSettings.assistant, tag: override || message?.name || name2 || 'Unknown' });
 }
 
 /**
- * Writes message text with current persistent wrapper settings.
+ * Gets display-only prompt wrapper parts for a chat message.
  * @param {ChatMessage} message Chat message.
- * @param {'assistant'|'user'} role Wrapper role.
- * @param {string} baseText Unwrapped base text.
+ * @returns {{enabled: boolean, tag: string, opening: string, closing: string}|null}
  */
-function writePromptWrappedMessageText(message, role, baseText) {
-    if (!message) return;
-    message.extra ??= {};
-    const { enabled, tag } = getPromptWrapperStateForMessage(role, message);
-
-    if (!enabled) {
-        message.mes = String(baseText ?? '');
-        delete message.extra.prompt_wrapper;
-        return;
-    }
-
-    const wrapped = wrapPromptWrapperText(baseText, tag, String(baseText ?? ''));
-    message.mes = wrapped.mes;
-    message.extra.prompt_wrapper = {
-        role,
-        tag: wrapped.tag,
-        base_mes: wrapped.base_mes,
-        version: 1,
-    };
+function getPromptWrapperDisplayForMessage(message) {
+    const role = getPromptWrapperRole(message);
+    if (!role) return null;
+    return getPromptWrapperDisplayParts(getPromptWrapperStateForMessage(role, message));
 }
 
 /**
- * Appends text to the unwrapped base of a message, then reapplies its wrapper.
- * @param {ChatMessage} message Chat message.
- * @param {'assistant'|'user'} role Wrapper role.
- * @param {string} appendText Text to append.
+ * Removes legacy persisted wrapper metadata from the active chat without touching unmetadataed XML text.
+ * @returns {number} Number of cleaned message/swipe slots.
  */
-function appendPromptWrappedMessageText(message, role, appendText) {
-    const { tag } = getPromptWrapperStateForMessage(role, message);
-    const base = unwrapPromptWrapperText(message?.mes ?? '', tag, message?.extra?.prompt_wrapper);
-    writePromptWrappedMessageText(message, role, base + String(appendText ?? ''));
-}
-
-/**
- * Applies current wrapper settings to a chat text slot.
- * @param {ChatMessage} message Chat message.
- * @param {'assistant'|'user'} role Wrapper role.
- * @param {string} text Text slot value.
- * @param {object} extra Text slot metadata.
- * @returns {{text: string, extra: object, changed: boolean}}
- */
-function applyPromptWrapperSlot(message, role, text, extra) {
-    const { enabled, tag } = getPromptWrapperStateForMessage(role, message);
-    return applyPromptWrapperToText({ text, extra, role, tag, enabled });
-}
-
-/**
- * Retroactively applies current prompt wrapper settings to the active chat and swipes.
- * @returns {Promise<number>} Number of changed text slots.
- */
-export async function applyPromptWrapperSettingsToChat() {
+function cleanupPersistedPromptWrapperMetadataFromChat() {
     let changed = 0;
 
     for (const message of chat) {
         if (!message || typeof message !== 'object') continue;
-        const role = message.is_user ? 'user' : (!message.is_system && !message.extra?.isSmallSys ? 'assistant' : null);
-        if (!role) continue;
 
-        message.extra ??= {};
-        const messageResult = applyPromptWrapperSlot(message, role, message.mes ?? '', message.extra);
-        if (messageResult.changed) changed++;
-        message.mes = messageResult.text;
-        message.extra = messageResult.extra;
+        if (message.extra?.prompt_wrapper) {
+            const result = cleanupPersistedPromptWrapperSlot(message.mes ?? '', message.extra);
+            if (result.changed) {
+                message.mes = result.text;
+                message.extra = result.extra;
+                changed++;
+            }
+        }
 
-        if (Array.isArray(message.swipes)) {
-            message.swipe_info ??= [];
-            for (let i = 0; i < message.swipes.length; i++) {
-                message.swipe_info[i] ??= { extra: {} };
-                message.swipe_info[i].extra ??= {};
-                const swipeResult = applyPromptWrapperSlot(message, role, message.swipes[i] ?? '', message.swipe_info[i].extra);
-                if (swipeResult.changed) changed++;
-                message.swipes[i] = swipeResult.text;
-                message.swipe_info[i].extra = swipeResult.extra;
+        if (!Array.isArray(message.swipes)) continue;
+        message.swipe_info ??= [];
+        for (let i = 0; i < message.swipes.length; i++) {
+            const swipeInfo = message.swipe_info[i];
+            if (!swipeInfo?.extra?.prompt_wrapper) continue;
+            const result = cleanupPersistedPromptWrapperSlot(message.swipes[i] ?? '', swipeInfo.extra);
+            if (result.changed) {
+                message.swipes[i] = result.text;
+                swipeInfo.extra = result.extra;
+                changed++;
             }
         }
     }
 
-    if (changed > 0) {
-        chat_metadata.tainted = true;
-        await saveChatConditional();
-        await printMessages();
-    }
-
+    if (changed > 0) chat_metadata.tainted = true;
     return changed;
 }
 
@@ -6011,8 +5970,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         message.extra.bias = messageBias;
         message.mes = removeMacros(message.mes);
     }
-
-    writePromptWrappedMessageText(message, 'user', message.mes);
 
     if (power_user.message_token_count_enabled) {
         message.extra.token_count = await getTokenCountAsync(message.mes, 0);
@@ -6801,7 +6758,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage.extra.reasoning = reasoning;
             lastMessage.extra.reasoning_duration = null;
             lastMessage.extra.reasoning_signature = reasoningSignature;
-            writePromptWrappedMessageText(lastMessage, 'assistant', getMessage);
             await processImageAttachment(lastMessage, { imageUrls });
             if (power_user.message_token_count_enabled) {
                 const tokenCountText = (reasoning || '') + lastMessage.mes;
@@ -6818,7 +6774,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         console.debug('Trying to append.');
         oldMessage = lastMessage.mes;
         lastMessage.title = title;
-        appendPromptWrappedMessageText(lastMessage, 'assistant', getMessage);
+        lastMessage.mes += String(getMessage ?? '');
         lastMessage.gen_started = generation_started;
         lastMessage.gen_finished = generationFinished;
         lastMessage.send_date = getMessageTimeStamp();
@@ -6840,7 +6796,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         oldMessage = lastMessage.mes;
         console.debug('Trying to appendFinal.');
         lastMessage.title = title;
-        writePromptWrappedMessageText(lastMessage, 'assistant', getMessage);
+        lastMessage.mes = getMessage;
         lastMessage.gen_started = generation_started;
         lastMessage.gen_finished = generationFinished;
         lastMessage.send_date = getMessageTimeStamp();
@@ -6889,8 +6845,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             newMessage.original_avatar = characters[this_chid].avatar;
             newMessage.extra.gen_id = group_generation_id;
         }
-
-        writePromptWrappedMessageText(newMessage, 'assistant', newMessage.mes);
 
         if (power_user.message_token_count_enabled) {
             const tokenCountText = (reasoning || '') + newMessage.mes;
@@ -6942,19 +6896,8 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             extra: swipeInfoExtra,
         };
         const swipeInfoArray = Array(swipes.length).fill().map(() => structuredClone(swipeInfo));
-        const wrappedSwipes = swipes.map((swipe, index) => {
-            const swipeMessage = {
-                name: item.name,
-                original_avatar: item.original_avatar,
-                mes: swipe,
-                extra: swipeInfoArray[index].extra ?? {},
-            };
-            writePromptWrappedMessageText(swipeMessage, 'assistant', swipe);
-            swipeInfoArray[index].extra = swipeMessage.extra;
-            return swipeMessage.mes;
-        });
-        parseReasoningInSwipes(wrappedSwipes, swipeInfoArray, item.extra?.reasoning_duration);
-        item.swipes.push(...wrappedSwipes);
+        parseReasoningInSwipes(swipes, swipeInfoArray, item.extra?.reasoning_duration);
+        item.swipes.push(...swipes);
         item.swipe_info.push(...swipeInfoArray);
     }
 
@@ -7972,7 +7915,9 @@ export async function getChat() {
             chat_metadata.integrity = uuidv4();
         }
         getActiveChatPromptWrapperSettings();
+        const cleanedPromptWrappers = cleanupPersistedPromptWrapperMetadataFromChat();
         await getChatResult();
+        if (cleanedPromptWrappers > 0) await saveChatConditional();
         eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: characters[this_chid] } });
 
         // Focus on the textarea if not already focused on a visible text input
@@ -8613,7 +8558,6 @@ export async function messageEdit(editMessageId) {
  * @param {number} [messageId=this_edit_mes_id]
  */
 async function messageEditCancel(messageId = this_edit_mes_id) {
-    let text = chat[messageId].mes;
     let thisMesDiv;
     // If this is the button then select it's parent. Otherwise, select by messageId.
     if (this?.classList?.contains('mes_edit_cancel')) {
@@ -8627,15 +8571,7 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
     thisMesDiv.find('.mes_edit_buttons').css('display', 'none');
     thisMesBlock.find('.mes_buttons').css('display', '');
     thisMesBlock.find('.mes_text')
-        .append(messageFormatting(
-            text,
-            this_edit_mes_chname,
-            chat[messageId].is_system,
-            chat[messageId].is_user,
-            messageId,
-            {},
-            false,
-        ));
+        .append(getMessageTextHTML(chat[messageId], { messageId }));
     appendMediaToMessage(chat[messageId], thisMesDiv);
     addCopyToCodeBlocks(thisMesDiv);
 
@@ -8710,23 +8646,14 @@ async function messageEditDone(div) {
         return;
     }
 
-    let { mesBlock, text, mes, bias } = updateMessage(div);
+    let { mesBlock, mes, bias } = updateMessage(div);
 
     await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
-    text = chat[this_edit_mes_id]?.mes ?? text;
     mesBlock.find('.mes_text').empty();
     mesBlock.find('.mes_edit_buttons').css('display', 'none');
     mesBlock.find('.mes_buttons').css('display', '');
     mesBlock.find('.mes_text').append(
-        messageFormatting(
-            text,
-            this_edit_mes_chname,
-            mes.is_system,
-            mes.is_user,
-            this_edit_mes_id,
-            {},
-            false,
-        ),
+        getMessageTextHTML(mes, { messageId: this_edit_mes_id }),
     );
     mesBlock.find('.mes_bias').empty();
     mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
@@ -11786,6 +11713,9 @@ jQuery(async function () {
     $('#character_prompt_wrapper_tag').on('input', function () {
         if (menu_type != 'create') {
             setActiveCharacterPromptWrapperTagOverride(String($('#character_prompt_wrapper_tag').val()));
+            if (getActiveChatPromptWrapperSettings().assistant) {
+                printMessages();
+            }
         }
     });
 

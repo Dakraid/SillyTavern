@@ -1,11 +1,15 @@
 import {
     applyPromptBulkOperation,
-    applyPromptWrapperToText,
     calculatePromptOrderRenumber,
+    cleanupPersistedPromptWrapperSlot,
     createPromptBulkUpdates,
     getChatPromptWrapperSettings,
+    getPromptWrapperDisplayParts,
+    getPromptWrapperRole,
     normalizePromptWrapperTag,
+    resolvePromptWrapperState,
     stripPromptWrapperTags,
+    wrapPromptWrapperContent,
     wrapPromptWrapperText,
 } from '../public/scripts/prompt-wrappers.js';
 
@@ -16,25 +20,45 @@ describe('prompt wrappers', () => {
         expect(normalizePromptWrapperTag('   ')).toBe('Unknown');
     });
 
-    test('wraps once and collapses duplicate same outer tags', () => {
+    test('ephemerally wraps content once for prompt payloads', () => {
+        const state = resolvePromptWrapperState({ enabled: true, tag: 'Alice' });
+        expect(wrapPromptWrapperContent('<Alice>Hello</Alice></Alice>', state)).toBe('<Alice>Hello</Alice>');
+        expect(wrapPromptWrapperContent('Hello', { enabled: false, tag: 'Alice' })).toBe('Hello');
+    });
+
+    test('builds display-only tag parts without wrapping content', () => {
+        expect(getPromptWrapperDisplayParts({ enabled: false, tag: 'Alice' })).toBeNull();
+        expect(getPromptWrapperDisplayParts({ enabled: true, tag: 'A<B>' })).toEqual({
+            enabled: true,
+            tag: 'A&lt;B&gt;',
+            opening: '<A&lt;B&gt;>',
+            closing: '</A&lt;B&gt;>',
+        });
+    });
+
+    test('resolves only user and assistant message roles', () => {
+        expect(getPromptWrapperRole({ is_user: true, extra: {} })).toBe('user');
+        expect(getPromptWrapperRole({ is_user: false, is_system: false, extra: {} })).toBe('assistant');
+        expect(getPromptWrapperRole({ is_user: false, is_system: true, extra: {} })).toBeNull();
+        expect(getPromptWrapperRole({ is_user: false, extra: { isSmallSys: true } })).toBeNull();
+        expect(getPromptWrapperRole({ is_user: false, extra: { type: 'narrator' } })).toBeNull();
+    });
+
+    test('cleanup only removes legacy metadata-managed wrappers', () => {
+        const cleaned = cleanupPersistedPromptWrapperSlot('<Alice>changed</Alice>', {
+            prompt_wrapper: { role: 'assistant', tag: 'Alice', base_mes: 'exact <content>', version: 1 },
+            keep: true,
+        });
+        expect(cleaned).toEqual({ text: 'exact <content>', extra: { keep: true }, changed: true });
+
+        const untouched = cleanupPersistedPromptWrapperSlot('<Alice>literal</Alice>', { keep: true });
+        expect(untouched).toEqual({ text: '<Alice>literal</Alice>', extra: { keep: true }, changed: false });
+    });
+
+    test('legacy same outer tags can still be normalized by pure helpers', () => {
         const wrapped = wrapPromptWrapperText('<Alice><Alice>Hello</Alice></Alice></Alice>', 'Alice');
         expect(wrapped.mes).toBe('<Alice>Hello</Alice>');
         expect(wrapped.base_mes).toBe('Hello');
-    });
-
-    test('unwrap uses exact provenance base content', () => {
-        const result = applyPromptWrapperToText({
-            text: '<Alice>changed</Alice>',
-            extra: { prompt_wrapper: { role: 'assistant', tag: 'Alice', base_mes: 'exact <content>', version: 1 } },
-            role: 'assistant',
-            tag: 'Alice',
-            enabled: false,
-        });
-        expect(result.text).toBe('exact <content>');
-        expect(result.extra.prompt_wrapper).toBeUndefined();
-    });
-
-    test('legacy same outer tags are removed without provenance', () => {
         expect(stripPromptWrapperTags('<Kris><Kris>Hi</Kris></Kris></Kris>', 'Kris')).toBe('Hi');
     });
 });

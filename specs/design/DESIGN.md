@@ -4,25 +4,26 @@ Date: 2026-05-03
 
 ## Approved scope
 
-- `#completion_prompt_manager` exposes per-active-chat wrapper toggles for persisted chat messages.
-- Assistant messages are persisted as `<CharacterTag>message</CharacterTag>` when enabled. In group chats, the tag comes from the actual responding character for each message.
-- User messages are persisted as `<PersonaName>message</PersonaName>` when enabled.
+- `#completion_prompt_manager` exposes per-active-chat wrapper toggles for ephemeral prompt-build tags and display-only chat UI tags.
+- Assistant prompt content is sent as `<CharacterTag>message</CharacterTag>` when enabled. In group chats, the tag comes from the actual responding character for each message.
+- User prompt content is sent as `<PersonaName>message</PersonaName>` when enabled.
+- Saved chat messages and saved swipes remain raw/unwrapped. XML tags are not written to `mes`, `swipes[]`, or new `extra.prompt_wrapper` metadata.
 - Assistant/user wrapper enabled state is stored per chat in `chat_metadata.prompt_wrappers = { assistant, user }`; missing metadata seeds once from legacy global wrapper booleans.
-- A per-character assistant tag override is stored internally in SillyTavern settings and is not written to character card data, chat metadata, or prompt import/export files.
+- A per-character assistant tag override is stored internally in SillyTavern settings and is not written to character card data, chat metadata, chat messages, or prompt import/export files.
 - The same override is editable in both the Character Editor and Completion Prompt Manager.
-- Wrapper toggles apply retroactively to the current chat and all stored swipes after a confirmation. Turning on wraps old messages; turning off removes managed or same-tag outer wrappers.
-- New assistant/user messages, regenerated replies, swipes, continues, and appends persist exactly one wrapper pair when the matching toggle is enabled.
-- Duplicate or malformed same outer tags are normalized to one valid pair while wrapping; same outer tags are removed while unwrapping. Legacy same outer tags are treated as managed wrappers.
+- Wrapper toggles are metadata-only. Changing them saves chat metadata, re-renders chat display tags, and changes future prompt-build payloads without rewriting chat text.
+- Legacy cleanup is limited to old messages/swipes that already have `extra.prompt_wrapper` metadata from earlier builds. Cleanup restores `base_mes` or strips that metadata tag, deletes the legacy metadata, and saves the chat.
 
-## Wrapper format and persistence
+## Wrapper format, prompt build, and display
 
 - Format: `<Tag>message</Tag>`.
 - Tag source:
   - Assistant: character-specific override, then character/message display name, then `Unknown`.
   - User: active persona/message user name, then `Unknown`.
 - Tag names preserve display names, including spaces and special characters. `<` and `>` are escaped for tag boundaries.
-- Metadata shape for reversible persistence: `extra.prompt_wrapper = { role, tag, base_mes, version: 1 }` on messages and swipe info entries.
-- Metadata stores the exact unwrapped base content so toggling off can restore it.
+- Prompt-build wrapping happens in the chat-completion message payload only and does not mutate source chat objects.
+- Chat UI renders opening/closing XML tag spans separately around formatted message content. Editing a message uses raw `message.mes`, so tags do not appear in edit textareas.
+- Narrator, system, small-system, ignored, and non-user/non-assistant messages are not wrapped.
 
 ## Prompt Manager UI
 
@@ -32,8 +33,8 @@ Date: 2026-05-03
   - `Wrap user messages with persona tags` checkbox.
   - `Active character tag override` text input when a character is selected.
 - Toggle checked states reflect the currently loaded chat; switching chats, characters, or groups re-renders them from that chat's metadata.
-- Toggle changes require confirmation because they rewrite and save the current chat. Metadata-only changes save even when there are no message text slots to rewrite.
-- The override input saves to the shared internal wrapper setting.
+- Toggle changes do not require rewrite confirmation because they only save chat metadata and re-render display-only tags.
+- The override input saves to the shared internal wrapper setting and re-renders display-only assistant tags when assistant wrapping is enabled.
 
 ## Character Editor UI
 
@@ -66,3 +67,4 @@ Date: 2026-05-03
 
 - 2026-05-03: Initial approved design recorded from user interview and design deck selections.
 - 2026-05-03: Follow-up approval changed assistant/user wrapper toggles from global settings to per-active-chat metadata while keeping character tag overrides global/internal.
+- 2026-05-03: Corrected wrapper model from persisted chat text to ephemeral prompt-build wrapping plus display-only UI tags; legacy metadata cleanup is one-way migration only.

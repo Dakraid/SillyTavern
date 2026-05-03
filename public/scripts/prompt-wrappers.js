@@ -1,6 +1,8 @@
 'use strict';
 
 export const PROMPT_WRAPPER_VERSION = 1;
+export const PROMPT_WRAPPER_ROLE_ASSISTANT = 'assistant';
+export const PROMPT_WRAPPER_ROLE_USER = 'user';
 
 /**
  * Gets or creates persisted wrapper settings.
@@ -139,42 +141,78 @@ export function unwrapPromptWrapperText(text, tag, metadata = null) {
 }
 
 /**
- * Applies or removes a persistent wrapper around a message text slot.
- * @param {object} params Params.
- * @param {string} params.text Current slot text.
- * @param {object?} params.extra Message or swipe info extra object.
- * @param {'assistant'|'user'} params.role Wrapper role.
- * @param {string} params.tag Raw tag name.
- * @param {boolean} params.enabled Whether wrapper should be enabled.
- * @returns {{text: string, extra: object, changed: boolean}}
+ * Resolves the wrapper role for a normal chat message.
+ * @param {Record<string, any>} message Chat message-like object.
+ * @returns {'assistant'|'user'|null} Wrapper role, or null for system/narrator/small-system/invalid messages.
  */
-export function applyPromptWrapperToText({ text, extra = {}, role, tag, enabled }) {
-    const normalizedTag = normalizePromptWrapperTag(tag);
+export function getPromptWrapperRole(message) {
+    if (!message || typeof message !== 'object') return null;
+    if (message.is_system || message.extra?.isSmallSys || message.extra?.type === 'narrator') return null;
+    return message.is_user ? PROMPT_WRAPPER_ROLE_USER : PROMPT_WRAPPER_ROLE_ASSISTANT;
+}
+
+/**
+ * Creates a normalized wrapper state object.
+ * @param {object} params Params.
+ * @param {boolean} params.enabled Whether this role is enabled.
+ * @param {string} params.tag Raw tag name.
+ * @returns {{enabled: boolean, tag: string}}
+ */
+export function resolvePromptWrapperState({ enabled, tag }) {
+    return { enabled: !!enabled, tag: normalizePromptWrapperTag(tag) };
+}
+
+/**
+ * Ephemerally wraps prompt content without mutating source chat data.
+ * @param {string} content Raw prompt content.
+ * @param {{enabled: boolean, tag: string}|null} state Wrapper state.
+ * @returns {string} Wrapped content when enabled, otherwise raw content.
+ */
+export function wrapPromptWrapperContent(content, state) {
+    const text = String(content ?? '');
+    if (!state?.enabled) return text;
+    return wrapPromptWrapperText(text, state.tag).mes;
+}
+
+/**
+ * Builds display-only XML tag parts for rendering around formatted message content.
+ * @param {{enabled: boolean, tag: string}|null} state Wrapper state.
+ * @returns {{enabled: boolean, tag: string, opening: string, closing: string}|null} Display parts or null when disabled.
+ */
+export function getPromptWrapperDisplayParts(state) {
+    if (!state?.enabled) return null;
+    const tag = normalizePromptWrapperTag(state.tag);
+    return {
+        enabled: true,
+        tag,
+        opening: `<${tag}>`,
+        closing: `</${tag}>`,
+    };
+}
+
+/**
+ * Removes legacy persisted wrapper metadata from a text slot without touching unmetadataed XML text.
+ * @param {string} text Current slot text.
+ * @param {object?} extra Message or swipe extra metadata.
+ * @returns {{text: string, extra: object, changed: boolean}} Cleaned slot state.
+ */
+export function cleanupPersistedPromptWrapperSlot(text, extra = {}) {
     const nextExtra = extra && typeof extra === 'object' ? structuredClone(extra) : {};
     const metadata = nextExtra.prompt_wrapper;
-    let nextText;
-
-    if (enabled) {
-        const base = typeof metadata?.base_mes === 'string'
-            ? metadata.base_mes
-            : stripPromptWrapperTags(text, normalizedTag);
-        const wrapped = wrapPromptWrapperText(text, normalizedTag, base);
-        nextText = wrapped.mes;
-        nextExtra.prompt_wrapper = {
-            role,
-            tag: normalizedTag,
-            base_mes: wrapped.base_mes,
-            version: PROMPT_WRAPPER_VERSION,
-        };
-    } else {
-        nextText = unwrapPromptWrapperText(text, normalizedTag, metadata);
-        delete nextExtra.prompt_wrapper;
+    if (!metadata || typeof metadata !== 'object') {
+        return { text: String(text ?? ''), extra: nextExtra, changed: false };
     }
+
+    const tag = normalizePromptWrapperTag(metadata.tag || 'Unknown');
+    const nextText = typeof metadata.base_mes === 'string'
+        ? metadata.base_mes
+        : stripPromptWrapperTags(text, tag);
+    delete nextExtra.prompt_wrapper;
 
     return {
         text: nextText,
         extra: nextExtra,
-        changed: nextText !== String(text ?? '') || JSON.stringify(nextExtra.prompt_wrapper ?? null) !== JSON.stringify(metadata ?? null),
+        changed: true,
     };
 }
 
