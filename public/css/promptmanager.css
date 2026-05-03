@@ -264,6 +264,55 @@
     font-size: 12px;
 }
 
+/* DESIGN: specs/design/DESIGN.md#prompt-manager-ui */
+#completion_prompt_manager .completion_prompt_manager_wrapper_settings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    margin: 0.5em 0.25em;
+    padding: 0.5em;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    flex: 1;
+}.completion_prompt_manager_bulk_wizard label {
+    flex-direction: row;
+}
+
+#completion_prompt_manager .completion_prompt_manager_wrapper_overrides,
+#completion_prompt_manager .completion_prompt_manager_wrapper_override {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25em;
+}
+
+/* DESIGN: specs/design/DESIGN.md#bulk-operations-ui */
+.completion_prompt_manager_bulk_wizard,
+.completion_prompt_manager_bulk_wizard fieldset,
+.completion_prompt_manager_bulk_wizard label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+}
+
+.completion_prompt_manager_bulk_wizard label {
+    flex-direction: row;
+}
+
+.completion_prompt_manager_bulk_wizard fieldset {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    margin: 0;
+    padding: 0.75em;
+}
+
+.completion_prompt_manager_bulk_wizard .bulk-inline-error {
+    min-height: 1.5em;
+}
+
+#character_prompt_wrapper_tag_block {
+    margin: 0.5em 0;
+}
+
 #completion_prompt_manager .completion_prompt_manager_important a {
     font-weight: 600;
 }
@@ -356,6 +405,15 @@
 
     #completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt span span span {
         margin-left: 0.5em;
+    }
+
+    #completion_prompt_manager .completion_prompt_manager_footer {
+        flex-wrap: wrap;
+    }
+
+    .completion_prompt_manager_bulk_wizard input,
+    .completion_prompt_manager_bulk_wizard select {
+        width: 100%;
     }
 }
 

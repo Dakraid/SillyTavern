@@ -1,0 +1,22 @@
+<!-- DESIGN: specs/design/DESIGN.md#prompt-manager-ui -->
+<div class="{{prefix}}prompt_manager_wrapper_settings" aria-label="Prompt wrapper settings">
+    <label class="checkbox_label" for="{{prefix}}prompt_manager_wrap_assistant">
+        <input id="{{prefix}}prompt_manager_wrap_assistant" type="checkbox" {{#if assistant}}checked{{/if}}>
+        <span data-i18n="Wrap assistant messages with character tags">Wrap assistant messages with character tags</span>
+    </label>
+    <label class="checkbox_label" for="{{prefix}}prompt_manager_wrap_user">
+        <input id="{{prefix}}prompt_manager_wrap_user" type="checkbox" {{#if user}}checked{{/if}}>
+        <span data-i18n="Wrap user messages with persona tags">Wrap user messages with persona tags</span>
+    </label>
+    {{#if hasOverrides}}
+    <div class="{{prefix}}prompt_manager_wrapper_overrides" aria-label="Character tag overrides">
+        <span data-i18n="Character tag overrides">Character tag overrides</span>
+        {{#each overrides}}
+        <label class="{{../prefix}}prompt_manager_wrapper_override" for="{{../prefix}}prompt_manager_wrapper_tag_override_{{@index}}">
+            <span>{{name}}</span>
+            <input id="{{../prefix}}prompt_manager_wrapper_tag_override_{{@index}}" class="{{../prefix}}prompt_manager_wrapper_tag_override text_pole" type="text" value="{{value}}" placeholder="{{name}}" data-avatar="{{avatar}}" data-default-tag="{{name}}" data-group="{{isGroup}}" autocomplete="off">
+        </label>
+        {{/each}}
+    </div>
+    {{/if}}
+</div>

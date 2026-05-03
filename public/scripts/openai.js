@@ -18,6 +18,7 @@ import {
     getExtensionPromptMaxDepth,
     getMediaDisplay,
     getMediaIndex,
+    getPromptWrapperStateForMessage,
     getRequestHeaders,
     is_send_press,
     main_api,
@@ -81,6 +82,7 @@ import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
+import { wrapPromptWrapperContent } from './prompt-wrappers.js';
 
 export {
     openai_messages_count,
@@ -580,6 +582,10 @@ function setOpenAIMessages(chat) {
         // 100% legal way to send a message as system
         if (chat[j].extra?.type === system_message_types.NARRATOR) {
             role = 'system';
+        }
+
+        if ((role === 'user' || role === 'assistant') && !chat[j].extra?.isSmallSys) {
+            content = wrapPromptWrapperContent(content, getPromptWrapperStateForMessage(role, chat[j]));
         }
 
         // for groups or sendas command - prepend a character's name

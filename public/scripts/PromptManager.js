@@ -2,17 +2,18 @@
 
 import { DOMPurify } from '../lib.js';
 
-import { event_types, eventSource, is_send_press, main_api, substituteParams } from '../script.js';
+import { event_types, eventSource, getActivePromptWrapperOverrideEntries, getActiveChatPromptWrapperSettings, is_send_press, main_api, printMessages, saveChatConditional, setActiveChatPromptWrapperEnabled, setGroupPromptWrapperTagOverride, setIndividualPromptWrapperTagOverride, substituteParams } from '../script.js';
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
 import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { renderTemplateAsync } from './templates.js';
-import { Popup } from './popup.js';
+import { Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { isMobile } from './RossAscends-mods.js';
 import { getTokenCountAsync } from './tokenizers.js';
+import { calculatePromptOrderRenumber, createPromptBulkUpdates } from './prompt-wrappers.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -425,6 +426,9 @@ class PromptManager {
 
         /** Debounced version of render */
         this.renderDebounced = debounce(this.render.bind(this), debounce_timeout.relaxed);
+
+        /** Debounced wrapper override save */
+        this.handleWrapperOverrideInputDebounced = debounce(this.handleWrapperOverrideInput.bind(this), debounce_timeout.relaxed);
     }
 
 
@@ -777,6 +781,9 @@ class PromptManager {
             this.handleCharacterSelected(event);
             this.saveServiceSettings().then(() => this.renderDebounced());
         });
+
+        // Re-render when the active chat changes so per-chat wrapper toggles stay in sync.
+        eventSource.on(event_types.CHAT_CHANGED, () => this.renderDebounced());
 
         // Re-render when the character gets edited.
         eventSource.on(event_types.CHARACTER_EDITED, (event) => {
@@ -1193,6 +1200,48 @@ class PromptManager {
     getActiveGroupCharacters() {
         // ToDo: Ideally, this should return the actual characters.
         return (this.activeCharacter?.group?.members || []).map(member => member && member.substring(0, member.lastIndexOf('.')));
+    }
+
+    /**
+     * Ensures the currently active prompt order exists and contains only stored prompt identifiers.
+     * @returns {{promptOrder: Partial<Prompt>[], changed: boolean}} Active prompt order and whether it was repaired.
+     */
+    ensureActivePromptOrder() {
+        if ('global' === this.configuration.promptOrder.strategy) {
+            this.activeCharacter = { id: this.configuration.promptOrder.dummyId };
+        }
+
+        if (!this.activeCharacter) return { promptOrder: [], changed: false };
+
+        let changed = false;
+        let list = this.serviceSettings.prompt_order.find(entry => String(entry.character_id) === String(this.activeCharacter.id));
+        if (!list) {
+            this.addPromptOrderForCharacter(this.activeCharacter, promptManagerDefaultPromptOrder);
+            list = this.serviceSettings.prompt_order.find(entry => String(entry.character_id) === String(this.activeCharacter.id));
+            changed = true;
+        }
+
+        const promptOrder = Array.isArray(list?.order) ? list.order : [];
+        if (list && !Array.isArray(list.order)) {
+            list.order = promptOrder;
+            changed = true;
+        }
+
+        for (let i = promptOrder.length - 1; i >= 0; i--) {
+            if (!promptOrder[i]?.identifier || !this.getPromptById(promptOrder[i].identifier)) {
+                promptOrder.splice(i, 1);
+                changed = true;
+            }
+        }
+
+        if (promptOrder.length === 0) {
+            const defaults = JSON.parse(JSON.stringify(promptManagerDefaultPromptOrder))
+                .filter(entry => entry?.identifier && this.getPromptById(entry.identifier));
+            promptOrder.push(...defaults);
+            changed = true;
+        }
+
+        return { promptOrder, changed };
     }
 
     /**
@@ -1638,6 +1687,197 @@ class PromptManager {
     }
 
     /**
+     * Renders wrapper settings and binds metadata-only wrapper handlers.
+     * @param {HTMLElement} promptManagerDiv Prompt manager root.
+     */
+    async renderWrapperSettings(promptManagerDiv) {
+        const settings = getActiveChatPromptWrapperSettings();
+        const headerDiv = promptManagerDiv.querySelector('.completion_prompt_manager_header');
+        const overrideEntries = getActivePromptWrapperOverrideEntries();
+        const html = await renderTemplateAsync('promptManagerWrapperSettings', {
+            prefix: this.configuration.prefix,
+            assistant: settings.assistant,
+            user: settings.user,
+            overrides: overrideEntries,
+            hasOverrides: overrideEntries.length > 0,
+            isGroup: overrideEntries.some(entry => entry.isGroup),
+        });
+        headerDiv.insertAdjacentHTML('afterend', html);
+
+        const assistantToggle = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_wrap_assistant`);
+        const userToggle = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_wrap_user`);
+        const overrideInputs = promptManagerDiv.querySelectorAll(`.${this.configuration.prefix}prompt_manager_wrapper_tag_override`);
+
+        assistantToggle?.addEventListener('change', (event) => this.handleWrapperToggle(event, 'assistant'));
+        userToggle?.addEventListener('change', (event) => this.handleWrapperToggle(event, 'user'));
+        overrideInputs.forEach(input => input.addEventListener('input', (event) => this.handleWrapperOverrideInputDebounced(event)));
+    }
+
+    /**
+     * @param {Event} event Change event.
+     * @param {'assistant'|'user'} role Wrapper role.
+     */
+    async handleWrapperToggle(event, role) {
+        const input = /** @type {HTMLInputElement} */(event.target);
+        const settings = getActiveChatPromptWrapperSettings();
+        const previous = !!settings[role];
+        const next = input.checked;
+        if (previous === next) return;
+
+        try {
+            setActiveChatPromptWrapperEnabled(role, next);
+            await saveChatConditional();
+            await printMessages();
+            toastr.success(t`Wrapper setting saved for this chat.`);
+            this.renderDebounced(false);
+        } catch (error) {
+            console.error('Failed to save wrapper setting.', error);
+            input.checked = previous;
+            setActiveChatPromptWrapperEnabled(role, previous);
+            toastr.error(t`Failed to save wrapper setting.`);
+        }
+    }
+
+    /**
+     * @param {Event} event Input event.
+     */
+    async handleWrapperOverrideInput(event) {
+        const input = /** @type {HTMLInputElement} */(event.target);
+        const avatar = input.dataset.avatar;
+        if (!avatar) return;
+
+        const value = input.value.trim();
+        const defaultTag = input.dataset.defaultTag || '';
+        const isGroup = input.dataset.group === 'true';
+
+        if (isGroup) {
+            setGroupPromptWrapperTagOverride(avatar, value);
+            await saveChatConditional();
+        } else {
+            setIndividualPromptWrapperTagOverride(avatar, value);
+            $('#character_prompt_wrapper_tag').val(value || defaultTag);
+        }
+
+        if (!value) input.value = defaultTag;
+        if (getActiveChatPromptWrapperSettings().assistant) await printMessages();
+    }
+
+    /**
+     * Opens the approved bulk operations wizard.
+     */
+    async showBulkWizard() {
+        const { changed: repairedOrder } = this.ensureActivePromptOrder();
+        const prompts = this.getPromptsForCharacter(this.activeCharacter);
+        if (!prompts.length) {
+            toastr.warning(t`No prompts are currently shown.`);
+            return;
+        }
+        if (repairedOrder) await this.saveServiceSettings();
+
+        const content = await renderTemplateAsync('promptManagerBulkWizard', { prefix: this.configuration.prefix, count: prompts.length });
+        const popup = new Popup(content, POPUP_TYPE.TEXT, null, {
+            okButton: t`Apply`,
+            cancelButton: t`Cancel`,
+            wider: true,
+            allowVerticalScrolling: true,
+            leftAlign: true,
+            onOpen: (instance) => this.bindBulkWizardValidation(instance),
+            onClosing: (instance) => this.validateBulkWizard(instance, prompts.length),
+        });
+
+        await popup.show();
+        if (popup.result !== POPUP_RESULT.AFFIRMATIVE || !popup.value) return;
+
+        const confirmed = await Popup.show.confirm(
+            t`Apply bulk prompt operation?`,
+            t`This will update ${prompts.length} currently shown prompts.`,
+        );
+        if (!confirmed) return;
+
+        try {
+            const changed = this.applyBulkOperation(prompts, popup.value);
+            this.render(false);
+            await this.saveServiceSettings();
+            toastr.success(t`Bulk prompt operation applied to ${changed} prompts.`);
+        } catch (error) {
+            console.error('Failed to apply bulk prompt operation.', error);
+            toastr.error(t`Failed to apply bulk prompt operation.`);
+        }
+    }
+
+    /**
+     * @param {Popup} popup Popup instance.
+     */
+    bindBulkWizardValidation(popup) {
+        const form = popup.dlg.querySelector(`.${this.configuration.prefix}prompt_manager_bulk_wizard`);
+        const validate = () => this.validateBulkWizard(popup, this.getPromptsForCharacter(this.activeCharacter).length, true);
+        form?.addEventListener('input', validate);
+        form?.addEventListener('change', validate);
+        validate();
+    }
+
+    /**
+     * @param {Popup} popup Popup instance.
+     * @param {number} count Prompt count.
+     * @param {boolean} [preview=false] Preview-only validation.
+     * @returns {boolean}
+     */
+    validateBulkWizard(popup, count, preview = false) {
+        if (!preview && popup.result !== POPUP_RESULT.AFFIRMATIVE) return true;
+
+        const form = popup.dlg.querySelector(`.${this.configuration.prefix}prompt_manager_bulk_wizard`);
+        const operation = form?.querySelector('input[name="operation"]:checked')?.value;
+        const valueInput = /** @type {HTMLInputElement} */(form?.querySelector(`#${this.configuration.prefix}prompt_manager_bulk_value`));
+        const modeSelect = /** @type {HTMLSelectElement} */(form?.querySelector(`#${this.configuration.prefix}prompt_manager_bulk_renumber_mode`));
+        const error = form?.querySelector('.bulk-inline-error');
+        const needsValue = ['depth', 'order', 'renumber'].includes(operation);
+        let message = '';
+        let value = 0;
+
+        valueInput.closest('.bulk-value-row')?.classList.toggle('displayNone', !needsValue);
+        modeSelect.closest('.bulk-mode-row')?.classList.toggle('displayNone', operation !== 'renumber');
+
+        if (needsValue) {
+            value = Number(valueInput.value);
+            if (!Number.isInteger(value) || value < 0) {
+                message = t`Value must be a non-negative integer.`;
+            }
+        }
+
+        if (!message && operation === 'renumber') {
+            try {
+                calculatePromptOrderRenumber(count, value, modeSelect.value);
+            } catch (error) {
+                message = error.message;
+            }
+        }
+
+        if (error) error.textContent = message;
+        popup.okButton?.classList.toggle('disabled', !!message);
+        popup.okButton?.toggleAttribute('aria-disabled', !!message);
+
+        if (message) return false;
+        if (!preview) popup.value = { operation, value, mode: modeSelect.value };
+        return true;
+    }
+
+    /**
+     * @param {Prompt[]} prompts Visible prompts.
+     * @param {{operation: string, value: number, mode: string}} params Operation params.
+     * @returns {number} Number of prompts updated.
+     */
+    applyBulkOperation(prompts, params) {
+        const updates = createPromptBulkUpdates(prompts, params, {
+            relative: INJECTION_POSITION.RELATIVE,
+            inChat: INJECTION_POSITION.ABSOLUTE,
+            defaultDepth: DEFAULT_DEPTH,
+            defaultOrder: DEFAULT_ORDER,
+        });
+        this.updatePrompts(updates);
+        return updates.length;
+    }
+
+    /**
      * Empties, then re-assembles the container containing the prompt list.
      */
     async renderPromptManager() {
@@ -1659,6 +1899,7 @@ class PromptManager {
 
         const headerHtml = await renderTemplateAsync('promptManagerHeader', { error: this.error, errorDiv, prefix: this.configuration.prefix, totalActiveTokens });
         promptManagerDiv.insertAdjacentHTML('beforeend', headerHtml);
+        await this.renderWrapperSettings(promptManagerDiv);
 
         this.listElement = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_list`);
 
@@ -1686,6 +1927,7 @@ class PromptManager {
             footerDiv.querySelector('.menu_button:nth-child(2)').addEventListener('click', this.handleAppendPrompt);
             footerDiv.querySelector('.caution').addEventListener('click', this.handleDeletePrompt);
             footerDiv.querySelector('.menu_button:last-child').addEventListener('click', this.handleNewPrompt);
+            footerDiv.querySelector('#prompt-manager-bulk').addEventListener('click', () => this.showBulkWizard());
             footerDiv.querySelector('select').selectedIndex = selectedPromptIndex;
 
             // Add prompt export dialogue and options
@@ -1766,6 +2008,12 @@ class PromptManager {
             }
 
             const encodedName = escapeHtml(prompt.name);
+            const injectionDepth = Number.isInteger(prompt.injection_depth) && prompt.injection_depth >= 0 ? prompt.injection_depth : DEFAULT_DEPTH;
+            const injectionOrder = Number.isInteger(prompt.injection_order) && prompt.injection_order >= 0 ? prompt.injection_order : DEFAULT_ORDER;
+            if (prompt.injection_position === INJECTION_POSITION.ABSOLUTE) {
+                prompt.injection_depth = injectionDepth;
+                prompt.injection_order = injectionOrder;
+            }
             const isMarkerPrompt = prompt.marker && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE;
             const isSystemPrompt = !prompt.marker && prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE && !prompt.forbid_overrides;
             const isImportantPrompt = !prompt.marker && prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE && prompt.forbid_overrides;
@@ -1794,7 +2042,7 @@ class PromptManager {
                         ${isInjectionPrompt ? '<span class="fa-fw fa-solid fa-syringe" title="In-Chat Injection"></span>' : ''}
                         ${this.isPromptInspectionAllowed(prompt) ? `<a title="${encodedName}" class="prompt-manager-inspect-action">${encodedName}</a>` : `<span title="${encodedName}">${encodedName}</span>`}
                         ${roleIcon ? `<span data-role="${escapeHtml(prompt.role)}" class="fa-xs fa-solid ${roleIcon}" title="${roleTitle}"></span>` : ''}
-                        ${isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(prompt.injection_depth.toString())}</small>` : ''}
+                        ${isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(injectionDepth.toString())}</small>` : ''}
                         ${isOverriddenPrompt ? '<small class="fa-solid fa-address-card prompt-manager-overridden" title="Pulled from a character card"></small>' : ''}
                     </span>
                     <span>
