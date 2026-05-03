@@ -274,6 +274,8 @@
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 6px;
     flex: 1;
+}.completion_prompt_manager_bulk_wizard label {
+    flex-direction: row;
 }
 
 #completion_prompt_manager .completion_prompt_manager_wrapper_override {
@@ -289,6 +291,10 @@
     display: flex;
     flex-direction: column;
     gap: 0.5em;
+}
+
+.completion_prompt_manager_bulk_wizard label {
+    flex-direction: row;
 }
 
 .completion_prompt_manager_bulk_wizard fieldset {
