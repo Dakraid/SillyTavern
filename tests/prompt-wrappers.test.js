@@ -2,6 +2,7 @@ import {
     applyPromptBulkOperation,
     applyPromptWrapperToText,
     calculatePromptOrderRenumber,
+    createPromptBulkUpdates,
     getChatPromptWrapperSettings,
     normalizePromptWrapperTag,
     stripPromptWrapperTags,
@@ -75,6 +76,23 @@ describe('prompt manager bulk operations', () => {
         expect(() => calculatePromptOrderRenumber(1, -1, 'first-inc')).toThrow();
         expect(() => calculatePromptOrderRenumber(1, 1.5, 'first-inc')).toThrow();
         expect(() => calculatePromptOrderRenumber(4, 0, 'first-dec')).toThrow();
+    });
+
+    test('builds identifier-keyed updates so PromptManager can update stored prompts from stale visible targets', () => {
+        const visibleCopies = [
+            { identifier: 'a', injection_position: 0, injection_depth: 1, injection_order: 10 },
+            { identifier: 'b', injection_position: 0, injection_depth: 2, injection_order: 20 },
+        ];
+        const storedPrompts = [
+            { identifier: 'a', injection_position: 0, injection_depth: 1, injection_order: 10 },
+            { identifier: 'b', injection_position: 0, injection_depth: 2, injection_order: 20 },
+        ];
+
+        const updates = createPromptBulkUpdates(visibleCopies, { operation: 'position-inchat', value: 0, mode: 'first-inc' });
+        updates.forEach(update => Object.assign(storedPrompts.find(prompt => prompt.identifier === update.identifier), update));
+
+        expect(visibleCopies.map(prompt => prompt.injection_position)).toEqual([0, 0]);
+        expect(storedPrompts.map(prompt => prompt.injection_position)).toEqual([1, 1]);
     });
 
     test('mutates visible prompt targets for position, depth, and order operations', () => {

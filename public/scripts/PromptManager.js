@@ -13,7 +13,7 @@ import { Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { isMobile } from './RossAscends-mods.js';
 import { getTokenCountAsync } from './tokenizers.js';
-import { applyPromptBulkOperation, calculatePromptOrderRenumber } from './prompt-wrappers.js';
+import { calculatePromptOrderRenumber, createPromptBulkUpdates } from './prompt-wrappers.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -1743,10 +1743,10 @@ class PromptManager {
         );
         if (!confirmed) return;
 
-        this.applyBulkOperation(prompts, popup.value);
-        await this.saveServiceSettings();
-        toastr.success(t`Bulk prompt operation applied.`);
+        const changed = this.applyBulkOperation(prompts, popup.value);
         this.render(false);
+        this.saveServiceSettings();
+        toastr.success(t`Bulk prompt operation applied to ${changed} prompts.`);
     }
 
     /**
@@ -1808,12 +1808,15 @@ class PromptManager {
     /**
      * @param {Prompt[]} prompts Visible prompts.
      * @param {{operation: string, value: number, mode: string}} params Operation params.
+     * @returns {number} Number of prompts updated.
      */
     applyBulkOperation(prompts, params) {
-        applyPromptBulkOperation(prompts, params, {
+        const updates = createPromptBulkUpdates(prompts, params, {
             relative: INJECTION_POSITION.RELATIVE,
             inChat: INJECTION_POSITION.ABSOLUTE,
         });
+        this.updatePrompts(updates);
+        return updates.length;
     }
 
     /**

@@ -209,6 +209,41 @@ export function calculatePromptOrderRenumber(count, start, mode) {
 }
 
 /**
+ * Builds identifier-keyed updates for a bulk prompt manager operation.
+ * @param {Array<Record<string, any>>} prompts Visible prompts to update.
+ * @param {{operation: string, value: number, mode: string}} params Operation params.
+ * @param {{relative: number, inChat: number}} [positions] Injection position values.
+ * @returns {Array<Record<string, any>>} Partial prompt updates with identifiers.
+ */
+export function createPromptBulkUpdates(prompts, params, positions = { relative: 0, inChat: 1 }) {
+    const updates = prompts
+        .filter(prompt => prompt?.identifier)
+        .map(prompt => ({ identifier: prompt.identifier }));
+
+    switch (params.operation) {
+        case 'position-relative':
+            updates.forEach(update => update.injection_position = positions.relative);
+            break;
+        case 'position-inchat':
+            updates.forEach(update => update.injection_position = positions.inChat);
+            break;
+        case 'depth':
+            updates.forEach(update => update.injection_depth = params.value);
+            break;
+        case 'order':
+            updates.forEach(update => update.injection_order = params.value);
+            break;
+        case 'renumber': {
+            const values = calculatePromptOrderRenumber(updates.length, params.value, params.mode);
+            updates.forEach((update, index) => update.injection_order = values[index]);
+            break;
+        }
+    }
+
+    return updates;
+}
+
+/**
  * Applies a bulk prompt manager operation to prompt-like objects in place.
  * @param {Array<Record<string, any>>} prompts Visible prompts to mutate.
  * @param {{operation: string, value: number, mode: string}} params Operation params.
@@ -216,25 +251,11 @@ export function calculatePromptOrderRenumber(count, start, mode) {
  * @returns {Array<Record<string, any>>} The mutated prompt array.
  */
 export function applyPromptBulkOperation(prompts, params, positions = { relative: 0, inChat: 1 }) {
-    switch (params.operation) {
-        case 'position-relative':
-            prompts.forEach(prompt => prompt.injection_position = positions.relative);
-            break;
-        case 'position-inchat':
-            prompts.forEach(prompt => prompt.injection_position = positions.inChat);
-            break;
-        case 'depth':
-            prompts.forEach(prompt => prompt.injection_depth = params.value);
-            break;
-        case 'order':
-            prompts.forEach(prompt => prompt.injection_order = params.value);
-            break;
-        case 'renumber': {
-            const values = calculatePromptOrderRenumber(prompts.length, params.value, params.mode);
-            prompts.forEach((prompt, index) => prompt.injection_order = values[index]);
-            break;
-        }
-    }
+    const updatesById = new Map(createPromptBulkUpdates(prompts, params, positions).map(update => [update.identifier, update]));
+    prompts.forEach(prompt => {
+        const update = updatesById.get(prompt?.identifier);
+        if (update) Object.assign(prompt, update);
+    });
 
     return prompts;
 }
