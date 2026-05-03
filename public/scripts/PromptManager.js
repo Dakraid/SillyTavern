@@ -2,17 +2,19 @@
 
 import { DOMPurify } from '../lib.js';
 
-import { event_types, eventSource, is_send_press, main_api, substituteParams } from '../script.js';
+import { applyPromptWrapperSettingsToChat, event_types, eventSource, getActiveCharacterPromptWrapperTag, getActiveCharacterPromptWrapperTagOverride, is_send_press, main_api, setActiveCharacterPromptWrapperTagOverride, substituteParams } from '../script.js';
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
 import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { renderTemplateAsync } from './templates.js';
-import { Popup } from './popup.js';
+import { Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { isMobile } from './RossAscends-mods.js';
 import { getTokenCountAsync } from './tokenizers.js';
+import { calculatePromptOrderRenumber, getPromptWrapperSettings } from './prompt-wrappers.js';
+import { extension_settings } from './extensions.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -1638,6 +1640,196 @@ class PromptManager {
     }
 
     /**
+     * Renders wrapper settings and binds persistence/rewrite handlers.
+     * @param {HTMLElement} promptManagerDiv Prompt manager root.
+     */
+    async renderWrapperSettings(promptManagerDiv) {
+        const settings = getPromptWrapperSettings(extension_settings);
+        const headerDiv = promptManagerDiv.querySelector('.completion_prompt_manager_header');
+        const html = await renderTemplateAsync('promptManagerWrapperSettings', {
+            prefix: this.configuration.prefix,
+            assistant: settings.assistant,
+            user: settings.user,
+            override: getActiveCharacterPromptWrapperTagOverride(),
+            tagPreview: getActiveCharacterPromptWrapperTag(),
+        });
+        headerDiv.insertAdjacentHTML('afterend', html);
+
+        const assistantToggle = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_wrap_assistant`);
+        const userToggle = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_wrap_user`);
+        const overrideInput = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_wrapper_tag_override`);
+
+        assistantToggle?.addEventListener('change', (event) => this.handleWrapperToggle(event, 'assistant'));
+        userToggle?.addEventListener('change', (event) => this.handleWrapperToggle(event, 'user'));
+        overrideInput?.addEventListener('change', (event) => this.handleWrapperOverrideChange(event));
+    }
+
+    /**
+     * @param {Event} event Change event.
+     * @param {'assistant'|'user'} role Wrapper role.
+     */
+    async handleWrapperToggle(event, role) {
+        const input = /** @type {HTMLInputElement} */(event.target);
+        const settings = getPromptWrapperSettings(extension_settings);
+        const previous = !!settings[role];
+        const next = input.checked;
+        if (previous === next) return;
+
+        const confirmed = await Popup.show.confirm(
+            next ? t`Wrap existing matching chat messages and swipes?` : t`Remove wrappers from existing matching chat messages and swipes?`,
+            t`This rewrites the current chat after applying Completion Prompt Manager wrapper settings.`,
+        );
+        if (!confirmed) {
+            input.checked = previous;
+            return;
+        }
+
+        settings[role] = next;
+        this.saveServiceSettings();
+        const changed = await applyPromptWrapperSettingsToChat();
+        toastr.success(t`Updated ${changed} chat message entries.`);
+        this.renderDebounced(false);
+    }
+
+    /**
+     * @param {Event} event Change event.
+     */
+    async handleWrapperOverrideChange(event) {
+        const input = /** @type {HTMLInputElement} */(event.target);
+        setActiveCharacterPromptWrapperTagOverride(input.value);
+        $('#character_prompt_wrapper_tag').val(input.value);
+
+        if (!getPromptWrapperSettings(extension_settings).assistant) return;
+
+        const confirmed = await Popup.show.confirm(
+            t`Apply the new character wrapper tag to existing assistant messages and swipes?`,
+            t`This rewrites managed wrappers in the current chat.`,
+        );
+        if (!confirmed) return;
+
+        const changed = await applyPromptWrapperSettingsToChat();
+        toastr.success(t`Updated ${changed} chat message entries.`);
+    }
+
+    /**
+     * Opens the approved bulk operations wizard.
+     */
+    async showBulkWizard() {
+        const prompts = this.getPromptsForCharacter(this.activeCharacter);
+        if (!prompts.length) {
+            toastr.warning(t`No prompts are currently shown.`);
+            return;
+        }
+
+        const content = await renderTemplateAsync('promptManagerBulkWizard', { prefix: this.configuration.prefix, count: prompts.length });
+        const popup = new Popup(content, POPUP_TYPE.TEXT, null, {
+            okButton: t`Apply`,
+            cancelButton: t`Cancel`,
+            wider: true,
+            allowVerticalScrolling: true,
+            leftAlign: true,
+            onOpen: (instance) => this.bindBulkWizardValidation(instance),
+            onClosing: (instance) => this.validateBulkWizard(instance, prompts.length),
+        });
+
+        const result = await popup.show();
+        if (result !== POPUP_RESULT.AFFIRMATIVE || !popup.value) return;
+
+        const confirmed = await Popup.show.confirm(
+            t`Apply bulk prompt operation?`,
+            t`This will update ${prompts.length} currently shown prompts.`,
+        );
+        if (!confirmed) return;
+
+        this.applyBulkOperation(prompts, popup.value);
+        await this.saveServiceSettings();
+        toastr.success(t`Bulk prompt operation applied.`);
+        this.render(false);
+    }
+
+    /**
+     * @param {Popup} popup Popup instance.
+     */
+    bindBulkWizardValidation(popup) {
+        const form = popup.dlg.querySelector(`.${this.configuration.prefix}prompt_manager_bulk_wizard`);
+        const validate = () => this.validateBulkWizard(popup, this.getPromptsForCharacter(this.activeCharacter).length, true);
+        form?.addEventListener('input', validate);
+        form?.addEventListener('change', validate);
+        validate();
+    }
+
+    /**
+     * @param {Popup} popup Popup instance.
+     * @param {number} count Prompt count.
+     * @param {boolean} [preview=false] Preview-only validation.
+     * @returns {boolean}
+     */
+    validateBulkWizard(popup, count, preview = false) {
+        if (!preview && popup.result !== POPUP_RESULT.AFFIRMATIVE) return true;
+
+        const form = popup.dlg.querySelector(`.${this.configuration.prefix}prompt_manager_bulk_wizard`);
+        const operation = form?.querySelector('input[name="operation"]:checked')?.value;
+        const valueInput = /** @type {HTMLInputElement} */(form?.querySelector(`#${this.configuration.prefix}prompt_manager_bulk_value`));
+        const modeSelect = /** @type {HTMLSelectElement} */(form?.querySelector(`#${this.configuration.prefix}prompt_manager_bulk_renumber_mode`));
+        const error = form?.querySelector('.bulk-inline-error');
+        const needsValue = ['depth', 'order', 'renumber'].includes(operation);
+        let message = '';
+        let value = 0;
+
+        valueInput.closest('.bulk-value-row')?.classList.toggle('displayNone', !needsValue);
+        modeSelect.closest('.bulk-mode-row')?.classList.toggle('displayNone', operation !== 'renumber');
+
+        if (needsValue) {
+            value = Number(valueInput.value);
+            if (!Number.isInteger(value) || value < 0) {
+                message = t`Value must be a non-negative integer.`;
+            }
+        }
+
+        if (!message && operation === 'renumber') {
+            try {
+                calculatePromptOrderRenumber(count, value, modeSelect.value);
+            } catch (error) {
+                message = error.message;
+            }
+        }
+
+        if (error) error.textContent = message;
+        popup.okButton?.classList.toggle('disabled', !!message);
+        popup.okButton?.toggleAttribute('aria-disabled', !!message);
+
+        if (message) return false;
+        if (!preview) popup.value = { operation, value, mode: modeSelect.value };
+        return true;
+    }
+
+    /**
+     * @param {Prompt[]} prompts Visible prompts.
+     * @param {{operation: string, value: number, mode: string}} params Operation params.
+     */
+    applyBulkOperation(prompts, params) {
+        switch (params.operation) {
+            case 'position-relative':
+                prompts.forEach(prompt => prompt.injection_position = INJECTION_POSITION.RELATIVE);
+                break;
+            case 'position-inchat':
+                prompts.forEach(prompt => prompt.injection_position = INJECTION_POSITION.ABSOLUTE);
+                break;
+            case 'depth':
+                prompts.forEach(prompt => prompt.injection_depth = params.value);
+                break;
+            case 'order':
+                prompts.forEach(prompt => prompt.injection_order = params.value);
+                break;
+            case 'renumber': {
+                const values = calculatePromptOrderRenumber(prompts.length, params.value, params.mode);
+                prompts.forEach((prompt, index) => prompt.injection_order = values[index]);
+                break;
+            }
+        }
+    }
+
+    /**
      * Empties, then re-assembles the container containing the prompt list.
      */
     async renderPromptManager() {
@@ -1659,6 +1851,7 @@ class PromptManager {
 
         const headerHtml = await renderTemplateAsync('promptManagerHeader', { error: this.error, errorDiv, prefix: this.configuration.prefix, totalActiveTokens });
         promptManagerDiv.insertAdjacentHTML('beforeend', headerHtml);
+        await this.renderWrapperSettings(promptManagerDiv);
 
         this.listElement = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_list`);
 
@@ -1686,6 +1879,7 @@ class PromptManager {
             footerDiv.querySelector('.menu_button:nth-child(2)').addEventListener('click', this.handleAppendPrompt);
             footerDiv.querySelector('.caution').addEventListener('click', this.handleDeletePrompt);
             footerDiv.querySelector('.menu_button:last-child').addEventListener('click', this.handleNewPrompt);
+            footerDiv.querySelector('#prompt-manager-bulk').addEventListener('click', () => this.showBulkWizard());
             footerDiv.querySelector('select').selectedIndex = selectedPromptIndex;
 
             // Add prompt export dialogue and options

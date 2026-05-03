@@ -273,6 +273,7 @@ import { extractReasoningFromData, extractReasoningSignatureFromData, initReason
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
+import { applyPromptWrapperToText, getPromptWrapperSettings, normalizePromptWrapperTag, unwrapPromptWrapperText, wrapPromptWrapperText } from './scripts/prompt-wrappers.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -5815,6 +5816,149 @@ export function removeMacros(str) {
 }
 
 /**
+ * Gets the current character's internal assistant wrapper tag override.
+ * @returns {string}
+ */
+export function getActiveCharacterPromptWrapperTagOverride() {
+    const avatar = characters[this_chid]?.avatar;
+    if (!avatar) return '';
+    return getPromptWrapperSettings(extension_settings).chara[avatar] ?? '';
+}
+
+/**
+ * Saves the current character's internal assistant wrapper tag override.
+ * @param {string} value Override text.
+ */
+export function setActiveCharacterPromptWrapperTagOverride(value) {
+    const avatar = characters[this_chid]?.avatar;
+    if (!avatar) return;
+    const settings = getPromptWrapperSettings(extension_settings);
+    const normalized = String(value ?? '').trim();
+    if (normalized) settings.chara[avatar] = normalized;
+    else delete settings.chara[avatar];
+    saveSettingsDebounced();
+}
+
+/**
+ * Gets the active character wrapper tag for UI previews.
+ * @returns {string}
+ */
+export function getActiveCharacterPromptWrapperTag() {
+    const character = characters[this_chid];
+    if (!character) return normalizePromptWrapperTag('Unknown');
+    return normalizePromptWrapperTag(getActiveCharacterPromptWrapperTagOverride() || character.name || 'Unknown');
+}
+
+/**
+ * @param {'assistant'|'user'} role Wrapper role.
+ * @param {ChatMessage} message Chat message.
+ * @returns {{enabled: boolean, tag: string}}
+ */
+function getPromptWrapperStateForMessage(role, message) {
+    const settings = getPromptWrapperSettings(extension_settings);
+
+    if (role === 'user') {
+        return { enabled: settings.user, tag: normalizePromptWrapperTag(message?.name || name1 || 'Unknown') };
+    }
+
+    const avatar = message?.original_avatar || characters[this_chid]?.avatar;
+    const override = avatar ? settings.chara[avatar] : '';
+    return { enabled: settings.assistant, tag: normalizePromptWrapperTag(override || message?.name || name2 || 'Unknown') };
+}
+
+/**
+ * Writes message text with current persistent wrapper settings.
+ * @param {ChatMessage} message Chat message.
+ * @param {'assistant'|'user'} role Wrapper role.
+ * @param {string} baseText Unwrapped base text.
+ */
+function writePromptWrappedMessageText(message, role, baseText) {
+    if (!message) return;
+    message.extra ??= {};
+    const { enabled, tag } = getPromptWrapperStateForMessage(role, message);
+
+    if (!enabled) {
+        message.mes = String(baseText ?? '');
+        delete message.extra.prompt_wrapper;
+        return;
+    }
+
+    const wrapped = wrapPromptWrapperText(baseText, tag, String(baseText ?? ''));
+    message.mes = wrapped.mes;
+    message.extra.prompt_wrapper = {
+        role,
+        tag: wrapped.tag,
+        base_mes: wrapped.base_mes,
+        version: 1,
+    };
+}
+
+/**
+ * Appends text to the unwrapped base of a message, then reapplies its wrapper.
+ * @param {ChatMessage} message Chat message.
+ * @param {'assistant'|'user'} role Wrapper role.
+ * @param {string} appendText Text to append.
+ */
+function appendPromptWrappedMessageText(message, role, appendText) {
+    const { tag } = getPromptWrapperStateForMessage(role, message);
+    const base = unwrapPromptWrapperText(message?.mes ?? '', tag, message?.extra?.prompt_wrapper);
+    writePromptWrappedMessageText(message, role, base + String(appendText ?? ''));
+}
+
+/**
+ * Applies current wrapper settings to a chat text slot.
+ * @param {ChatMessage} message Chat message.
+ * @param {'assistant'|'user'} role Wrapper role.
+ * @param {string} text Text slot value.
+ * @param {object} extra Text slot metadata.
+ * @returns {{text: string, extra: object, changed: boolean}}
+ */
+function applyPromptWrapperSlot(message, role, text, extra) {
+    const { enabled, tag } = getPromptWrapperStateForMessage(role, message);
+    return applyPromptWrapperToText({ text, extra, role, tag, enabled });
+}
+
+/**
+ * Retroactively applies current prompt wrapper settings to the active chat and swipes.
+ * @returns {Promise<number>} Number of changed text slots.
+ */
+export async function applyPromptWrapperSettingsToChat() {
+    let changed = 0;
+
+    for (const message of chat) {
+        if (!message || typeof message !== 'object') continue;
+        const role = message.is_user ? 'user' : (!message.is_system && !message.extra?.isSmallSys ? 'assistant' : null);
+        if (!role) continue;
+
+        message.extra ??= {};
+        const messageResult = applyPromptWrapperSlot(message, role, message.mes ?? '', message.extra);
+        if (messageResult.changed) changed++;
+        message.mes = messageResult.text;
+        message.extra = messageResult.extra;
+
+        if (Array.isArray(message.swipes)) {
+            message.swipe_info ??= [];
+            for (let i = 0; i < message.swipes.length; i++) {
+                message.swipe_info[i] ??= { extra: {} };
+                message.swipe_info[i].extra ??= {};
+                const swipeResult = applyPromptWrapperSlot(message, role, message.swipes[i] ?? '', message.swipe_info[i].extra);
+                if (swipeResult.changed) changed++;
+                message.swipes[i] = swipeResult.text;
+                message.swipe_info[i].extra = swipeResult.extra;
+            }
+        }
+    }
+
+    if (changed > 0) {
+        chat_metadata.tainted = true;
+        await saveChatConditional();
+        await printMessages();
+    }
+
+    return changed;
+}
+
+/**
  * Inserts a user message into the chat history.
  * @param {string} messageText Message text.
  * @param {string} messageBias Message bias.
@@ -5838,10 +5982,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         },
     };
 
-    if (power_user.message_token_count_enabled) {
-        message.extra.token_count = await getTokenCountAsync(message.mes, 0);
-    }
-
     // Lock user avatar to a persona.
     if (avatar in power_user.personas) {
         message.force_avatar = getThumbnailUrl('persona', avatar);
@@ -5850,6 +5990,12 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     if (messageBias) {
         message.extra.bias = messageBias;
         message.mes = removeMacros(message.mes);
+    }
+
+    writePromptWrappedMessageText(message, 'user', message.mes);
+
+    if (power_user.message_token_count_enabled) {
+        message.extra.token_count = await getTokenCountAsync(message.mes, 0);
     }
 
     await populateFileAttachment(message);
@@ -6635,6 +6781,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage.extra.reasoning = reasoning;
             lastMessage.extra.reasoning_duration = null;
             lastMessage.extra.reasoning_signature = reasoningSignature;
+            writePromptWrappedMessageText(lastMessage, 'assistant', getMessage);
             await processImageAttachment(lastMessage, { imageUrls });
             if (power_user.message_token_count_enabled) {
                 const tokenCountText = (reasoning || '') + lastMessage.mes;
@@ -6651,7 +6798,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         console.debug('Trying to append.');
         oldMessage = lastMessage.mes;
         lastMessage.title = title;
-        lastMessage.mes += getMessage;
+        appendPromptWrappedMessageText(lastMessage, 'assistant', getMessage);
         lastMessage.gen_started = generation_started;
         lastMessage.gen_finished = generationFinished;
         lastMessage.send_date = getMessageTimeStamp();
@@ -6673,7 +6820,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         oldMessage = lastMessage.mes;
         console.debug('Trying to appendFinal.');
         lastMessage.title = title;
-        lastMessage.mes = getMessage;
+        writePromptWrappedMessageText(lastMessage, 'assistant', getMessage);
         lastMessage.gen_started = generation_started;
         lastMessage.gen_finished = generationFinished;
         lastMessage.send_date = getMessageTimeStamp();
@@ -6712,11 +6859,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         newMessage.gen_started = generation_started;
         newMessage.gen_finished = generationFinished;
 
-        if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + newMessage.mes;
-            newMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
-        }
-
         if (selected_group) {
             console.debug('entering chat update for groups');
             let avatarImg = 'img/ai4.png';
@@ -6726,6 +6868,13 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             newMessage.force_avatar = avatarImg;
             newMessage.original_avatar = characters[this_chid].avatar;
             newMessage.extra.gen_id = group_generation_id;
+        }
+
+        writePromptWrappedMessageText(newMessage, 'assistant', newMessage.mes);
+
+        if (power_user.message_token_count_enabled) {
+            const tokenCountText = (reasoning || '') + newMessage.mes;
+            newMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
         }
 
         await processImageAttachment(newMessage, { imageUrls });
@@ -6773,8 +6922,19 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             extra: swipeInfoExtra,
         };
         const swipeInfoArray = Array(swipes.length).fill().map(() => structuredClone(swipeInfo));
-        parseReasoningInSwipes(swipes, swipeInfoArray, item.extra?.reasoning_duration);
-        item.swipes.push(...swipes);
+        const wrappedSwipes = swipes.map((swipe, index) => {
+            const swipeMessage = {
+                name: item.name,
+                original_avatar: item.original_avatar,
+                mes: swipe,
+                extra: swipeInfoArray[index].extra ?? {},
+            };
+            writePromptWrappedMessageText(swipeMessage, 'assistant', swipe);
+            swipeInfoArray[index].extra = swipeMessage.extra;
+            return swipeMessage.mes;
+        });
+        parseReasoningInSwipes(wrappedSwipes, swipeInfoArray, item.extra?.reasoning_duration);
+        item.swipes.push(...wrappedSwipes);
         item.swipe_info.push(...swipeInfoArray);
     }
 
@@ -8917,6 +9077,8 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     $('#character_popup-button-h3').text(characters[chid].name);
     $('#character_name_pole').val(characters[chid].name);
+    $('#character_prompt_wrapper_tag_block').show();
+    $('#character_prompt_wrapper_tag').val(getActiveCharacterPromptWrapperTagOverride());
     $('#description_textarea').val(characters[chid].description);
     $('#character_world').val(characters[chid].data?.extensions?.world || '');
     $('#creator_notes_textarea').val(characters[chid].data?.creator_notes || characters[chid].creatorcomment);
@@ -9002,6 +9164,8 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#character_import_button').css('display', '');
     $('#character_popup-button-h3').text('Create character');
     $('#character_name_pole').val(create_save.name);
+    $('#character_prompt_wrapper_tag_block').hide();
+    $('#character_prompt_wrapper_tag').val('');
     $('#description_textarea').val(create_save.description);
     $('#character_world').val(create_save.world);
     $('#creator_notes_textarea').val(create_save.creator_notes);
@@ -11595,6 +11759,12 @@ jQuery(async function () {
     $('#character_name_pole').on('input', function () {
         if (menu_type == 'create') {
             create_save.name = String($('#character_name_pole').val());
+        }
+    });
+
+    $('#character_prompt_wrapper_tag').on('input', function () {
+        if (menu_type != 'create') {
+            setActiveCharacterPromptWrapperTagOverride(String($('#character_prompt_wrapper_tag').val()));
         }
     });
 

@@ -1,0 +1,26 @@
+<!-- DESIGN: specs/design/DESIGN.md#bulk-operations-ui -->
+<form class="{{prefix}}prompt_manager_bulk_wizard" aria-label="Bulk prompt operations">
+    <p><span data-i18n="Applies to currently shown prompts:">Applies to currently shown prompts:</span> {{count}}</p>
+    <fieldset>
+        <legend data-i18n="Operation">Operation</legend>
+        <label><input type="radio" name="operation" value="position-relative" checked> <span data-i18n="Set all Position to Relative">Set all Position to Relative</span></label>
+        <label><input type="radio" name="operation" value="position-inchat"> <span data-i18n="Set all Position to In-chat">Set all Position to In-chat</span></label>
+        <label><input type="radio" name="operation" value="depth"> <span data-i18n="Set all Depth">Set all Depth</span></label>
+        <label><input type="radio" name="operation" value="order"> <span data-i18n="Set all Order">Set all Order</span></label>
+        <label><input type="radio" name="operation" value="renumber"> <span data-i18n="Renumber Order">Renumber Order</span></label>
+    </fieldset>
+    <label class="bulk-value-row" for="{{prefix}}prompt_manager_bulk_value">
+        <span data-i18n="Value">Value</span>
+        <input id="{{prefix}}prompt_manager_bulk_value" class="text_pole" type="number" min="0" step="1" value="0">
+    </label>
+    <label class="bulk-mode-row" for="{{prefix}}prompt_manager_bulk_renumber_mode">
+        <span data-i18n="Renumber mode">Renumber mode</span>
+        <select id="{{prefix}}prompt_manager_bulk_renumber_mode" class="text_pole">
+            <option value="first-inc" data-i18n="Start at first prompt, increment by 1">Start at first prompt, increment by 1</option>
+            <option value="first-dec" data-i18n="Start at first prompt, decrement by 1">Start at first prompt, decrement by 1</option>
+            <option value="last-inc" data-i18n="Start at last prompt, increment moving upward">Start at last prompt, increment moving upward</option>
+            <option value="last-dec" data-i18n="Start at last prompt, decrement moving upward">Start at last prompt, decrement moving upward</option>
+        </select>
+    </label>
+    <div class="bulk-inline-error text_danger" role="alert" aria-live="polite"></div>
+</form>
