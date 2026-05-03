@@ -207,3 +207,34 @@ export function calculatePromptOrderRenumber(count, start, mode) {
 
     return values;
 }
+
+/**
+ * Applies a bulk prompt manager operation to prompt-like objects in place.
+ * @param {Array<Record<string, any>>} prompts Visible prompts to mutate.
+ * @param {{operation: string, value: number, mode: string}} params Operation params.
+ * @param {{relative: number, inChat: number}} [positions] Injection position values.
+ * @returns {Array<Record<string, any>>} The mutated prompt array.
+ */
+export function applyPromptBulkOperation(prompts, params, positions = { relative: 0, inChat: 1 }) {
+    switch (params.operation) {
+        case 'position-relative':
+            prompts.forEach(prompt => prompt.injection_position = positions.relative);
+            break;
+        case 'position-inchat':
+            prompts.forEach(prompt => prompt.injection_position = positions.inChat);
+            break;
+        case 'depth':
+            prompts.forEach(prompt => prompt.injection_depth = params.value);
+            break;
+        case 'order':
+            prompts.forEach(prompt => prompt.injection_order = params.value);
+            break;
+        case 'renumber': {
+            const values = calculatePromptOrderRenumber(prompts.length, params.value, params.mode);
+            prompts.forEach((prompt, index) => prompt.injection_order = values[index]);
+            break;
+        }
+    }
+
+    return prompts;
+}

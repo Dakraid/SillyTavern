@@ -1,4 +1,5 @@
 import {
+    applyPromptBulkOperation,
     applyPromptWrapperToText,
     calculatePromptOrderRenumber,
     getChatPromptWrapperSettings,
@@ -62,7 +63,7 @@ describe('chat prompt wrapper settings', () => {
     });
 });
 
-describe('prompt manager bulk order renumber', () => {
+describe('prompt manager bulk operations', () => {
     test('supports all approved renumber directions', () => {
         expect(calculatePromptOrderRenumber(4, 10, 'first-inc')).toEqual([10, 11, 12, 13]);
         expect(calculatePromptOrderRenumber(4, 10, 'first-dec')).toEqual([10, 9, 8, 7]);
@@ -74,5 +75,24 @@ describe('prompt manager bulk order renumber', () => {
         expect(() => calculatePromptOrderRenumber(1, -1, 'first-inc')).toThrow();
         expect(() => calculatePromptOrderRenumber(1, 1.5, 'first-inc')).toThrow();
         expect(() => calculatePromptOrderRenumber(4, 0, 'first-dec')).toThrow();
+    });
+
+    test('mutates visible prompt targets for position, depth, and order operations', () => {
+        const prompts = [
+            { identifier: 'a', injection_position: 0, injection_depth: 1, injection_order: 10 },
+            { identifier: 'b', injection_position: 0, injection_depth: 2, injection_order: 20 },
+        ];
+
+        applyPromptBulkOperation(prompts, { operation: 'position-inchat', value: 0, mode: 'first-inc' });
+        expect(prompts.map(prompt => prompt.injection_position)).toEqual([1, 1]);
+
+        applyPromptBulkOperation(prompts, { operation: 'depth', value: 0, mode: 'first-inc' });
+        expect(prompts.map(prompt => prompt.injection_depth)).toEqual([0, 0]);
+
+        applyPromptBulkOperation(prompts, { operation: 'order', value: 7, mode: 'first-inc' });
+        expect(prompts.map(prompt => prompt.injection_order)).toEqual([7, 7]);
+
+        applyPromptBulkOperation(prompts, { operation: 'renumber', value: 3, mode: 'first-inc' });
+        expect(prompts.map(prompt => prompt.injection_order)).toEqual([3, 4]);
     });
 });

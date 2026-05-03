@@ -13,7 +13,7 @@ import { Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { isMobile } from './RossAscends-mods.js';
 import { getTokenCountAsync } from './tokenizers.js';
-import { calculatePromptOrderRenumber } from './prompt-wrappers.js';
+import { applyPromptBulkOperation, calculatePromptOrderRenumber } from './prompt-wrappers.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -1734,8 +1734,8 @@ class PromptManager {
             onClosing: (instance) => this.validateBulkWizard(instance, prompts.length),
         });
 
-        const result = await popup.show();
-        if (result !== POPUP_RESULT.AFFIRMATIVE || !popup.value) return;
+        await popup.show();
+        if (popup.result !== POPUP_RESULT.AFFIRMATIVE || !popup.value) return;
 
         const confirmed = await Popup.show.confirm(
             t`Apply bulk prompt operation?`,
@@ -1810,25 +1810,10 @@ class PromptManager {
      * @param {{operation: string, value: number, mode: string}} params Operation params.
      */
     applyBulkOperation(prompts, params) {
-        switch (params.operation) {
-            case 'position-relative':
-                prompts.forEach(prompt => prompt.injection_position = INJECTION_POSITION.RELATIVE);
-                break;
-            case 'position-inchat':
-                prompts.forEach(prompt => prompt.injection_position = INJECTION_POSITION.ABSOLUTE);
-                break;
-            case 'depth':
-                prompts.forEach(prompt => prompt.injection_depth = params.value);
-                break;
-            case 'order':
-                prompts.forEach(prompt => prompt.injection_order = params.value);
-                break;
-            case 'renumber': {
-                const values = calculatePromptOrderRenumber(prompts.length, params.value, params.mode);
-                prompts.forEach((prompt, index) => prompt.injection_order = values[index]);
-                break;
-            }
-        }
+        applyPromptBulkOperation(prompts, params, {
+            relative: INJECTION_POSITION.RELATIVE,
+            inChat: INJECTION_POSITION.ABSOLUTE,
+        });
     }
 
     /**
