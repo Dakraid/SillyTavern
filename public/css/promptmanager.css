@@ -273,6 +273,7 @@
     padding: 0.5em;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 6px;
+    flex: 1;
 }
 
 #completion_prompt_manager .completion_prompt_manager_wrapper_override {

@@ -1,6 +1,7 @@
 import {
     applyPromptWrapperToText,
     calculatePromptOrderRenumber,
+    getChatPromptWrapperSettings,
     normalizePromptWrapperTag,
     stripPromptWrapperTags,
     wrapPromptWrapperText,
@@ -33,6 +34,31 @@ describe('prompt wrappers', () => {
 
     test('legacy same outer tags are removed without provenance', () => {
         expect(stripPromptWrapperTags('<Kris><Kris>Hi</Kris></Kris></Kris>', 'Kris')).toBe('Hi');
+    });
+});
+
+describe('chat prompt wrapper settings', () => {
+    test('seeds missing chat metadata from legacy globals without chara overrides', () => {
+        const chatMetadata = {};
+        const settings = getChatPromptWrapperSettings(chatMetadata, { wrappers: { assistant: true, user: false, chara: { avatar: 'Alice' } } });
+
+        expect(settings).toEqual({ assistant: true, user: false });
+        expect(chatMetadata.prompt_wrappers).toBe(settings);
+        expect(settings.chara).toBeUndefined();
+    });
+
+    test('preserves existing booleans and fills missing values from legacy globals', () => {
+        const chatMetadata = { prompt_wrappers: { assistant: false, chara: { leaked: true } } };
+        const settings = getChatPromptWrapperSettings(chatMetadata, { wrappers: { assistant: true, user: true } });
+
+        expect(settings).toEqual({ assistant: false, user: true });
+    });
+
+    test('normalizes malformed chat metadata', () => {
+        const chatMetadata = { prompt_wrappers: 'bad' };
+        expect(getChatPromptWrapperSettings(chatMetadata, { wrappers: { assistant: false, user: true } })).toEqual({ assistant: false, user: true });
+        expect(chatMetadata.prompt_wrappers).toEqual({ assistant: false, user: true });
+        expect(getChatPromptWrapperSettings(null, { wrappers: { assistant: true, user: true } })).toEqual({ assistant: true, user: true });
     });
 });
 

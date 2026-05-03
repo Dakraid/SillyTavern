@@ -273,7 +273,7 @@ import { extractReasoningFromData, extractReasoningSignatureFromData, initReason
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
-import { applyPromptWrapperToText, getPromptWrapperSettings, normalizePromptWrapperTag, unwrapPromptWrapperText, wrapPromptWrapperText } from './scripts/prompt-wrappers.js';
+import { applyPromptWrapperToText, getChatPromptWrapperSettings, getPromptWrapperSettings, normalizePromptWrapperTag, unwrapPromptWrapperText, wrapPromptWrapperText } from './scripts/prompt-wrappers.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -5850,20 +5850,40 @@ export function getActiveCharacterPromptWrapperTag() {
 }
 
 /**
+ * Gets wrapper toggles for the active chat, seeded from legacy globals if missing.
+ * @returns {{assistant: boolean, user: boolean}}
+ */
+export function getActiveChatPromptWrapperSettings() {
+    return getChatPromptWrapperSettings(chat_metadata, extension_settings);
+}
+
+/**
+ * Sets a wrapper toggle for the active chat metadata.
+ * @param {'assistant'|'user'} role Wrapper role.
+ * @param {boolean} enabled Whether wrapping is enabled.
+ */
+export function setActiveChatPromptWrapperEnabled(role, enabled) {
+    const settings = getActiveChatPromptWrapperSettings();
+    settings[role] = !!enabled;
+    chat_metadata.tainted = true;
+}
+
+/**
  * @param {'assistant'|'user'} role Wrapper role.
  * @param {ChatMessage} message Chat message.
  * @returns {{enabled: boolean, tag: string}}
  */
 function getPromptWrapperStateForMessage(role, message) {
-    const settings = getPromptWrapperSettings(extension_settings);
+    const chatSettings = getActiveChatPromptWrapperSettings();
+    const globalSettings = getPromptWrapperSettings(extension_settings);
 
     if (role === 'user') {
-        return { enabled: settings.user, tag: normalizePromptWrapperTag(message?.name || name1 || 'Unknown') };
+        return { enabled: chatSettings.user, tag: normalizePromptWrapperTag(message?.name || name1 || 'Unknown') };
     }
 
     const avatar = message?.original_avatar || characters[this_chid]?.avatar;
-    const override = avatar ? settings.chara[avatar] : '';
-    return { enabled: settings.assistant, tag: normalizePromptWrapperTag(override || message?.name || name2 || 'Unknown') };
+    const override = avatar ? globalSettings.chara[avatar] : '';
+    return { enabled: chatSettings.assistant, tag: normalizePromptWrapperTag(override || message?.name || name2 || 'Unknown') };
 }
 
 /**
@@ -7951,6 +7971,7 @@ export async function getChat() {
         if (!chat_metadata.integrity) {
             chat_metadata.integrity = uuidv4();
         }
+        getActiveChatPromptWrapperSettings();
         await getChatResult();
         eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: characters[this_chid] } });
 

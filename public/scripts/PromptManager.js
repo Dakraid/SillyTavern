@@ -2,7 +2,7 @@
 
 import { DOMPurify } from '../lib.js';
 
-import { applyPromptWrapperSettingsToChat, event_types, eventSource, getActiveCharacterPromptWrapperTag, getActiveCharacterPromptWrapperTagOverride, is_send_press, main_api, setActiveCharacterPromptWrapperTagOverride, substituteParams } from '../script.js';
+import { applyPromptWrapperSettingsToChat, event_types, eventSource, getActiveCharacterPromptWrapperTag, getActiveCharacterPromptWrapperTagOverride, getActiveChatPromptWrapperSettings, is_send_press, main_api, saveChatConditional, setActiveChatPromptWrapperEnabled, setActiveCharacterPromptWrapperTagOverride, substituteParams } from '../script.js';
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
@@ -13,8 +13,7 @@ import { Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { isMobile } from './RossAscends-mods.js';
 import { getTokenCountAsync } from './tokenizers.js';
-import { calculatePromptOrderRenumber, getPromptWrapperSettings } from './prompt-wrappers.js';
-import { extension_settings } from './extensions.js';
+import { calculatePromptOrderRenumber } from './prompt-wrappers.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -779,6 +778,9 @@ class PromptManager {
             this.handleCharacterSelected(event);
             this.saveServiceSettings().then(() => this.renderDebounced());
         });
+
+        // Re-render when the active chat changes so per-chat wrapper toggles stay in sync.
+        eventSource.on(event_types.CHAT_CHANGED, () => this.renderDebounced());
 
         // Re-render when the character gets edited.
         eventSource.on(event_types.CHARACTER_EDITED, (event) => {
@@ -1644,7 +1646,7 @@ class PromptManager {
      * @param {HTMLElement} promptManagerDiv Prompt manager root.
      */
     async renderWrapperSettings(promptManagerDiv) {
-        const settings = getPromptWrapperSettings(extension_settings);
+        const settings = getActiveChatPromptWrapperSettings();
         const headerDiv = promptManagerDiv.querySelector('.completion_prompt_manager_header');
         const html = await renderTemplateAsync('promptManagerWrapperSettings', {
             prefix: this.configuration.prefix,
@@ -1670,7 +1672,7 @@ class PromptManager {
      */
     async handleWrapperToggle(event, role) {
         const input = /** @type {HTMLInputElement} */(event.target);
-        const settings = getPromptWrapperSettings(extension_settings);
+        const settings = getActiveChatPromptWrapperSettings();
         const previous = !!settings[role];
         const next = input.checked;
         if (previous === next) return;
@@ -1684,9 +1686,9 @@ class PromptManager {
             return;
         }
 
-        settings[role] = next;
-        this.saveServiceSettings();
+        setActiveChatPromptWrapperEnabled(role, next);
         const changed = await applyPromptWrapperSettingsToChat();
+        if (changed === 0) await saveChatConditional();
         toastr.success(t`Updated ${changed} chat message entries.`);
         this.renderDebounced(false);
     }
@@ -1699,7 +1701,7 @@ class PromptManager {
         setActiveCharacterPromptWrapperTagOverride(input.value);
         $('#character_prompt_wrapper_tag').val(input.value);
 
-        if (!getPromptWrapperSettings(extension_settings).assistant) return;
+        if (!getActiveChatPromptWrapperSettings().assistant) return;
 
         const confirmed = await Popup.show.confirm(
             t`Apply the new character wrapper tag to existing assistant messages and swipes?`,

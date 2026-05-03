@@ -17,6 +17,32 @@ export function getPromptWrapperSettings(extensionSettings) {
 }
 
 /**
+ * Gets or creates active-chat wrapper settings, seeded once from legacy globals.
+ * @param {Record<string, any>} chatMetadata Active chat metadata object.
+ * @param {Record<string, any>} extensionSettings SillyTavern extension_settings object.
+ * @returns {{assistant: boolean, user: boolean}}
+ */
+export function getChatPromptWrapperSettings(chatMetadata, extensionSettings) {
+    const legacySettings = getPromptWrapperSettings(extensionSettings);
+    const fallback = { assistant: legacySettings.assistant, user: legacySettings.user };
+
+    if (!chatMetadata || typeof chatMetadata !== 'object' || Array.isArray(chatMetadata)) {
+        return fallback;
+    }
+
+    if (!chatMetadata.prompt_wrappers || typeof chatMetadata.prompt_wrappers !== 'object' || Array.isArray(chatMetadata.prompt_wrappers)) {
+        chatMetadata.prompt_wrappers = { ...fallback };
+        return chatMetadata.prompt_wrappers;
+    }
+
+    const settings = chatMetadata.prompt_wrappers;
+    settings.assistant = typeof settings.assistant === 'boolean' ? settings.assistant : fallback.assistant;
+    settings.user = typeof settings.user === 'boolean' ? settings.user : fallback.user;
+    delete settings.chara;
+    return settings;
+}
+
+/**
  * Escapes only characters that would break tag boundaries.
  * @param {string} tag Tag name.
  * @returns {string}

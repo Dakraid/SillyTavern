@@ -55,11 +55,17 @@ declare global {
         character_name: 'unused';
     }
 
+    interface ChatPromptWrapperSettings {
+        assistant: boolean;
+        user: boolean;
+    }
+
     interface ChatMetadata {
         tainted?: boolean;
         integrity?: string;
         scenario?: string;
         persona?: string;
+        prompt_wrappers?: ChatPromptWrapperSettings;
         [key: string]: any;
     }
 

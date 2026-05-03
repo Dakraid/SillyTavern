@@ -4,10 +4,11 @@ Date: 2026-05-03
 
 ## Approved scope
 
-- `#completion_prompt_manager` exposes global wrapper settings for persisted chat messages.
+- `#completion_prompt_manager` exposes per-active-chat wrapper toggles for persisted chat messages.
 - Assistant messages are persisted as `<CharacterTag>message</CharacterTag>` when enabled. In group chats, the tag comes from the actual responding character for each message.
 - User messages are persisted as `<PersonaName>message</PersonaName>` when enabled.
-- A per-character assistant tag override is stored internally in SillyTavern settings and is not written to character card data or prompt import/export files.
+- Assistant/user wrapper enabled state is stored per chat in `chat_metadata.prompt_wrappers = { assistant, user }`; missing metadata seeds once from legacy global wrapper booleans.
+- A per-character assistant tag override is stored internally in SillyTavern settings and is not written to character card data, chat metadata, or prompt import/export files.
 - The same override is editable in both the Character Editor and Completion Prompt Manager.
 - Wrapper toggles apply retroactively to the current chat and all stored swipes after a confirmation. Turning on wraps old messages; turning off removes managed or same-tag outer wrappers.
 - New assistant/user messages, regenerated replies, swipes, continues, and appends persist exactly one wrapper pair when the matching toggle is enabled.
@@ -30,7 +31,8 @@ Date: 2026-05-03
   - `Wrap assistant messages with character tags` checkbox.
   - `Wrap user messages with persona tags` checkbox.
   - `Active character tag override` text input when a character is selected.
-- Toggle changes require confirmation because they rewrite the current chat.
+- Toggle checked states reflect the currently loaded chat; switching chats, characters, or groups re-renders them from that chat's metadata.
+- Toggle changes require confirmation because they rewrite and save the current chat. Metadata-only changes save even when there are no message text slots to rewrite.
 - The override input saves to the shared internal wrapper setting.
 
 ## Character Editor UI
@@ -63,3 +65,4 @@ Date: 2026-05-03
 ## Change journal
 
 - 2026-05-03: Initial approved design recorded from user interview and design deck selections.
+- 2026-05-03: Follow-up approval changed assistant/user wrapper toggles from global settings to per-active-chat metadata while keeping character tag overrides global/internal.
