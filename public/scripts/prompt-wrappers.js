@@ -45,6 +45,47 @@ export function getChatPromptWrapperSettings(chatMetadata, extensionSettings) {
 }
 
 /**
+ * Gets or creates active-chat group override map.
+ * @param {Record<string, any>} chatMetadata Active chat metadata object.
+ * @returns {Record<string, string>} Avatar filename to tag override map.
+ */
+export function getChatPromptWrapperOverrideMap(chatMetadata) {
+    if (!chatMetadata || typeof chatMetadata !== 'object' || Array.isArray(chatMetadata)) {
+        return {};
+    }
+
+    if (!chatMetadata.prompt_wrapper_overrides || typeof chatMetadata.prompt_wrapper_overrides !== 'object' || Array.isArray(chatMetadata.prompt_wrapper_overrides)) {
+        chatMetadata.prompt_wrapper_overrides = {};
+        return chatMetadata.prompt_wrapper_overrides;
+    }
+
+    for (const [avatar, value] of Object.entries(chatMetadata.prompt_wrapper_overrides)) {
+        const normalized = String(value ?? '').trim();
+        if (!avatar || !normalized) delete chatMetadata.prompt_wrapper_overrides[avatar];
+        else chatMetadata.prompt_wrapper_overrides[avatar] = normalized;
+    }
+
+    return chatMetadata.prompt_wrapper_overrides;
+}
+
+/**
+ * Resolves the assistant XML tag with group override precedence.
+ * @param {object} params Params.
+ * @param {string} [params.avatar] Message writer avatar filename.
+ * @param {Record<string, string>} [params.groupOverrides] Active group chat overrides.
+ * @param {Record<string, string>} [params.individualOverrides] Internal per-character overrides.
+ * @param {string} [params.messageName] Message owner display name.
+ * @param {string} [params.characterName] Current character display name for the avatar.
+ * @param {string} [params.fallbackName] Last-resort name.
+ * @returns {string} Normalized tag.
+ */
+export function resolvePromptWrapperTag({ avatar, groupOverrides = {}, individualOverrides = {}, messageName = '', characterName = '', fallbackName = 'Unknown' } = {}) {
+    const groupOverride = avatar ? groupOverrides?.[avatar] : '';
+    const individualOverride = avatar ? individualOverrides?.[avatar] : '';
+    return normalizePromptWrapperTag(groupOverride || individualOverride || characterName || messageName || fallbackName);
+}
+
+/**
  * Escapes only characters that would break tag boundaries.
  * @param {string} tag Tag name.
  * @returns {string}
@@ -253,7 +294,10 @@ export function calculatePromptOrderRenumber(count, start, mode) {
  * @param {{relative: number, inChat: number}} [positions] Injection position values.
  * @returns {Array<Record<string, any>>} Partial prompt updates with identifiers.
  */
-export function createPromptBulkUpdates(prompts, params, positions = { relative: 0, inChat: 1 }) {
+export function createPromptBulkUpdates(prompts, params, positions = { relative: 0, inChat: 1, defaultDepth: 4, defaultOrder: 100 }) {
+    const defaultDepth = Number.isInteger(positions.defaultDepth) && positions.defaultDepth >= 0 ? positions.defaultDepth : 4;
+    const defaultOrder = Number.isInteger(positions.defaultOrder) && positions.defaultOrder >= 0 ? positions.defaultOrder : 100;
+    const validNumber = (value, fallback) => Number.isInteger(value) && value >= 0 ? value : fallback;
     const updates = prompts
         .filter(prompt => prompt?.identifier)
         .map(prompt => ({ identifier: prompt.identifier }));
@@ -263,7 +307,11 @@ export function createPromptBulkUpdates(prompts, params, positions = { relative:
             updates.forEach(update => update.injection_position = positions.relative);
             break;
         case 'position-inchat':
-            updates.forEach(update => update.injection_position = positions.inChat);
+            prompts.filter(prompt => prompt?.identifier).forEach((prompt, index) => Object.assign(updates[index], {
+                injection_position: positions.inChat,
+                injection_depth: validNumber(prompt.injection_depth, defaultDepth),
+                injection_order: validNumber(prompt.injection_order, defaultOrder),
+            }));
             break;
         case 'depth':
             updates.forEach(update => update.injection_depth = params.value);

@@ -273,7 +273,7 @@ import { extractReasoningFromData, extractReasoningSignatureFromData, initReason
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
-import { cleanupPersistedPromptWrapperSlot, getChatPromptWrapperSettings, getPromptWrapperDisplayParts, getPromptWrapperRole, getPromptWrapperSettings, normalizePromptWrapperTag, resolvePromptWrapperState } from './scripts/prompt-wrappers.js';
+import { cleanupPersistedPromptWrapperSlot, getChatPromptWrapperOverrideMap, getChatPromptWrapperSettings, getPromptWrapperDisplayParts, getPromptWrapperRole, getPromptWrapperSettings, normalizePromptWrapperTag, resolvePromptWrapperState, resolvePromptWrapperTag } from './scripts/prompt-wrappers.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -5819,6 +5819,24 @@ export function removeMacros(str) {
 }
 
 /**
+ * Gets character data by avatar filename.
+ * @param {string} avatar Avatar filename.
+ * @returns {object|null} Character object or null.
+ */
+function getCharacterByAvatar(avatar) {
+    return characters.find(character => character?.avatar === avatar) ?? null;
+}
+
+/**
+ * Gets a readable fallback name for an avatar filename.
+ * @param {string} avatar Avatar filename.
+ * @returns {string}
+ */
+function getPromptWrapperNameForAvatar(avatar) {
+    return getCharacterByAvatar(avatar)?.name || String(avatar ?? '').replace(/\.[^/.]+$/, '') || 'Unknown';
+}
+
+/**
  * Gets the current character's internal assistant wrapper tag override.
  * @returns {string}
  */
@@ -5835,11 +5853,61 @@ export function getActiveCharacterPromptWrapperTagOverride() {
 export function setActiveCharacterPromptWrapperTagOverride(value) {
     const avatar = characters[this_chid]?.avatar;
     if (!avatar) return;
+    setIndividualPromptWrapperTagOverride(avatar, value);
+}
+
+/**
+ * Saves an internal per-character assistant wrapper tag override.
+ * @param {string} avatar Character avatar filename.
+ * @param {string} value Override text.
+ */
+export function setIndividualPromptWrapperTagOverride(avatar, value) {
+    if (!avatar) return;
     const settings = getPromptWrapperSettings(extension_settings);
     const normalized = String(value ?? '').trim();
     if (normalized) settings.chara[avatar] = normalized;
     else delete settings.chara[avatar];
     saveSettingsDebounced();
+}
+
+/**
+ * Saves an active group-chat assistant wrapper tag override.
+ * @param {string} avatar Group member avatar filename.
+ * @param {string} value Override text.
+ */
+export function setGroupPromptWrapperTagOverride(avatar, value) {
+    if (!avatar || !selected_group) return;
+    const overrides = getChatPromptWrapperOverrideMap(chat_metadata);
+    const normalized = String(value ?? '').trim();
+    if (normalized) overrides[avatar] = normalized;
+    else delete overrides[avatar];
+    chat_metadata.tainted = true;
+}
+
+/**
+ * Gets override input rows for the active Prompt Manager context.
+ * @returns {Array<{avatar: string, name: string, value: string, isGroup: boolean}>}
+ */
+export function getActivePromptWrapperOverrideEntries() {
+    const globalSettings = getPromptWrapperSettings(extension_settings);
+
+    if (selected_group) {
+        const group = groups.find(x => x.id === selected_group);
+        const overrides = getChatPromptWrapperOverrideMap(chat_metadata);
+        return (group?.members ?? []).map(avatar => {
+            const name = getPromptWrapperNameForAvatar(avatar);
+            return { avatar, name, value: overrides[avatar] || name, isGroup: true };
+        });
+    }
+
+    const character = characters[this_chid];
+    if (!character?.avatar) return [];
+    return [{
+        avatar: character.avatar,
+        name: character.name || getPromptWrapperNameForAvatar(character.avatar),
+        value: globalSettings.chara[character.avatar] || character.name || getPromptWrapperNameForAvatar(character.avatar),
+        isGroup: false,
+    }];
 }
 
 /**
@@ -5885,8 +5953,16 @@ export function getPromptWrapperStateForMessage(role, message) {
     }
 
     const avatar = message?.original_avatar || characters[this_chid]?.avatar;
-    const override = avatar ? globalSettings.chara[avatar] : '';
-    return resolvePromptWrapperState({ enabled: chatSettings.assistant, tag: override || message?.name || name2 || 'Unknown' });
+    const character = avatar ? getCharacterByAvatar(avatar) : null;
+    const tag = resolvePromptWrapperTag({
+        avatar,
+        groupOverrides: selected_group ? getChatPromptWrapperOverrideMap(chat_metadata) : {},
+        individualOverrides: globalSettings.chara,
+        messageName: message?.name,
+        characterName: character?.name,
+        fallbackName: name2 || 'Unknown',
+    });
+    return resolvePromptWrapperState({ enabled: chatSettings.assistant, tag });
 }
 
 /**
@@ -9026,7 +9102,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     $('#character_popup-button-h3').text(characters[chid].name);
     $('#character_name_pole').val(characters[chid].name);
     $('#character_prompt_wrapper_tag_block').show();
-    $('#character_prompt_wrapper_tag').val(getActiveCharacterPromptWrapperTagOverride());
+    $('#character_prompt_wrapper_tag').val(getActiveCharacterPromptWrapperTag());
     $('#description_textarea').val(characters[chid].description);
     $('#character_world').val(characters[chid].data?.extensions?.world || '');
     $('#creator_notes_textarea').val(characters[chid].data?.creator_notes || characters[chid].creatorcomment);
@@ -11710,14 +11786,18 @@ jQuery(async function () {
         }
     });
 
-    $('#character_prompt_wrapper_tag').on('input', function () {
+    const saveCharacterPromptWrapperTagOverride = debounce(function () {
         if (menu_type != 'create') {
-            setActiveCharacterPromptWrapperTagOverride(String($('#character_prompt_wrapper_tag').val()));
+            const value = String($('#character_prompt_wrapper_tag').val()).trim();
+            setActiveCharacterPromptWrapperTagOverride(value);
+            if (!value) $('#character_prompt_wrapper_tag').val(getActiveCharacterPromptWrapperTag());
             if (getActiveChatPromptWrapperSettings().assistant) {
                 printMessages();
             }
         }
-    });
+    }, debounce_timeout.relaxed);
+
+    $('#character_prompt_wrapper_tag').on('input', saveCharacterPromptWrapperTagOverride);
 
     const elementsToUpdate = {
         '#description_textarea': function () { create_save.description = String($('#description_textarea').val()); },

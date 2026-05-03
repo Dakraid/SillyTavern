@@ -2,7 +2,7 @@
 
 import { DOMPurify } from '../lib.js';
 
-import { event_types, eventSource, getActiveCharacterPromptWrapperTag, getActiveCharacterPromptWrapperTagOverride, getActiveChatPromptWrapperSettings, is_send_press, main_api, printMessages, saveChatConditional, setActiveChatPromptWrapperEnabled, setActiveCharacterPromptWrapperTagOverride, substituteParams } from '../script.js';
+import { event_types, eventSource, getActivePromptWrapperOverrideEntries, getActiveChatPromptWrapperSettings, is_send_press, main_api, printMessages, saveChatConditional, setActiveChatPromptWrapperEnabled, setGroupPromptWrapperTagOverride, setIndividualPromptWrapperTagOverride, substituteParams } from '../script.js';
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
@@ -426,6 +426,9 @@ class PromptManager {
 
         /** Debounced version of render */
         this.renderDebounced = debounce(this.render.bind(this), debounce_timeout.relaxed);
+
+        /** Debounced wrapper override save */
+        this.handleWrapperOverrideInputDebounced = debounce(this.handleWrapperOverrideInput.bind(this), debounce_timeout.relaxed);
     }
 
 
@@ -1232,7 +1235,9 @@ class PromptManager {
         }
 
         if (promptOrder.length === 0) {
-            promptOrder.push(...JSON.parse(JSON.stringify(promptManagerDefaultPromptOrder)));
+            const defaults = JSON.parse(JSON.stringify(promptManagerDefaultPromptOrder))
+                .filter(entry => entry?.identifier && this.getPromptById(entry.identifier));
+            promptOrder.push(...defaults);
             changed = true;
         }
 
@@ -1688,22 +1693,24 @@ class PromptManager {
     async renderWrapperSettings(promptManagerDiv) {
         const settings = getActiveChatPromptWrapperSettings();
         const headerDiv = promptManagerDiv.querySelector('.completion_prompt_manager_header');
+        const overrideEntries = getActivePromptWrapperOverrideEntries();
         const html = await renderTemplateAsync('promptManagerWrapperSettings', {
             prefix: this.configuration.prefix,
             assistant: settings.assistant,
             user: settings.user,
-            override: getActiveCharacterPromptWrapperTagOverride(),
-            tagPreview: getActiveCharacterPromptWrapperTag(),
+            overrides: overrideEntries,
+            hasOverrides: overrideEntries.length > 0,
+            isGroup: overrideEntries.some(entry => entry.isGroup),
         });
         headerDiv.insertAdjacentHTML('afterend', html);
 
         const assistantToggle = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_wrap_assistant`);
         const userToggle = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_wrap_user`);
-        const overrideInput = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_wrapper_tag_override`);
+        const overrideInputs = promptManagerDiv.querySelectorAll(`.${this.configuration.prefix}prompt_manager_wrapper_tag_override`);
 
         assistantToggle?.addEventListener('change', (event) => this.handleWrapperToggle(event, 'assistant'));
         userToggle?.addEventListener('change', (event) => this.handleWrapperToggle(event, 'user'));
-        overrideInput?.addEventListener('change', (event) => this.handleWrapperOverrideChange(event));
+        overrideInputs.forEach(input => input.addEventListener('input', (event) => this.handleWrapperOverrideInputDebounced(event)));
     }
 
     /**
@@ -1732,15 +1739,27 @@ class PromptManager {
     }
 
     /**
-     * @param {Event} event Change event.
+     * @param {Event} event Input event.
      */
-    async handleWrapperOverrideChange(event) {
+    async handleWrapperOverrideInput(event) {
         const input = /** @type {HTMLInputElement} */(event.target);
-        setActiveCharacterPromptWrapperTagOverride(input.value);
-        $('#character_prompt_wrapper_tag').val(input.value);
+        const avatar = input.dataset.avatar;
+        if (!avatar) return;
 
+        const value = input.value.trim();
+        const defaultTag = input.dataset.defaultTag || '';
+        const isGroup = input.dataset.group === 'true';
+
+        if (isGroup) {
+            setGroupPromptWrapperTagOverride(avatar, value);
+            await saveChatConditional();
+        } else {
+            setIndividualPromptWrapperTagOverride(avatar, value);
+            $('#character_prompt_wrapper_tag').val(value || defaultTag);
+        }
+
+        if (!value) input.value = defaultTag;
         if (getActiveChatPromptWrapperSettings().assistant) await printMessages();
-        this.renderDebounced(false);
     }
 
     /**
@@ -1851,6 +1870,8 @@ class PromptManager {
         const updates = createPromptBulkUpdates(prompts, params, {
             relative: INJECTION_POSITION.RELATIVE,
             inChat: INJECTION_POSITION.ABSOLUTE,
+            defaultDepth: DEFAULT_DEPTH,
+            defaultOrder: DEFAULT_ORDER,
         });
         this.updatePrompts(updates);
         return updates.length;
@@ -1987,6 +2008,12 @@ class PromptManager {
             }
 
             const encodedName = escapeHtml(prompt.name);
+            const injectionDepth = Number.isInteger(prompt.injection_depth) && prompt.injection_depth >= 0 ? prompt.injection_depth : DEFAULT_DEPTH;
+            const injectionOrder = Number.isInteger(prompt.injection_order) && prompt.injection_order >= 0 ? prompt.injection_order : DEFAULT_ORDER;
+            if (prompt.injection_position === INJECTION_POSITION.ABSOLUTE) {
+                prompt.injection_depth = injectionDepth;
+                prompt.injection_order = injectionOrder;
+            }
             const isMarkerPrompt = prompt.marker && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE;
             const isSystemPrompt = !prompt.marker && prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE && !prompt.forbid_overrides;
             const isImportantPrompt = !prompt.marker && prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE && prompt.forbid_overrides;
@@ -2015,7 +2042,7 @@ class PromptManager {
                         ${isInjectionPrompt ? '<span class="fa-fw fa-solid fa-syringe" title="In-Chat Injection"></span>' : ''}
                         ${this.isPromptInspectionAllowed(prompt) ? `<a title="${encodedName}" class="prompt-manager-inspect-action">${encodedName}</a>` : `<span title="${encodedName}">${encodedName}</span>`}
                         ${roleIcon ? `<span data-role="${escapeHtml(prompt.role)}" class="fa-xs fa-solid ${roleIcon}" title="${roleTitle}"></span>` : ''}
-                        ${isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(prompt.injection_depth.toString())}</small>` : ''}
+                        ${isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(injectionDepth.toString())}</small>` : ''}
                         ${isOverriddenPrompt ? '<small class="fa-solid fa-address-card prompt-manager-overridden" title="Pulled from a character card"></small>' : ''}
                     </span>
                     <span>

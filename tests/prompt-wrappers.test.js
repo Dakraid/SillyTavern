@@ -3,11 +3,13 @@ import {
     calculatePromptOrderRenumber,
     cleanupPersistedPromptWrapperSlot,
     createPromptBulkUpdates,
+    getChatPromptWrapperOverrideMap,
     getChatPromptWrapperSettings,
     getPromptWrapperDisplayParts,
     getPromptWrapperRole,
     normalizePromptWrapperTag,
     resolvePromptWrapperState,
+    resolvePromptWrapperTag,
     stripPromptWrapperTags,
     wrapPromptWrapperContent,
     wrapPromptWrapperText,
@@ -64,6 +66,29 @@ describe('prompt wrappers', () => {
 });
 
 describe('chat prompt wrapper settings', () => {
+    test('normalizes active group chat override maps', () => {
+        const chatMetadata = { prompt_wrapper_overrides: { 'alice.png': ' Ally ', 'bob.png': '', empty: null } };
+        expect(getChatPromptWrapperOverrideMap(chatMetadata)).toEqual({ 'alice.png': 'Ally' });
+        expect(getChatPromptWrapperOverrideMap(null)).toEqual({});
+    });
+
+    test('resolves assistant tags with group override precedence', () => {
+        expect(resolvePromptWrapperTag({
+            avatar: 'alice.png',
+            groupOverrides: { 'alice.png': 'Group Alice' },
+            individualOverrides: { 'alice.png': 'Solo Alice' },
+            messageName: 'Message Alice',
+            characterName: 'Character Alice',
+        })).toBe('Group Alice');
+
+        expect(resolvePromptWrapperTag({
+            avatar: 'alice.png',
+            groupOverrides: {},
+            individualOverrides: { 'alice.png': 'Solo Alice' },
+            messageName: 'Message Alice',
+        })).toBe('Solo Alice');
+    });
+
     test('seeds missing chat metadata from legacy globals without chara overrides', () => {
         const chatMetadata = {};
         const settings = getChatPromptWrapperSettings(chatMetadata, { wrappers: { assistant: true, user: false, chara: { avatar: 'Alice' } } });
@@ -117,6 +142,18 @@ describe('prompt manager bulk operations', () => {
 
         expect(visibleCopies.map(prompt => prompt.injection_position)).toEqual([0, 0]);
         expect(storedPrompts.map(prompt => prompt.injection_position)).toEqual([1, 1]);
+    });
+
+    test('position-inchat writes render-safe depth and order defaults', () => {
+        const prompts = [
+            { identifier: 'a', injection_position: 0 },
+            { identifier: 'b', injection_position: 0, injection_depth: 0, injection_order: 7 },
+        ];
+
+        expect(createPromptBulkUpdates(prompts, { operation: 'position-inchat', value: 0, mode: 'first-inc' }, { relative: 0, inChat: 1, defaultDepth: 4, defaultOrder: 100 })).toEqual([
+            { identifier: 'a', injection_position: 1, injection_depth: 4, injection_order: 100 },
+            { identifier: 'b', injection_position: 1, injection_depth: 0, injection_order: 7 },
+        ]);
     });
 
     test('mutates visible prompt targets for position, depth, and order operations', () => {

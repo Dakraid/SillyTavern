@@ -9,8 +9,9 @@ Date: 2026-05-03
 - User prompt content is sent as `<PersonaName>message</PersonaName>` when enabled.
 - Saved chat messages and saved swipes remain raw/unwrapped. XML tags are not written to `mes`, `swipes[]`, or new `extra.prompt_wrapper` metadata.
 - Assistant/user wrapper enabled state is stored per chat in `chat_metadata.prompt_wrappers = { assistant, user }`; missing metadata seeds once from legacy global wrapper booleans.
-- A per-character assistant tag override is stored internally in SillyTavern settings and is not written to character card data, chat metadata, chat messages, or prompt import/export files.
-- The same override is editable in both the Character Editor and Completion Prompt Manager.
+- Individual-chat per-character assistant tag overrides are stored internally in SillyTavern settings and are not written to character card data, chat messages, or prompt import/export files.
+- Group-chat assistant tag overrides are stored only on the active group chat metadata as `chat_metadata.prompt_wrapper_overrides = { [avatarFilename]: string }`.
+- The same individual override is editable in both the Character Editor and Completion Prompt Manager; group chats render one Completion Prompt Manager override input per group member.
 - Wrapper toggles are metadata-only. Changing them saves chat metadata, re-renders chat display tags, and changes future prompt-build payloads without rewriting chat text.
 - Legacy cleanup is limited to old messages/swipes that already have `extra.prompt_wrapper` metadata from earlier builds. Cleanup restores `base_mes` or strips that metadata tag, deletes the legacy metadata, and saves the chat.
 
@@ -18,7 +19,8 @@ Date: 2026-05-03
 
 - Format: `<Tag>message</Tag>`.
 - Tag source:
-  - Assistant: character-specific override, then character/message display name, then `Unknown`.
+  - Assistant in group chats: active group chat override for the message writer avatar, then individual character override, then character/message display name, then `Unknown`.
+  - Assistant in individual chats: individual character override, then character/message display name, then `Unknown`.
   - User: active persona/message user name, then `Unknown`.
 - Tag names preserve display names, including spaces and special characters. `<` and `>` are escaped for tag boundaries.
 - Prompt-build wrapping happens in the chat-completion message payload only and does not mutate source chat objects.
@@ -31,16 +33,18 @@ Date: 2026-05-03
 - Controls:
   - `Wrap assistant messages with character tags` checkbox.
   - `Wrap user messages with persona tags` checkbox.
-  - `Active character tag override` text input when a character is selected.
+  - `Character tag overrides` text inputs.
 - Toggle checked states reflect the currently loaded chat; switching chats, characters, or groups re-renders them from that chat's metadata.
+- Individual chats show one override input for the selected character. Group chats show one override input per group member.
+- Override inputs visually default to each associated character name. Saving a non-empty value stores the override; clearing the input debounces briefly, removes the override entry, and resets the visible value to the character name.
 - Toggle changes do not require rewrite confirmation because they only save chat metadata and re-render display-only tags.
-- The override input saves to the shared internal wrapper setting and re-renders display-only assistant tags when assistant wrapping is enabled.
+- Override input saves are debounced. Individual overrides save internal settings; group overrides save active chat metadata. Display-only assistant tags are re-rendered when assistant wrapping is enabled.
 
 ## Character Editor UI
 
 - Add `Assistant wrapper tag override` near core character identity fields.
 - The field uses the same internal setting as Prompt Manager.
-- Empty value means use the character display name.
+- Empty value means use the character display name; after debounce, the field resets to the character name and the stored individual override is removed.
 
 ## Bulk operations UI
 
@@ -68,3 +72,4 @@ Date: 2026-05-03
 - 2026-05-03: Initial approved design recorded from user interview and design deck selections.
 - 2026-05-03: Follow-up approval changed assistant/user wrapper toggles from global settings to per-active-chat metadata while keeping character tag overrides global/internal.
 - 2026-05-03: Corrected wrapper model from persisted chat text to ephemeral prompt-build wrapping plus display-only UI tags; legacy metadata cleanup is one-way migration only.
+- 2026-05-03: Scoped assistant tag overrides: individual overrides remain internal per character, while group-chat overrides are per active group chat and keyed by member avatar.

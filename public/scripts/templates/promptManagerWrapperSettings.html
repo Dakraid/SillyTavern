@@ -8,8 +8,15 @@
         <input id="{{prefix}}prompt_manager_wrap_user" type="checkbox" {{#if user}}checked{{/if}}>
         <span data-i18n="Wrap user messages with persona tags">Wrap user messages with persona tags</span>
     </label>
-    <label class="{{prefix}}prompt_manager_wrapper_override" for="{{prefix}}prompt_manager_wrapper_tag_override">
-        <span data-i18n="Active character tag override">Active character tag override</span>
-        <input id="{{prefix}}prompt_manager_wrapper_tag_override" class="text_pole" type="text" value="{{override}}" placeholder="{{tagPreview}}" data-i18n="[placeholder]{{tagPreview}}">
-    </label>
+    {{#if hasOverrides}}
+    <div class="{{prefix}}prompt_manager_wrapper_overrides" aria-label="Character tag overrides">
+        <span data-i18n="Character tag overrides">Character tag overrides</span>
+        {{#each overrides}}
+        <label class="{{../prefix}}prompt_manager_wrapper_override" for="{{../prefix}}prompt_manager_wrapper_tag_override_{{@index}}">
+            <span>{{name}}</span>
+            <input id="{{../prefix}}prompt_manager_wrapper_tag_override_{{@index}}" class="{{../prefix}}prompt_manager_wrapper_tag_override text_pole" type="text" value="{{value}}" placeholder="{{name}}" data-avatar="{{avatar}}" data-default-tag="{{name}}" data-group="{{isGroup}}" autocomplete="off">
+        </label>
+        {{/each}}
+    </div>
+    {{/if}}
 </div>

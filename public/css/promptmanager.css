@@ -278,6 +278,7 @@
     flex-direction: row;
 }
 
+#completion_prompt_manager .completion_prompt_manager_wrapper_overrides,
 #completion_prompt_manager .completion_prompt_manager_wrapper_override {
     display: flex;
     flex-direction: column;
