@@ -3,6 +3,7 @@ import {
     calculatePromptOrderRenumber,
     cleanupPersistedPromptWrapperSlot,
     createPromptBulkUpdates,
+    ensureChatPromptWrapperSettings,
     getChatPromptWrapperOverrideMap,
     getChatPromptWrapperSettings,
     getPromptWrapperDisplayParts,
@@ -66,6 +67,44 @@ describe('prompt wrappers', () => {
 });
 
 describe('chat prompt wrapper settings', () => {
+    test('reports changed when missing chat metadata is seeded from legacy globals', () => {
+        const chatMetadata = {};
+        const result = ensureChatPromptWrapperSettings(chatMetadata, { wrappers: { assistant: true, user: false, chara: { avatar: 'Alice' } } });
+
+        expect(result).toEqual({ settings: { assistant: true, user: false }, changed: true });
+        expect(chatMetadata.prompt_wrappers).toBe(result.settings);
+        expect(result.settings.chara).toBeUndefined();
+    });
+
+    test('reports unchanged for existing valid chat prompt wrapper booleans', () => {
+        const settings = { assistant: false, user: true };
+        const chatMetadata = { prompt_wrappers: settings };
+        const result = ensureChatPromptWrapperSettings(chatMetadata, { wrappers: { assistant: true, user: false } });
+
+        expect(result).toEqual({ settings: { assistant: false, user: true }, changed: false });
+        expect(result.settings).toBe(settings);
+    });
+
+    test('reports changed when malformed prompt wrapper settings are normalized', () => {
+        const chatMetadata = { prompt_wrappers: { assistant: 'yes', user: undefined, chara: { leaked: true } } };
+        const result = ensureChatPromptWrapperSettings(chatMetadata, { wrappers: { assistant: false, user: true } });
+
+        expect(result).toEqual({ settings: { assistant: false, user: true }, changed: true });
+        expect(chatMetadata.prompt_wrappers).toBe(result.settings);
+        expect(result.settings.chara).toBeUndefined();
+    });
+
+    test('returns fallback without throwing for invalid chat metadata', () => {
+        expect(ensureChatPromptWrapperSettings(null, { wrappers: { assistant: true, user: true } })).toEqual({
+            settings: { assistant: true, user: true },
+            changed: false,
+        });
+        expect(ensureChatPromptWrapperSettings([], { wrappers: { assistant: true, user: false } })).toEqual({
+            settings: { assistant: true, user: false },
+            changed: false,
+        });
+    });
+
     test('normalizes active group chat override maps', () => {
         const chatMetadata = { prompt_wrapper_overrides: { 'alice.png': ' Ally ', 'bob.png': '', empty: null } };
         expect(getChatPromptWrapperOverrideMap(chatMetadata)).toEqual({ 'alice.png': 'Ally' });

@@ -273,7 +273,7 @@ import { extractReasoningFromData, extractReasoningSignatureFromData, initReason
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
-import { cleanupPersistedPromptWrapperSlot, getChatPromptWrapperOverrideMap, getChatPromptWrapperSettings, getPromptWrapperDisplayParts, getPromptWrapperRole, getPromptWrapperSettings, normalizePromptWrapperTag, resolvePromptWrapperState, resolvePromptWrapperTag } from './scripts/prompt-wrappers.js';
+import { cleanupPersistedPromptWrapperSlot, ensureChatPromptWrapperSettings, getChatPromptWrapperOverrideMap, getPromptWrapperDisplayParts, getPromptWrapperRole, getPromptWrapperSettings, normalizePromptWrapperTag, resolvePromptWrapperState, resolvePromptWrapperTag } from './scripts/prompt-wrappers.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -5913,11 +5913,25 @@ export function getActiveCharacterPromptWrapperTag() {
 }
 
 /**
+ * Syncs wrapper toggles for the active chat, seeded from legacy globals if missing.
+ * @param {object} [options] Options.
+ * @param {boolean} [options.markTainted=false] Whether to mark migrated metadata dirty.
+ * @returns {{settings: {assistant: boolean, user: boolean}, changed: boolean}}
+ */
+export function syncActiveChatPromptWrapperSettings({ markTainted = false } = {}) {
+    const result = ensureChatPromptWrapperSettings(chat_metadata, extension_settings);
+    if (result.changed && markTainted) {
+        chat_metadata.tainted = true;
+    }
+    return result;
+}
+
+/**
  * Gets wrapper toggles for the active chat, seeded from legacy globals if missing.
  * @returns {{assistant: boolean, user: boolean}}
  */
 export function getActiveChatPromptWrapperSettings() {
-    return getChatPromptWrapperSettings(chat_metadata, extension_settings);
+    return syncActiveChatPromptWrapperSettings().settings;
 }
 
 /**
@@ -7982,10 +7996,10 @@ export async function getChat() {
         if (!chat_metadata.integrity) {
             chat_metadata.integrity = uuidv4();
         }
-        getActiveChatPromptWrapperSettings();
+        const { changed: promptWrapperSettingsChanged } = syncActiveChatPromptWrapperSettings({ markTainted: true });
         const cleanedPromptWrappers = cleanupPersistedPromptWrapperMetadataFromChat();
         await getChatResult();
-        if (cleanedPromptWrappers > 0) await saveChatConditional();
+        if (promptWrapperSettingsChanged || cleanedPromptWrappers > 0) await saveChatConditional();
         eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: characters[this_chid] } });
 
         // Focus on the textarea if not already focused on a visible text input

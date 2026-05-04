@@ -10,8 +10,12 @@ export const PROMPT_WRAPPER_ROLE_USER = 'user';
  * @returns {{assistant: boolean, user: boolean, chara: Record<string, string>}}
  */
 export function getPromptWrapperSettings(extensionSettings) {
-    extensionSettings.wrappers ??= {};
-    const settings = extensionSettings.wrappers;
+    const target = extensionSettings && typeof extensionSettings === 'object' && !Array.isArray(extensionSettings) ? extensionSettings : {};
+    if (!target.wrappers || typeof target.wrappers !== 'object' || Array.isArray(target.wrappers)) {
+        target.wrappers = {};
+    }
+
+    const settings = target.wrappers;
     settings.assistant = !!settings.assistant;
     settings.user = !!settings.user;
     settings.chara = settings.chara && typeof settings.chara === 'object' && !Array.isArray(settings.chara) ? settings.chara : {};
@@ -22,26 +26,50 @@ export function getPromptWrapperSettings(extensionSettings) {
  * Gets or creates active-chat wrapper settings, seeded once from legacy globals.
  * @param {Record<string, any>} chatMetadata Active chat metadata object.
  * @param {Record<string, any>} extensionSettings SillyTavern extension_settings object.
- * @returns {{assistant: boolean, user: boolean}}
+ * @returns {{settings: {assistant: boolean, user: boolean}, changed: boolean}}
  */
-export function getChatPromptWrapperSettings(chatMetadata, extensionSettings) {
+export function ensureChatPromptWrapperSettings(chatMetadata, extensionSettings) {
     const legacySettings = getPromptWrapperSettings(extensionSettings);
     const fallback = { assistant: legacySettings.assistant, user: legacySettings.user };
 
     if (!chatMetadata || typeof chatMetadata !== 'object' || Array.isArray(chatMetadata)) {
-        return fallback;
+        return { settings: fallback, changed: false };
     }
 
     if (!chatMetadata.prompt_wrappers || typeof chatMetadata.prompt_wrappers !== 'object' || Array.isArray(chatMetadata.prompt_wrappers)) {
         chatMetadata.prompt_wrappers = { ...fallback };
-        return chatMetadata.prompt_wrappers;
+        return { settings: chatMetadata.prompt_wrappers, changed: true };
     }
 
     const settings = chatMetadata.prompt_wrappers;
-    settings.assistant = typeof settings.assistant === 'boolean' ? settings.assistant : fallback.assistant;
-    settings.user = typeof settings.user === 'boolean' ? settings.user : fallback.user;
-    delete settings.chara;
-    return settings;
+    let changed = false;
+
+    if (typeof settings.assistant !== 'boolean') {
+        settings.assistant = fallback.assistant;
+        changed = true;
+    }
+
+    if (typeof settings.user !== 'boolean') {
+        settings.user = fallback.user;
+        changed = true;
+    }
+
+    if (Object.hasOwn(settings, 'chara')) {
+        delete settings.chara;
+        changed = true;
+    }
+
+    return { settings, changed };
+}
+
+/**
+ * Gets or creates active-chat wrapper settings, seeded once from legacy globals.
+ * @param {Record<string, any>} chatMetadata Active chat metadata object.
+ * @param {Record<string, any>} extensionSettings SillyTavern extension_settings object.
+ * @returns {{assistant: boolean, user: boolean}}
+ */
+export function getChatPromptWrapperSettings(chatMetadata, extensionSettings) {
+    return ensureChatPromptWrapperSettings(chatMetadata, extensionSettings).settings;
 }
 
 /**
