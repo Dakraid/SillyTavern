@@ -290,7 +290,7 @@ import { compressRequest, setRequestCompressionConfig } from './scripts/request-
 import { canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/swipe-picker.js';
 
 // API OBJECT FOR EXTERNAL WIRING
-globalThis.SillyTavern = {
+/** @type {any} */ (globalThis).SillyTavern = {
     libs,
     getContext,
 };
@@ -3665,20 +3665,12 @@ class StreamingProcessor {
                 };
             }
 
-            const formattedText = messageFormatting(
-                processedText,
-                chat[messageId].name,
-                chat[messageId].is_system,
-                chat[messageId].is_user,
-                messageId,
-                {},
-                false,
-            );
+            const messageHTML = getMessageTextHTML(chat[messageId], { messageId });
             if (this.messageTextDom instanceof HTMLElement) {
                 if (power_user.stream_fade_in) {
-                    applyStreamFadeIn(this.messageTextDom, formattedText);
+                    applyStreamFadeIn(this.messageTextDom, messageHTML);
                 } else {
-                    this.messageTextDom.innerHTML = formattedText;
+                    this.messageTextDom.innerHTML = messageHTML;
                 }
             }
 
@@ -11786,6 +11778,7 @@ jQuery(async function () {
         }
     });
 
+    /** @type {Function} */
     const saveCharacterPromptWrapperTagOverride = debounce(function () {
         if (menu_type != 'create') {
             const value = String($('#character_prompt_wrapper_tag').val()).trim();
@@ -11797,7 +11790,7 @@ jQuery(async function () {
         }
     }, debounce_timeout.relaxed);
 
-    $('#character_prompt_wrapper_tag').on('input', saveCharacterPromptWrapperTagOverride);
+    $('#character_prompt_wrapper_tag').on('input', () => saveCharacterPromptWrapperTagOverride());
 
     const elementsToUpdate = {
         '#description_textarea': function () { create_save.description = String($('#description_textarea').val()); },

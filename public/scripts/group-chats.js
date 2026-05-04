@@ -50,6 +50,7 @@ import {
     hideSwipeButtons,
     chat_metadata,
     updateChatMetadata,
+    getActiveChatPromptWrapperSettings,
     getThumbnailUrl,
     getRequestHeaders,
     setMenuType,
@@ -289,6 +290,9 @@ export async function getGroupChat(groupId, reload = false) {
         metadata.integrity = uuidv4();
     }
 
+    updateChatMetadata(metadata, true);
+    getActiveChatPromptWrapperSettings();
+
     await loadItemizedPrompts(getCurrentChatId());
 
     if (group && Array.isArray(group.members) && freshChat) {
@@ -319,8 +323,6 @@ export async function getGroupChat(groupId, reload = false) {
         chatElement.find('.mes').remove();
         await printMessages();
     }
-
-    updateChatMetadata(metadata, true);
 
     if (reload) {
         select_group_chats(groupId, true);
