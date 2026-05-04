@@ -16,6 +16,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
+import { addOpenRouterUserIdentifier } from '../openrouter-user.js';
 
 export const router = express.Router();
 
@@ -374,6 +375,7 @@ router.post('/generate', async function (request, response) {
             }
 
             request.body = _.pickBy(request.body, (_, key) => OPENROUTER_KEYS.includes(key));
+            addOpenRouterUserIdentifier(request.body);
             args.body = JSON.stringify(request.body);
         }
 
