@@ -65,6 +65,7 @@ import {
     getWebTokenizer,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
+import { addOpenRouterUserIdentifier } from '../openrouter-user.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -2301,6 +2302,8 @@ router.post('/generate', async function (request, response) {
             if (isGemini) {
                 bodyParams['safety_settings'] = GEMINI_SAFETY;
             }
+
+            addOpenRouterUserIdentifier(bodyParams);
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
             apiUrl = request.body.custom_url;
             apiKey = readSecret(request.user.directories, SECRET_KEYS.CUSTOM, request.body.secret_id);

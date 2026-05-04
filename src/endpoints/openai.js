@@ -9,6 +9,7 @@ import { getConfigValue, mergeObjectWithYaml, excludeKeysByYaml, trimV1, delay }
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { AIMLAPI_HEADERS, OPENROUTER_HEADERS, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT } from '../constants.js';
+import { addOpenRouterUserIdentifier } from './openrouter-user.js';
 
 export const router = express.Router();
 
@@ -141,10 +142,7 @@ router.post('/caption-image', async (request, response) => {
         let apiUrl = '';
 
         if (request.body.api === 'openrouter') {
-            const userIdentifier = getConfigValue('userIdentifier');
-            if (userIdentifier) {
-                request.body.user = userIdentifier;
-            }
+            addOpenRouterUserIdentifier(body);
             apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
             Object.assign(headers, OPENROUTER_HEADERS);
         }

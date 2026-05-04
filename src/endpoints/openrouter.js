@@ -3,6 +3,7 @@ import fetch from 'node-fetch';
 import mime from 'mime-types';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { OPENROUTER_HEADERS } from '../constants.js';
+import { addOpenRouterUserIdentifier } from './openrouter-user.js';
 
 export const router = express.Router();
 const API_OPENROUTER = 'https://openrouter.ai/api/v1';
@@ -152,6 +153,23 @@ router.post('/image/generate', async (req, res) => {
             return res.status(400).json({ error: 'Model and prompt are required' });
         }
 
+        const body = addOpenRouterUserIdentifier({
+            model: model,
+            messages: [
+                {
+                    role: 'user',
+                    content: prompt,
+                },
+            ],
+            modalities: ['image'],
+            image_config: {
+                aspect_ratio: req.body.aspect_ratio || '1:1',
+                ...(req.body.output_format && { output_format: req.body.output_format }),
+                ...(req.body.quality && { quality: req.body.quality }),
+                ...(req.body.n && { n: req.body.n }),
+            },
+        });
+
         const response = await fetch(`${API_OPENROUTER}/chat/completions`, {
             method: 'POST',
             headers: {
@@ -159,22 +177,7 @@ router.post('/image/generate', async (req, res) => {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${key}`,
             },
-            body: JSON.stringify({
-                model: model,
-                messages: [
-                    {
-                        role: 'user',
-                        content: prompt,
-                    },
-                ],
-                modalities: ['image'],
-                image_config: {
-                    aspect_ratio: req.body.aspect_ratio || '1:1',
-                    ...(req.body.output_format && { output_format: req.body.output_format }),
-                    ...(req.body.quality && { quality: req.body.quality }),
-                    ...(req.body.n && { n: req.body.n }),
-                },
-            }),
+            body: JSON.stringify(body),
         });
 
         if (!response.ok) {
@@ -283,6 +286,18 @@ router.post('/generate-voice', async (req, res) => {
             return res.status(400).json({ error: 'Text, voice, and model are required' });
         }
 
+        const body = addOpenRouterUserIdentifier({
+            model: model,
+            modalities: ['text', 'audio'],
+            audio: { voice: voice, format: format || 'mp3' },
+            messages: [
+                {
+                    role: 'user',
+                    content: text,
+                },
+            ],
+        });
+
         const response = await fetch(`${API_OPENROUTER}/chat/completions`, {
             method: 'POST',
             headers: {
@@ -290,17 +305,7 @@ router.post('/generate-voice', async (req, res) => {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${key}`,
             },
-            body: JSON.stringify({
-                model: model,
-                modalities: ['text', 'audio'],
-                audio: { voice: voice, format: format || 'mp3' },
-                messages: [
-                    {
-                        role: 'user',
-                        content: text,
-                    },
-                ],
-            }),
+            body: JSON.stringify(body),
         });
 
         if (!response.ok) {
@@ -357,6 +362,28 @@ router.post('/transcribe', async (req, res) => {
             ? `Transcribe this audio in ${lang}. Respond with only the transcription.`
             : 'Transcribe this audio. Respond with only the transcription.';
 
+        const body = addOpenRouterUserIdentifier({
+            model: model,
+            messages: [
+                {
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'input_audio',
+                            input_audio: {
+                                data: base64Data,
+                                format: audioFormat,
+                            },
+                        },
+                        {
+                            type: 'text',
+                            text: promptText,
+                        },
+                    ],
+                },
+            ],
+        });
+
         const response = await fetch(`${API_OPENROUTER}/chat/completions`, {
             method: 'POST',
             headers: {
@@ -364,27 +391,7 @@ router.post('/transcribe', async (req, res) => {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${key}`,
             },
-            body: JSON.stringify({
-                model: model,
-                messages: [
-                    {
-                        role: 'user',
-                        content: [
-                            {
-                                type: 'input_audio',
-                                input_audio: {
-                                    data: base64Data,
-                                    format: audioFormat,
-                                },
-                            },
-                            {
-                                type: 'text',
-                                text: promptText,
-                            },
-                        ],
-                    },
-                ],
-            }),
+            body: JSON.stringify(body),
         });
 
         if (!response.ok) {
