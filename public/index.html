@@ -6273,12 +6273,16 @@
                                                 <label for="rm_group_activation_strategy" class="flexnowrap width100p whitespacenowrap">
                                                     <span data-i18n="Group reply strategy">Group reply strategy</span>
                                                 </label>
-                                                <select id="rm_group_activation_strategy">
-                                                    <option value="2" data-i18n="Manual">Manual</option>
-                                                    <option value="0" data-i18n="Natural order">Natural order</option>
-                                                    <option value="1" data-i18n="List order">List order</option>
-                                                    <option value="3" data-i18n="Pooled order">Pooled order</option>
-                                                </select>
+                                                <div class="flex-container flexGap5">
+                                                    <select id="rm_group_activation_strategy" class="flex1">
+                                                        <option value="2" data-i18n="Manual">Manual</option>
+                                                        <option value="0" data-i18n="Natural order">Natural order</option>
+                                                        <option value="1" data-i18n="List order">List order</option>
+                                                        <option value="3" data-i18n="Pooled order">Pooled order</option>
+                                                        <option value="4" data-i18n="Director">Director</option>
+                                                    </select>
+                                                    <div id="rm_group_director_inspector" class="heightFitContent margin0 menu_button fa-solid fa-fw fa-sliders" title="Director settings and inspector" data-i18n="[title]Director settings and inspector"></div>
+                                                </div>
                                             </div>
                                             <div class="flex1 flexGap5">
                                                 <label for="rm_group_generation_mode" class="flexnowrap width100p whitespacenowrap">
@@ -6333,6 +6337,7 @@
                                                     <input id="rm_group_hidemutedsprites" type="checkbox" />
                                                     <span data-i18n="Hide Muted Member Sprites">Hide Muted Member Sprites</span>
                                                 </label>
+                                                <hr class="margin0">
                                             </div>
                                         </div>
                                     </div>

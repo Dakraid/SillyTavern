@@ -1,6 +1,7 @@
 import {
     applyPromptBulkOperation,
     calculatePromptOrderRenumber,
+    cleanupPersistedPromptWrapperMessage,
     cleanupPersistedPromptWrapperSlot,
     createPromptBulkUpdates,
     ensureChatPromptWrapperSettings,
@@ -63,6 +64,70 @@ describe('prompt wrappers', () => {
         expect(wrapped.mes).toBe('<Alice>Hello</Alice>');
         expect(wrapped.base_mes).toBe('Hello');
         expect(stripPromptWrapperTags('<Kris><Kris>Hi</Kris></Kris></Kris>', 'Kris')).toBe('Hi');
+    });
+
+    test('cleans metadata-managed legacy wrappers from messages and swipes', () => {
+        const message = {
+            mes: '<Alice>Answer ends with </xml></Alice>',
+            extra: {
+                prompt_wrapper: { role: 'assistant', tag: 'Alice', base_mes: 'Answer ends with </xml>', version: 1 },
+                keep: true,
+            },
+            swipes: ['<Alice>First</Alice>', '<Bob>Second</Bob>', '<Alice>Literal</Alice>'],
+            swipe_info: [
+                { extra: { prompt_wrapper: { role: 'assistant', tag: 'Alice', base_mes: 'First', version: 1 }, keepSwipe: 1 } },
+                { extra: { prompt_wrapper: { role: 'assistant', tag: 'Bob', base_mes: 'Second', version: 1 } } },
+                { extra: { keepUnwrapped: true } },
+            ],
+        };
+
+        expect(cleanupPersistedPromptWrapperMessage(message)).toBe(3);
+        expect(message).toEqual({
+            mes: 'Answer ends with </xml>',
+            extra: { keep: true },
+            swipes: ['First', 'Second', '<Alice>Literal</Alice>'],
+            swipe_info: [
+                { extra: { keepSwipe: 1 } },
+                { extra: {} },
+                { extra: { keepUnwrapped: true } },
+            ],
+        });
+    });
+
+    test('cleans legacy wrappers while preserving legitimate XML and code from base text', () => {
+        const baseMes = '<note>literal</note>\n```xml\n<a/>\n```\nanswer ends with </Example>';
+        const message = {
+            mes: `<Alice>${baseMes}</Alice>`,
+            extra: { prompt_wrapper: { role: 'assistant', tag: 'Alice', base_mes: baseMes, version: 1 } },
+        };
+
+        expect(cleanupPersistedPromptWrapperMessage(message)).toBe(1);
+        expect(message.mes).toBe(baseMes);
+        expect(message.extra).toEqual({});
+    });
+
+    test('preserves unmetadataed XML-like message and swipe text exactly', () => {
+        const message = {
+            mes: '<Alice>literal</Alice>',
+            extra: { keep: true },
+            swipes: ['answer</Example>', '<note>literal</note>'],
+            swipe_info: [{ extra: {} }, { extra: { keep: true } }],
+        };
+
+        expect(cleanupPersistedPromptWrapperMessage(message)).toBe(0);
+        expect(message).toEqual({
+            mes: '<Alice>literal</Alice>',
+            extra: { keep: true },
+            swipes: ['answer</Example>', '<note>literal</note>'],
+            swipe_info: [{ extra: {} }, { extra: { keep: true } }],
+        });
+    });
+
+    test('message cleanup returns zero for invalid message-like values', () => {
+        expect(cleanupPersistedPromptWrapperMessage(null)).toBe(0);
+        expect(cleanupPersistedPromptWrapperMessage(undefined)).toBe(0);
+        expect(cleanupPersistedPromptWrapperMessage('text')).toBe(0);
+        expect(cleanupPersistedPromptWrapperMessage([])).toBe(0);
     });
 });
 

@@ -82,11 +82,17 @@ import {
     unshallowCharacter,
     chatElement,
     ensureMessageMediaIsArray,
+    extension_prompt_types,
+    extension_prompt_roles,
+    getExtensionPromptRoleByName,
+    setExtensionPrompt,
 } from '../script.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, tag_map, applyTagsOnGroupSelect, printTagFilters, tag_filter_type } from './tags.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
-import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
+import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
+import { extension_settings } from './extensions.js';
+import { ConnectionManagerRequestService } from './extensions/shared.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { compressRequest } from './request-compression.js';
@@ -127,6 +133,7 @@ export const group_activation_strategy = {
     LIST: 1,
     MANUAL: 2,
     POOLED: 3,
+    DIRECTOR: 4,
 };
 
 export const group_generation_mode = {
@@ -1063,6 +1070,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
 
     /** @type {any} Caution: JS war crimes ahead */
     let textResult = '';
+    let directorPromptInjected = false;
     const group = groups.find((x) => x.id === selected_group);
 
     if (!group || !Array.isArray(group.members) || !group.members.length) {
@@ -1098,6 +1106,8 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         const activationStrategy = Number(group.activation_strategy ?? group_activation_strategy.NATURAL);
         const enabledMembers = group.members.filter(x => !group.disabled_members.includes(x));
         let activatedMembers = [];
+        let useDirectorOverride = false;
+        let directorRunSucceeded = false;
 
         if (params && typeof params.force_chid == 'number') {
             activatedMembers = [params.force_chid];
@@ -1122,8 +1132,24 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             activatedMembers = activateListOrder(enabledMembers);
         } else if (activationStrategy === group_activation_strategy.POOLED) {
             activatedMembers = activatePooledOrder(enabledMembers, lastMessage, isUserInput);
+        } else if (activationStrategy === group_activation_strategy.DIRECTOR) {
+            try {
+                directorRunSucceeded = await runDirector(group);
+            } catch (directorError) {
+                console.error('Director run failed, continuing with natural group generation:', directorError);
+            }
+
+            const directorOverride = directorRunSucceeded ? getDirectorActivationOverride(group) : null;
+            useDirectorOverride = !!directorOverride?.length && (!type || type === 'normal');
+            activatedMembers = useDirectorOverride
+                ? directorOverride
+                : activateNaturalOrder(enabledMembers, activationText, lastMessage, group.allow_self_responses, isUserInput);
         } else if (activationStrategy === group_activation_strategy.MANUAL && !isUserInput) {
             activatedMembers = shuffle(enabledMembers).slice(0, 1).map(x => characters.findIndex(y => y.avatar === x)).filter(x => x !== -1);
+        }
+
+        if (activatedMembers.length > 0 && activationStrategy === group_activation_strategy.DIRECTOR && directorRunSucceeded) {
+            directorPromptInjected = applyDirectorPromptInjection(group);
         }
 
         if (activatedMembers.length === 0) {
@@ -1165,12 +1191,20 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
                     messageChunk = textResult?.messageChunk;
                 }
             }
+            const generatedAvatar = characters[chId].avatar;
             if (power_user.show_group_chat_queue) {
-                groupChatQueueOrder.delete(characters[chId].avatar);
+                groupChatQueueOrder.delete(generatedAvatar);
                 groupChatQueueOrder.forEach((value, key, map) => map.set(key, value - 1));
+            }
+
+            if (useDirectorOverride && consumeDirectorQueueSpeaker(group, generatedAvatar)) {
+                await _save(group, false);
             }
         }
     } finally {
+        if (directorPromptInjected) {
+            clearDirectorPromptInjection();
+        }
         is_group_generating = false;
         setSendButtonState(false);
         setCharacterId(undefined);
@@ -1899,6 +1933,9 @@ function select_group_chats(groupId, skipAnimation) {
     openGroupId = groupId;
     newGroupMembers = [];
     const group = openGroupId && groups.find((x) => x.id == openGroupId);
+    if (group) {
+        loadDirectorSettings(group);
+    }
     const groupName = group?.name ?? '';
     const replyStrategy = Number(group?.activation_strategy ?? group_activation_strategy.NATURAL);
     const generationMode = Number(group?.generation_mode ?? group_generation_mode.SWAP);
@@ -1976,6 +2013,10 @@ function select_group_chats(groupId, skipAnimation) {
 
     hideMutedSprites = group?.hideMutedSprites ?? false;
     $('#rm_group_hidemutedsprites').prop('checked', hideMutedSprites);
+
+    if (!group) {
+        loadDirectorSettings(null);
+    }
 
     eventSource.emit('groupSelected', { detail: { id: openGroupId, group: group } });
 }
@@ -2544,6 +2585,959 @@ function doCurMemberListPopout() {
     }
 }
 
+
+// ═══════════════════════════════════════════════════════════════════
+// Director – Invisible per-group scene director
+// ═══════════════════════════════════════════════════════════════════
+
+export const DEFAULT_DIRECTOR_SETTINGS = Object.freeze({
+    connectionProfileId: '',
+    lookbackDepth: 10,
+    countUserMessages: true,
+    promptPlacement: Object.freeze({
+        type: 'relative',
+        role: 'system',
+        depth: 4,
+        order: 100,
+    }),
+});
+
+const DIRECTOR_EXTENSION_PROMPT_KEY = 'group_director_directions';
+
+function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeNonNegativeInteger(value, defaultValue) {
+    if (value === '' || value === null || value === undefined) {
+        return defaultValue;
+    }
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? Math.round(number) : defaultValue;
+}
+
+function normalizeBoolean(value, defaultValue) {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+    if (typeof value === 'string') {
+        if (value.toLowerCase() === 'true') return true;
+        if (value.toLowerCase() === 'false') return false;
+    }
+    return defaultValue;
+}
+
+function cloneDefaultDirectorSettings() {
+    return {
+        connectionProfileId: DEFAULT_DIRECTOR_SETTINGS.connectionProfileId,
+        lookbackDepth: DEFAULT_DIRECTOR_SETTINGS.lookbackDepth,
+        countUserMessages: DEFAULT_DIRECTOR_SETTINGS.countUserMessages,
+        promptPlacement: { ...DEFAULT_DIRECTOR_SETTINGS.promptPlacement },
+    };
+}
+
+/**
+ * @param {any} promptPlacement
+ * @returns {DirectorPromptPlacement}
+ */
+function normalizeDirectorPromptPlacement(promptPlacement) {
+    const defaults = DEFAULT_DIRECTOR_SETTINGS.promptPlacement;
+    const source = isPlainObject(promptPlacement) ? promptPlacement : {};
+    const rawType = String(source.type ?? source.position ?? defaults.type).toLowerCase();
+    const type = ['in_chat', 'in-chat', 'chat', 'absolute', String(extension_prompt_types.IN_CHAT)].includes(rawType) ? 'in_chat' : 'relative';
+    const rawRole = String(source.role ?? defaults.role).toLowerCase();
+    /** @type {'system'|'user'|'assistant'} */
+    const role = rawRole === 'user' || rawRole === 'assistant' || rawRole === 'system' ? rawRole : defaults.role;
+
+    return {
+        type,
+        role,
+        depth: normalizeNonNegativeInteger(source.depth, defaults.depth),
+        order: normalizeNonNegativeInteger(source.order ?? source.injection_order, defaults.order),
+    };
+}
+
+/**
+ * @param {any} settings
+ * @returns {GroupDirectorSettings}
+ */
+function normalizeDirectorSettings(settings) {
+    const defaults = cloneDefaultDirectorSettings();
+    const source = isPlainObject(settings) ? settings : {};
+
+    return {
+        connectionProfileId: typeof source.connectionProfileId === 'string' ? source.connectionProfileId : defaults.connectionProfileId,
+        lookbackDepth: normalizeNonNegativeInteger(source.lookbackDepth, defaults.lookbackDepth),
+        countUserMessages: normalizeBoolean(source.countUserMessages, defaults.countUserMessages),
+        promptPlacement: normalizeDirectorPromptPlacement(source.promptPlacement),
+    };
+}
+
+function readLegacyDirectorSettings(group, director) {
+    const source = isPlainObject(director?.settings) ? { ...director.settings } : {};
+    const copyIfMissing = (key, value) => {
+        if (source[key] === undefined && value !== undefined) {
+            source[key] = value;
+        }
+    };
+
+    copyIfMissing('connectionProfileId', director?.connectionProfileId);
+    copyIfMissing('connectionProfileId', director?.profileId);
+    copyIfMissing('lookbackDepth', director?.lookbackDepth);
+    copyIfMissing('countUserMessages', director?.countUserMessages);
+    if (source.promptPlacement === undefined && isPlainObject(director?.promptPlacement)) {
+        source.promptPlacement = director.promptPlacement;
+    }
+
+    copyIfMissing('connectionProfileId', group?.director_connection_profile_id);
+    copyIfMissing('connectionProfileId', group?.director_profile_id);
+    copyIfMissing('connectionProfileId', group?.director_profile);
+    copyIfMissing('lookbackDepth', group?.director_lookback_depth);
+    copyIfMissing('lookbackDepth', group?.director_lookback);
+    copyIfMissing('countUserMessages', group?.director_count_user_messages);
+    copyIfMissing('countUserMessages', group?.director_count_user);
+    if (source.promptPlacement === undefined && isPlainObject(group?.director_prompt_placement)) {
+        source.promptPlacement = group.director_prompt_placement;
+    }
+
+    return source;
+}
+
+/**
+ * Returns a default Director data object.
+ * @returns {GroupDirectorConfig}
+ */
+function getDefaultDirectorConfig() {
+    const settings = cloneDefaultDirectorSettings();
+    return {
+        enabled: false,
+        settings,
+        queue: [],
+        controlledDisabledMembers: [],
+        journal: '',
+        decisions: [],
+        decisionHistory: [],
+        stateHistory: [],
+        lastDirections: null,
+    };
+}
+
+/**
+ * Ensures the group has fully normalized Director data.
+ * @param {Group} group
+ * @returns {GroupDirectorConfig}
+ */
+function getDirectorData(group) {
+    if (!group.director || typeof group.director !== 'object') {
+        group.director = getDefaultDirectorConfig();
+    }
+
+    const defaults = getDefaultDirectorConfig();
+    const d = group.director;
+
+    d.enabled = typeof d.enabled === 'boolean' ? d.enabled : defaults.enabled;
+    d.settings = normalizeDirectorSettings(readLegacyDirectorSettings(group, d));
+    d.journal = typeof d.journal === 'string' ? d.journal : defaults.journal;
+    d.queue = Array.isArray(d.queue) ? d.queue : defaults.queue;
+    d.controlledDisabledMembers = Array.isArray(d.controlledDisabledMembers) ? d.controlledDisabledMembers : defaults.controlledDisabledMembers;
+
+    const decisionHistory = Array.isArray(d.decisionHistory) ? d.decisionHistory : (Array.isArray(d.decisions) ? d.decisions : defaults.decisionHistory);
+    d.decisionHistory = decisionHistory;
+    d.decisions = decisionHistory;
+    d.stateHistory = Array.isArray(d.stateHistory) ? d.stateHistory : defaults.stateHistory;
+    d.lastDirections = isPlainObject(d.lastDirections) ? d.lastDirections : null;
+
+    const memberSet = new Set(group.members || []);
+    d.queue = d.queue.filter(id => memberSet.has(id));
+    d.controlledDisabledMembers = d.controlledDisabledMembers.filter(id => memberSet.has(id));
+
+    group.director = d;
+    return d;
+}
+
+/**
+ * @deprecated Use getDirectorData.
+ * @param {Group} group
+ * @returns {GroupDirectorConfig}
+ */
+function ensureDirectorConfig(group) {
+    return getDirectorData(group);
+}
+
+function isDirectorStrategy(group) {
+    return Number(group?.activation_strategy ?? group_activation_strategy.NATURAL) === group_activation_strategy.DIRECTOR;
+}
+
+/**
+ * Builds the Director lookback context from recent chat messages.
+ * @param {Group} group
+ * @param {number} depth Number of messages to include
+ * @param {boolean} countUserMessages Whether user messages count toward depth
+ * @returns {{messages: Array<{name: string, mes: string, is_user: boolean, is_system: boolean, id: number}>, messageIds: number[]}}
+ */
+function buildDirectorLookback(group, depth, countUserMessages) {
+    if (!Array.isArray(chat) || chat.length === 0) {
+        return { messages: [], messageIds: [] };
+    }
+
+    const maxInspect = 500;
+    const result = [];
+    const ids = [];
+    let count = 0;
+
+    // Scan from most recent backward without preallocating for large lookback values.
+    const start = Math.max(0, chat.length - maxInspect);
+    const normalizedDepth = normalizeNonNegativeInteger(depth, DEFAULT_DIRECTOR_SETTINGS.lookbackDepth);
+    for (let i = chat.length - 1; i >= start && count < normalizedDepth; i--) {
+        const msg = chat[i];
+        if (!msg || msg.is_system) continue;
+
+        if (msg.is_user && !countUserMessages) {
+            continue;
+        }
+
+        result.unshift({
+            name: msg.name || (msg.is_user ? 'User' : 'Character'),
+            mes: msg.mes || '',
+            is_user: !!msg.is_user,
+            is_system: false,
+            id: i,
+        });
+        ids.unshift(i);
+        count++;
+    }
+
+    return { messages: result, messageIds: ids };
+}
+
+/**
+ * Builds the Director prompt from group state and context messages.
+ * @param {Group} group
+ * @param {Array} contextMessages Output of buildDirectorLookback
+ * @returns {string}
+ */
+function buildDirectorPrompt(group, contextMessages) {
+    const d = ensureDirectorConfig(group);
+    const members = Array.isArray(group.members) ? group.members : [];
+    const disabledMembers = Array.isArray(group.disabled_members) ? group.disabled_members : [];
+    const manualDisabled = getManualDisabledMembers(group);
+    const directorDisabled = Array.isArray(d.controlledDisabledMembers) ? d.controlledDisabledMembers : [];
+
+    // Build member state list
+    const memberStates = members.map(memberId => {
+        const char = characters.find(c => c.avatar === memberId);
+        const displayName = char?.name || memberId;
+        let state = 'active';
+        if (manualDisabled.includes(memberId)) {
+            state = 'manual-disabled';
+        } else if (directorDisabled.includes(memberId)) {
+            state = 'director-disabled';
+        } else if (disabledMembers.includes(memberId)) {
+            state = 'disabled';
+        }
+        return { id: memberId, name: displayName, state };
+    });
+
+    const memberStateText = memberStates
+        .map(m => `- ${m.name} (${m.id}): ${m.state}`)
+        .join('\n');
+
+    const validMemberIds = members
+        .filter(id => !manualDisabled.includes(id))
+        .join(', ');
+
+    const recentContext = contextMessages.map(m => {
+        const speaker = m.is_user ? m.name : m.name;
+        return `${speaker}: ${m.mes}`;
+    }).join('\n');
+
+    const currentQueue = Array.isArray(d.queue) ? d.queue.join(', ') : '(empty)';
+
+    const prompt = `You are the Director for the group chat "${group.name || 'Unnamed Group'}". You manage scene state, control which characters speak next, and decide who enters or leaves the scene. You operate invisibly — your messages never appear in the chat.
+
+## Current Group Members
+${memberStateText}
+
+## Valid Member IDs (eligible for actions)
+${validMemberIds || '(none)'}
+
+## Current Speaker Queue
+${currentQueue}
+
+## Director Journal
+${d.journal || '(empty)'}
+
+## Recent Chat Context
+${recentContext || '(no recent messages)'}
+
+## Instructions
+Based on the scene context, update your journal, decide the speaker queue, and issue actions.
+You MUST respond with ONLY a valid JSON object — no markdown, no commentary outside the JSON.
+
+## Response Schema
+{
+  "journal": "Updated private journal text (string)",
+  "queue": ["memberId1", "memberId2", ...],
+  "actions": [
+    {"action": "leave", "memberId": "avatar.png", "reason": "optional reason"},
+    {"action": "enter", "memberId": "avatar.png", "reason": "optional reason"},
+    {"action": "stay", "memberId": "avatar.png", "reason": "optional reason"}
+  ],
+  "summary": "Brief summary of your reasoning (string)"
+}
+
+Rules:
+- "leave" mutes a character (they stop responding).
+- "enter" unmutes a character the Director previously muted.
+- "stay" keeps a character's current mute state.
+- You can ONLY unmute characters you previously muted ("director-disabled"). NEVER unmute manually-disabled members.
+- The "queue" controls which characters speak next, in order. Only include valid, eligible member IDs.
+- The "journal" is your private scene notes — update it with observations, plans, and narrative direction.
+- Only include member IDs from the Valid Member IDs list above.
+- Respond with ONLY the JSON object, nothing else.`;
+
+    return prompt;
+}
+
+/**
+ * Parses the Director LLM response, handling plain JSON, fenced JSON, and first-object extraction.
+ * @param {string} raw
+ * @returns {ParsedDirectorDecision|null}
+ */
+function parseDirectorResponse(raw) {
+    if (typeof raw !== 'string' || !raw.trim()) {
+        return null;
+    }
+
+    let text = raw.trim();
+
+    // Strip markdown code fences
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) {
+        text = fenceMatch[1].trim();
+    }
+
+    // Try to extract first JSON object
+    const firstBrace = text.indexOf('{');
+    if (firstBrace === -1) {
+        return null;
+    }
+
+    // Find matching closing brace
+    let depth = 0;
+    let lastBrace = -1;
+    for (let i = firstBrace; i < text.length; i++) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                lastBrace = i;
+                break;
+            }
+        }
+    }
+
+    if (lastBrace === -1) {
+        return null;
+    }
+
+    const jsonStr = text.substring(firstBrace, lastBrace + 1);
+
+    try {
+        const parsed = JSON.parse(jsonStr);
+
+        // Validate expected fields
+        if (typeof parsed !== 'object' || parsed === null) return null;
+        if (typeof parsed.journal !== 'string') parsed.journal = '';
+        if (!Array.isArray(parsed.queue)) parsed.queue = [];
+        if (!Array.isArray(parsed.actions)) parsed.actions = [];
+        if (typeof parsed.summary !== 'string') parsed.summary = '';
+
+        // Validate individual actions
+        parsed.actions = parsed.actions.filter(a =>
+            a && typeof a === 'object' &&
+            typeof a.memberId === 'string' &&
+            ['leave', 'enter', 'stay'].includes(a.action),
+        );
+
+        // Validate queue entries are strings
+        parsed.queue = parsed.queue.filter(id => typeof id === 'string');
+
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Returns members that were manually disabled (not by Director).
+ * @param {Group} group
+ * @returns {string[]}
+ */
+function getManualDisabledMembers(group) {
+    const disabledMembers = Array.isArray(group.disabled_members) ? group.disabled_members : [];
+    const directorControlled = Array.isArray(group.director?.controlledDisabledMembers) ? group.director.controlledDisabledMembers : [];
+    return disabledMembers.filter(id => !directorControlled.includes(id));
+}
+
+/**
+ * Reconciles Director-controlled mutes: removes stale entries and syncs disabled_members.
+ * @param {Group} group
+ */
+function reconcileDirectorControlledMutes(group) {
+    const d = ensureDirectorConfig(group);
+    const memberSet = new Set(group.members || []);
+
+    // Filter stale members from controlled list
+    d.controlledDisabledMembers = d.controlledDisabledMembers.filter(id => memberSet.has(id));
+
+    // Ensure all Director-controlled mutes are in disabled_members
+    const disabledSet = new Set(group.disabled_members || []);
+    for (const id of d.controlledDisabledMembers) {
+        disabledSet.add(id);
+    }
+    group.disabled_members = [...disabledSet];
+}
+
+/**
+ * Applies a parsed Director decision to the group safely.
+ * Director can only unmute members it muted, never overrides manual disables.
+ * @param {Group} group
+ * @param {ParsedDirectorDecision} parsed
+ * @returns {DirectorAppliedAction[]}
+ */
+function applyDirectorDecision(group, parsed) {
+    const d = ensureDirectorConfig(group);
+    const memberSet = new Set(group.members || []);
+    const manualDisabled = getManualDisabledMembers(group);
+    const manualDisabledSet = new Set(manualDisabled);
+
+    const appliedActions = [];
+    const disabledSet = new Set(group.disabled_members || []);
+    const controlledSet = new Set(d.controlledDisabledMembers);
+
+    for (const action of parsed.actions) {
+        const { action: type, memberId } = action;
+
+        // Ignore invalid or stale members
+        if (!memberSet.has(memberId)) {
+            appliedActions.push({ action, applied: false, ignoreReason: 'invalid or stale member' });
+            continue;
+        }
+
+        if (type === 'leave') {
+            // Mute: add to disabled_members and controlledDisabledMembers
+            // But skip if manually disabled (they're already muted, don't track as Director-controlled)
+            if (manualDisabledSet.has(memberId)) {
+                appliedActions.push({ action, applied: false, ignoreReason: 'member is manually disabled' });
+                continue;
+            }
+            disabledSet.add(memberId);
+            controlledSet.add(memberId);
+            appliedActions.push({ action, applied: true });
+        } else if (type === 'enter') {
+            // Unmute: only if Director-controlled
+            if (!controlledSet.has(memberId)) {
+                appliedActions.push({ action, applied: false, ignoreReason: 'member was not muted by Director' });
+                continue;
+            }
+            if (manualDisabledSet.has(memberId)) {
+                appliedActions.push({ action, applied: false, ignoreReason: 'member is manually disabled' });
+                continue;
+            }
+            disabledSet.delete(memberId);
+            controlledSet.delete(memberId);
+            appliedActions.push({ action, applied: true });
+        } else if (type === 'stay') {
+            appliedActions.push({ action, applied: true });
+        }
+    }
+
+    // Update group state
+    group.disabled_members = [...disabledSet];
+    d.controlledDisabledMembers = [...controlledSet];
+    d.journal = parsed.journal;
+
+    // Update queue: filter to valid, non-manual-disabled, eligible members, deduplicated, order preserved
+    const eligibleSet = new Set(
+        [...memberSet].filter(id => !manualDisabledSet.has(id)),
+    );
+    const seen = new Set();
+    const filteredQueue = [];
+    for (const id of parsed.queue) {
+        if (eligibleSet.has(id) && !seen.has(id)) {
+            seen.add(id);
+            filteredQueue.push(id);
+        }
+    }
+    d.queue = filteredQueue;
+
+    return appliedActions;
+}
+
+/**
+ * Runs the Director for a group before generation.
+ * Records every attempted decision and fails without blocking normal generation.
+ * @param {Group} group
+ * @returns {Promise<boolean>} Whether Director ran successfully
+ */
+let _directorRunning = false;
+
+async function runDirector(group) {
+    const d = getDirectorData(group);
+    const settings = d.settings;
+
+    // Skip unless Director is the selected reply strategy.
+    if (!isDirectorStrategy(group)) return false;
+
+    // Skip when no profile selected
+    if (!settings.connectionProfileId) return false;
+
+    // Prevent duplicate concurrent runs
+    if (_directorRunning) return false;
+    _directorRunning = true;
+
+    try {
+        // Reconcile controlled mutes first
+        reconcileDirectorControlledMutes(group);
+
+        // Resolve connection profile
+        const directorProfile = getDirectorConnectionProfile(settings.connectionProfileId);
+        if (!directorProfile) {
+            recordDirectorDecision(group, { rawResponse: '', parsed: null, appliedActions: [], error: 'Profile not found or incompatible', profileId: settings.connectionProfileId, settings });
+            await _save(group, true);
+            return false;
+        }
+        settings.connectionProfileId = directorProfile.id;
+
+        // Build lookback context
+        const { messages: contextMessages, messageIds } = buildDirectorLookback(group, settings.lookbackDepth, settings.countUserMessages);
+
+        // Build prompt
+        const prompt = buildDirectorPrompt(group, contextMessages);
+
+        // Generate using the selected connection profile
+        let rawResponse = '';
+        let parsed = null;
+        let appliedActions = [];
+        let error = null;
+
+        try {
+            const response = await ConnectionManagerRequestService.sendRequest(
+                directorProfile.id,
+                [{ role: 'user', content: prompt }],
+                1024,
+                { stream: false, extractData: true, includePreset: true, includeInstruct: false },
+            );
+            if (typeof response === 'function') {
+                throw new Error('Director request unexpectedly returned a streaming response');
+            }
+            rawResponse = response && typeof response === 'object' && 'content' in response && typeof response.content === 'string'
+                ? response.content
+                : JSON.stringify(response ?? '');
+        } catch (genError) {
+            error = String(genError?.cause?.message || genError?.message || genError);
+        }
+
+        if (!rawResponse && !error) {
+            error = 'Director returned an empty response';
+        }
+
+        if (rawResponse) {
+            parsed = parseDirectorResponse(rawResponse);
+            if (parsed) {
+                // Check if group/director state is still valid before applying
+                const currentGroup = groups.find(g => g.id === group.id);
+                if (!currentGroup || !isDirectorStrategy(currentGroup)) {
+                    error = 'Group changed or Director strategy was changed before completion';
+                    appliedActions = [];
+                } else {
+                    appliedActions = applyDirectorDecision(group, parsed);
+                }
+            } else {
+                error = error || 'Failed to parse Director response as valid JSON';
+            }
+        }
+
+        recordDirectorDecision(group, {
+            rawResponse,
+            parsed,
+            appliedActions,
+            error,
+            profileId: settings.connectionProfileId,
+            lookbackDepth: settings.lookbackDepth,
+            countUserMessages: settings.countUserMessages,
+            messageIds,
+            settings,
+        });
+
+        // Save group after recording decision
+        await _save(group, true);
+
+        return !error;
+    } finally {
+        _directorRunning = false;
+    }
+}
+
+/**
+ * Records a Director decision in the group's history.
+ * @param {Group} group
+ * @param {object} params
+ */
+function recordDirectorDecision(group, { rawResponse, parsed, appliedActions, error, profileId, lookbackDepth, countUserMessages, messageIds, settings }) {
+    const d = getDirectorData(group);
+    const timestamp = new Date().toISOString();
+    const settingsSnapshot = normalizeDirectorSettings(settings ?? d.settings);
+    const decisionRecord = {
+        timestamp,
+        profileId: profileId || '',
+        lookbackDepth: lookbackDepth ?? settingsSnapshot.lookbackDepth,
+        countUserMessages: countUserMessages ?? settingsSnapshot.countUserMessages,
+        inputMessageIds: messageIds || [],
+        rawResponse: rawResponse || '',
+        parsed: parsed || null,
+        appliedActions: appliedActions || [],
+        error: error || null,
+    };
+
+    d.decisionHistory.push(decisionRecord);
+    d.decisions = d.decisionHistory;
+
+    const stateRecord = {
+        timestamp,
+        groupId: group.id,
+        groupName: group.name || '',
+        chatId: getCurrentChatId?.() || group.chat_id || '',
+        settings: settingsSnapshot,
+        state: parsed || null,
+        rawOutput: rawResponse || '',
+        error: error || null,
+    };
+    d.stateHistory.push(stateRecord);
+
+    if (parsed && !error) {
+        d.lastDirections = {
+            timestamp,
+            summary: parsed.summary || '',
+            journal: parsed.journal || '',
+            queue: Array.isArray(parsed.queue) ? [...parsed.queue] : [],
+            actions: Array.isArray(parsed.actions) ? [...parsed.actions] : [],
+            appliedActions: appliedActions || [],
+        };
+    }
+}
+
+function formatDirectorDirectionsForPrompt(group) {
+    const d = getDirectorData(group);
+    const directions = d.lastDirections;
+    if (!directions) {
+        return '';
+    }
+
+    const queueNames = (directions.queue || []).map(memberId => {
+        const character = characters.find(c => c.avatar === memberId);
+        return character ? `${character.name} (${memberId})` : memberId;
+    });
+    const appliedActions = (directions.appliedActions || [])
+        .filter(action => action?.applied)
+        .map(action => `${action.action?.action || 'stay'} ${action.action?.memberId || ''}`.trim());
+
+    return [
+        '[Director directions for this group reply. Follow them silently; do not mention the Director.]',
+        directions.summary ? `Scene direction: ${directions.summary}` : '',
+        directions.journal ? `Private scene state: ${directions.journal}` : '',
+        queueNames.length ? `Planned speaker order: ${queueNames.join(', ')}` : '',
+        appliedActions.length ? `Scene changes: ${appliedActions.join('; ')}` : '',
+    ].filter(Boolean).join('\n');
+}
+
+function applyDirectorPromptInjection(group) {
+    const d = getDirectorData(group);
+    const prompt = formatDirectorDirectionsForPrompt(group);
+    if (!prompt) {
+        clearDirectorPromptInjection();
+        return false;
+    }
+
+    const placement = normalizeDirectorPromptPlacement(d.settings.promptPlacement);
+    const position = placement.type === 'in_chat' ? extension_prompt_types.IN_CHAT : extension_prompt_types.IN_PROMPT;
+    const depth = placement.type === 'in_chat' ? placement.depth : 0;
+    const role = getExtensionPromptRoleByName(placement.role);
+
+    setExtensionPrompt(DIRECTOR_EXTENSION_PROMPT_KEY, prompt, position, depth, false, role);
+    return true;
+}
+
+function clearDirectorPromptInjection() {
+    setExtensionPrompt(DIRECTOR_EXTENSION_PROMPT_KEY, '', extension_prompt_types.NONE, 0, false, extension_prompt_roles.SYSTEM);
+}
+
+/**
+ * Resolves and validates a Director connection profile.
+ * @param {string} profileId
+ * @returns {import('./extensions/connection-manager/index.js').ConnectionProfile|null}
+ */
+function getDirectorConnectionProfile(profileId) {
+    if (!profileId || extension_settings.disabledExtensions?.includes('connection-manager')) {
+        return null;
+    }
+
+    try {
+        const profiles = extension_settings.connectionManager?.profiles;
+        if (!Array.isArray(profiles)) {
+            return null;
+        }
+
+        const profile = profiles.find(p => p.id === profileId || p.name === profileId);
+        if (!profile) {
+            return null;
+        }
+
+        const apiMap = ConnectionManagerRequestService.validateProfile(profile);
+        if (apiMap.selected !== 'openai' || !apiMap.source) {
+            return null;
+        }
+
+        return profile;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Gets the Director activation override for speaker selection.
+ * Returns ordered character ids from the Director queue, or null for fallback.
+ * @param {Group} group
+ * @returns {number[]|null} Array of character indices, or null to use default behavior
+ */
+function getDirectorActivationOverride(group) {
+    const d = group ? getDirectorData(group) : null;
+    if (!d || !Array.isArray(d.queue) || d.queue.length === 0) {
+        return null;
+    }
+
+    const manualDisabled = getManualDisabledMembers(group);
+    const disabledSet = new Set(group.disabled_members || []);
+    const memberSet = new Set(group.members || []);
+
+    const result = [];
+    for (const avatarId of d.queue) {
+        // Must be valid member
+        if (!memberSet.has(avatarId)) continue;
+        // Must not be manually disabled
+        if (manualDisabled.includes(avatarId)) continue;
+        // Must not be currently disabled
+        if (disabledSet.has(avatarId)) continue;
+        // Find character index
+        const chId = characters.findIndex(c => c.avatar === avatarId);
+        if (chId !== -1 && !result.includes(chId)) {
+            result.push(chId);
+        }
+    }
+
+    return result.length > 0 ? result : null;
+}
+
+/**
+ * Consumes a generated speaker from the Director queue after generation.
+ * @param {Group} group
+ * @param {string} memberId
+ * @returns {boolean} Whether a queue entry was consumed
+ */
+function consumeDirectorQueueSpeaker(group, memberId) {
+    const d = group ? getDirectorData(group) : null;
+    if (!d || !Array.isArray(d.queue) || d.queue.length === 0 || !memberId) {
+        return false;
+    }
+
+    if (d.queue[0] === memberId) {
+        d.queue.shift();
+        return true;
+    }
+
+    const index = d.queue.indexOf(memberId);
+    if (index === -1) {
+        return false;
+    }
+
+    d.queue.splice(index, 1);
+    return true;
+}
+
+
+/**
+ * Loads/migrates Director settings from the group.
+ * @param {Group|null} group
+ */
+function loadDirectorSettings(group) {
+    if (!group) {
+        return;
+    }
+
+    const legacyEnabled = group.director_enabled === true || group.director?.enabled === true;
+    const directorData = getDirectorData(group);
+
+    let migrated = false;
+    if (legacyEnabled && !isDirectorStrategy(group)) {
+        group.activation_strategy = group_activation_strategy.DIRECTOR;
+        migrated = true;
+    }
+
+    // Clear legacy enable flags after migration so they never override the strategy again.
+    if (legacyEnabled) {
+        directorData.enabled = false;
+        delete group.director_enabled;
+        migrated = true;
+    }
+
+    if (migrated) {
+        saveGroupDebounced(group, false);
+    }
+}
+
+function createDirectorJsonDetails(summaryText, value) {
+    const details = $('<details></details>');
+    details.append($('<summary></summary>').text(summaryText));
+    details.append($('<pre class="monospace"></pre>').text(JSON.stringify(value ?? null, null, 2)));
+    return details;
+}
+
+function appendDirectorProfileOptions(select, selectedProfileId) {
+    select.empty();
+    select.append($('<option></option>').attr('value', '').attr('data-i18n', 'None').text('None'));
+
+    const profiles = extension_settings.connectionManager?.profiles || [];
+    const sorted = [...profiles]
+        .filter(profile => getDirectorConnectionProfile(profile.id))
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    let foundSelected = false;
+    for (const profile of sorted) {
+        const option = $('<option></option>').attr('value', profile.id).text(profile.name || 'Unnamed');
+        if (profile.id === selectedProfileId || profile.name === selectedProfileId) {
+            option.prop('selected', true);
+            foundSelected = true;
+        }
+        select.append(option);
+    }
+
+    if (selectedProfileId && !foundSelected) {
+        select.append($('<option></option>').attr('value', selectedProfileId).text(`${selectedProfileId} (missing)`).prop('selected', true).prop('disabled', true));
+    }
+}
+
+/**
+ * Opens the Director settings and inspector modal.
+ */
+async function openDirectorInspectorModal() {
+    const originalGroupId = selected_group;
+    const group = groups.find(x => x.id === originalGroupId);
+    if (!group) {
+        toastr.warning(t`Open a group before configuring Director.`);
+        return;
+    }
+
+    const d = getDirectorData(group);
+    const settings = normalizeDirectorSettings(d.settings);
+    const placement = settings.promptPlacement;
+    const content = $('<div class="director_inspector flexFlowColumn flexGap10"></div>');
+
+    content.append($('<h3></h3>').text('Director Settings'));
+
+    const settingsGrid = $('<div class="flex-container flexFlowColumn flexGap5"></div>');
+    const profileSelect = $('<select id="director_inspector_profile" class="text_pole wide100p"></select>');
+    appendDirectorProfileOptions(profileSelect, settings.connectionProfileId);
+    settingsGrid.append($('<label for="director_inspector_profile"></label>').text('Director Profile'));
+    settingsGrid.append(profileSelect);
+
+    settingsGrid.append($('<label for="director_inspector_lookback"></label>').text('Lookback Depth'));
+    settingsGrid.append($('<input id="director_inspector_lookback" class="text_pole" type="number" min="0" step="1">').val(settings.lookbackDepth));
+
+    const countLabel = $('<label class="checkbox_label"></label>');
+    countLabel.append($('<input id="director_inspector_count_user" type="checkbox">').prop('checked', settings.countUserMessages));
+    countLabel.append($('<span></span>').text('Count User Messages'));
+    settingsGrid.append(countLabel);
+
+    settingsGrid.append($('<label for="director_inspector_placement"></label>').text('Prompt Placement'));
+    const placementSelect = $('<select id="director_inspector_placement" class="text_pole wide100p"></select>');
+    placementSelect.append($('<option value="relative"></option>').text('Relative'));
+    placementSelect.append($('<option value="in_chat"></option>').text('In-chat'));
+    placementSelect.val(placement.type);
+    settingsGrid.append(placementSelect);
+
+    settingsGrid.append($('<label for="director_inspector_role"></label>').text('Prompt Role'));
+    const roleSelect = $('<select id="director_inspector_role" class="text_pole wide100p"></select>');
+    for (const role of ['system', 'user', 'assistant']) {
+        roleSelect.append($('<option></option>').attr('value', role).text(role[0].toUpperCase() + role.slice(1)));
+    }
+    roleSelect.val(placement.role);
+    settingsGrid.append(roleSelect);
+
+    settingsGrid.append($('<label for="director_inspector_depth"></label>').text('Prompt Depth'));
+    settingsGrid.append($('<input id="director_inspector_depth" class="text_pole" type="number" min="0" step="1">').val(placement.depth));
+
+    settingsGrid.append($('<label for="director_inspector_order"></label>').text('Prompt Order'));
+    settingsGrid.append($('<input id="director_inspector_order" class="text_pole" type="number" min="0" step="1">').val(placement.order));
+    content.append(settingsGrid);
+
+    content.append($('<h3></h3>').text('Inspector'));
+    content.append(createDirectorJsonDetails('Last Directions', d.lastDirections || null));
+
+    const stateHistory = Array.isArray(d.stateHistory) ? [...d.stateHistory].reverse() : [];
+    const stateSection = $('<details open></details>').append($('<summary></summary>').text(`Structured State History (${stateHistory.length})`));
+    if (stateHistory.length) {
+        for (const record of stateHistory) {
+            stateSection.append(createDirectorJsonDetails(record.timestamp || 'State Record', record));
+        }
+    } else {
+        stateSection.append($('<p></p>').text('No Director state records yet.'));
+    }
+    content.append(stateSection);
+
+    const decisions = Array.isArray(d.decisionHistory) ? [...d.decisionHistory].reverse() : [];
+    const decisionSection = $('<details></details>').append($('<summary></summary>').text(`Decision History (${decisions.length})`));
+    if (decisions.length) {
+        for (const decision of decisions) {
+            const summary = `${decision.timestamp || 'Unknown'} — ${decision.parsed?.summary || decision.error || '(no summary)'}`;
+            decisionSection.append(createDirectorJsonDetails(summary, decision));
+        }
+    } else {
+        decisionSection.append($('<p></p>').text('No Director decisions recorded yet.'));
+    }
+    content.append(decisionSection);
+
+    const popup = new Popup(content, POPUP_TYPE.CONFIRM, null, { large: true, okButton: 'Save', cancelButton: 'Cancel', allowVerticalScrolling: true, leftAlign: true });
+    popup.onClose = async (closedPopup) => {
+        if (closedPopup.result !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        const currentGroup = groups.find(x => x.id === originalGroupId);
+        if (!currentGroup) {
+            toastr.error(t`Director settings were not saved because the group no longer exists.`);
+            return;
+        }
+
+        const directorData = getDirectorData(currentGroup);
+        directorData.settings = normalizeDirectorSettings({
+            connectionProfileId: String($('#director_inspector_profile').val() || ''),
+            lookbackDepth: $('#director_inspector_lookback').val(),
+            countUserMessages: !!$('#director_inspector_count_user').prop('checked'),
+            promptPlacement: {
+                type: String($('#director_inspector_placement').val() || 'relative'),
+                role: String($('#director_inspector_role').val() || 'system'),
+                depth: $('#director_inspector_depth').val(),
+                order: $('#director_inspector_order').val(),
+            },
+        });
+
+        await editGroup(currentGroup.id, true, false);
+        toastr.success(t`Director settings saved.`);
+    };
+    await popup.show();
+}
+
 jQuery(() => {
     if (!CSS.supports('field-sizing', 'content')) {
         $(document).on('input', '#rm_group_chats_block .autoSetHeight', function () {
@@ -2582,5 +3576,7 @@ jQuery(() => {
     $('#rm_group_generation_mode_join_suffix').on('input', onGroupGenerationModeTemplateInput);
     $('#group_avatar_button').on('input', uploadGroupAvatar);
     $('#rm_group_restore_avatar').on('click', restoreGroupAvatar);
+
+    $('#rm_group_director_inspector').on('click', openDirectorInspectorModal);
     $(document).on('click', '.group_member .right_menu_button', onGroupActionClick);
 });

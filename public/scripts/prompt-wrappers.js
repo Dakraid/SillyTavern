@@ -286,6 +286,47 @@ export function cleanupPersistedPromptWrapperSlot(text, extra = {}) {
 }
 
 /**
+ * Removes legacy persisted wrapper metadata from a chat message and its swipes.
+ * Only metadata-managed slots are cleaned, preserving unmetadataed XML-like text.
+ * @param {Record<string, any>} message Chat message-like object.
+ * @returns {number} Number of cleaned message/swipe slots.
+ */
+export function cleanupPersistedPromptWrapperMessage(message) {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+        return 0;
+    }
+
+    let changed = 0;
+
+    if (message.extra?.prompt_wrapper) {
+        const result = cleanupPersistedPromptWrapperSlot(message.mes ?? '', message.extra);
+        if (result.changed) {
+            message.mes = result.text;
+            message.extra = result.extra;
+            changed++;
+        }
+    }
+
+    if (!Array.isArray(message.swipes) || !Array.isArray(message.swipe_info)) {
+        return changed;
+    }
+
+    for (let i = 0; i < message.swipes.length; i++) {
+        const swipeInfo = message.swipe_info[i];
+        if (!swipeInfo?.extra?.prompt_wrapper) continue;
+
+        const result = cleanupPersistedPromptWrapperSlot(message.swipes[i] ?? '', swipeInfo.extra);
+        if (result.changed) {
+            message.swipes[i] = result.text;
+            swipeInfo.extra = result.extra;
+            changed++;
+        }
+    }
+
+    return changed;
+}
+
+/**
  * Calculates bulk order values for visible prompt order.
  * @param {number} count Number of prompts.
  * @param {number} start Starting order.
@@ -318,14 +359,16 @@ export function calculatePromptOrderRenumber(count, start, mode) {
 /**
  * Builds identifier-keyed updates for a bulk prompt manager operation.
  * @param {Array<Record<string, any>>} prompts Visible prompts to update.
- * @param {{operation: string, value: number, mode: string}} params Operation params.
- * @param {{relative: number, inChat: number}} [positions] Injection position values.
+ * @param {{operation: string, value: number, mode: 'first-inc'|'first-dec'|'last-inc'|'last-dec'}} params Operation params.
+ * @param {{relative: number, inChat: number, defaultDepth?: number, defaultOrder?: number}} [positions] Injection position values.
  * @returns {Array<Record<string, any>>} Partial prompt updates with identifiers.
  */
 export function createPromptBulkUpdates(prompts, params, positions = { relative: 0, inChat: 1, defaultDepth: 4, defaultOrder: 100 }) {
     const defaultDepth = Number.isInteger(positions.defaultDepth) && positions.defaultDepth >= 0 ? positions.defaultDepth : 4;
     const defaultOrder = Number.isInteger(positions.defaultOrder) && positions.defaultOrder >= 0 ? positions.defaultOrder : 100;
-    const validNumber = (value, fallback) => Number.isInteger(value) && value >= 0 ? value : fallback;
+    /** @param {unknown} value @param {number} fallback */
+    const validNumber = (value, fallback) => typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : fallback;
+    /** @type {Array<Record<string, any>>} */
     const updates = prompts
         .filter(prompt => prompt?.identifier)
         .map(prompt => ({ identifier: prompt.identifier }));
@@ -360,8 +403,8 @@ export function createPromptBulkUpdates(prompts, params, positions = { relative:
 /**
  * Applies a bulk prompt manager operation to prompt-like objects in place.
  * @param {Array<Record<string, any>>} prompts Visible prompts to mutate.
- * @param {{operation: string, value: number, mode: string}} params Operation params.
- * @param {{relative: number, inChat: number}} [positions] Injection position values.
+ * @param {{operation: string, value: number, mode: 'first-inc'|'first-dec'|'last-inc'|'last-dec'}} params Operation params.
+ * @param {{relative: number, inChat: number, defaultDepth?: number, defaultOrder?: number}} [positions] Injection position values.
  * @returns {Array<Record<string, any>>} The mutated prompt array.
  */
 export function applyPromptBulkOperation(prompts, params, positions = { relative: 0, inChat: 1 }) {

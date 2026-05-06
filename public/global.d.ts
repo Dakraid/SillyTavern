@@ -38,8 +38,128 @@ declare global {
         allow_self_responses?: boolean;
         avatar_url?: string;
         hideMutedSprites?: boolean;
+        director?: GroupDirectorConfig;
+        /** @deprecated Migrated to activation_strategy === DIRECTOR. */
+        director_enabled?: boolean;
         fav?: boolean;
         date_last_chat?: MessageTimestamp;
+    }
+
+
+    /** Configuration for a per-group Director. */
+    interface GroupDirectorConfig {
+        /** @deprecated Director activation is controlled by Group.activation_strategy. */
+        enabled: boolean;
+        /** Normalized Director settings. */
+        settings: GroupDirectorSettings;
+        /** @deprecated Migrated into settings.connectionProfileId. */
+        connectionProfileId?: string;
+        /** @deprecated Migrated into settings.lookbackDepth. */
+        lookbackDepth?: number;
+        /** @deprecated Migrated into settings.countUserMessages. */
+        countUserMessages?: boolean;
+        /** Ordered queue of stable member ids (avatar filenames) for next-speaker control. */
+        queue: string[];
+        /** Members muted by the Director (not manual mutes). */
+        controlledDisabledMembers: string[];
+        /** Director's private journal/scene notes. */
+        journal: string;
+        /** Full decision history. */
+        decisions: DirectorDecision[];
+        /** Full decision history under the new Director inspector name. */
+        decisionHistory: DirectorDecision[];
+        /** Structured state history for the Director inspector. */
+        stateHistory: DirectorStateRecord[];
+        /** Last successful directions for prompt injection. */
+        lastDirections: DirectorDirections | null;
+    }
+
+    interface GroupDirectorSettings {
+        connectionProfileId: string;
+        lookbackDepth: number;
+        countUserMessages: boolean;
+        promptPlacement: DirectorPromptPlacement;
+    }
+
+    interface DirectorPromptPlacement {
+        type: 'relative' | 'in_chat';
+        role: 'system' | 'user' | 'assistant';
+        depth: number;
+        order: number;
+    }
+
+    interface DirectorDirections {
+        timestamp: string;
+        summary: string;
+        journal: string;
+        queue: string[];
+        actions: DirectorAction[];
+        appliedActions: DirectorAppliedAction[];
+    }
+
+    interface DirectorStateRecord {
+        timestamp: string;
+        groupId: string;
+        groupName: string;
+        chatId: string;
+        settings: GroupDirectorSettings;
+        state: ParsedDirectorDecision | null;
+        rawOutput: string;
+        error: string | null;
+    }
+
+    /** A recorded Director decision with all metadata. */
+    interface DirectorDecision {
+        /** ISO timestamp of when the decision was made. */
+        timestamp: string;
+        /** Connection profile id used. */
+        profileId: string;
+        /** Lookback depth used. */
+        lookbackDepth: number;
+        /** Whether user messages were counted. */
+        countUserMessages: boolean;
+        /** IDs of chat messages included in the lookback context. */
+        inputMessageIds: number[];
+        /** Raw LLM response text. */
+        rawResponse: string;
+        /** Parsed decision, null if parsing failed. */
+        parsed: ParsedDirectorDecision | null;
+        /** Actions that were actually applied. */
+        appliedActions: DirectorAppliedAction[];
+        /** Error message if something went wrong. */
+        error: string | null;
+    }
+
+    /** Parsed Director response from LLM. */
+    interface ParsedDirectorDecision {
+        /** Updated journal text. */
+        journal: string;
+        /** Ordered queue of member ids for next speakers. */
+        queue: string[];
+        /** Actions to apply (mute/unmute). */
+        actions: DirectorAction[];
+        /** Short summary of the Director's reasoning. */
+        summary: string;
+    }
+
+    /** A single Director action on a member. */
+    interface DirectorAction {
+        /** Action type: 'leave' = mute, 'enter' = unmute, 'stay' = no change. */
+        action: 'leave' | 'enter' | 'stay';
+        /** Stable member id (avatar filename). */
+        memberId: string;
+        /** Optional reason for the action. */
+        reason?: string;
+    }
+
+    /** Record of an action that was actually applied or ignored. */
+    interface DirectorAppliedAction {
+        /** The original action. */
+        action: DirectorAction;
+        /** Whether the action was applied or ignored. */
+        applied: boolean;
+        /** Reason it was ignored, if applicable. */
+        ignoreReason?: string;
     }
 
     interface ChatFile extends Array<ChatMessage> {

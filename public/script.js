@@ -273,7 +273,7 @@ import { extractReasoningFromData, extractReasoningSignatureFromData, initReason
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
-import { cleanupPersistedPromptWrapperSlot, ensureChatPromptWrapperSettings, getChatPromptWrapperOverrideMap, getPromptWrapperDisplayParts, getPromptWrapperRole, getPromptWrapperSettings, normalizePromptWrapperTag, resolvePromptWrapperState, resolvePromptWrapperTag } from './scripts/prompt-wrappers.js';
+import { cleanupPersistedPromptWrapperMessage, ensureChatPromptWrapperSettings, getChatPromptWrapperOverrideMap, getPromptWrapperDisplayParts, getPromptWrapperRole, getPromptWrapperSettings, normalizePromptWrapperTag, resolvePromptWrapperState, resolvePromptWrapperTag } from './scripts/prompt-wrappers.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -3938,6 +3938,7 @@ export function createRawPrompt(prompt, api, instructOverride, quietToLoud, syst
  * @prop {boolean} [trimNames] Whether to allow trimming "{{user}}:" and "{{char}}:" from the response.
  * @prop {string} [prefill] An optional prefill for the prompt.
  * @prop {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
+ * @prop {ChatCompletionSettings} [oaiSettingsOverride] Optional OpenAI settings override for this request.
  */
 
 /**
@@ -3946,7 +3947,7 @@ export function createRawPrompt(prompt, api, instructOverride, quietToLoud, syst
  * @param {GenerateRawParams} params Parameters for generating a message
  * @returns {Promise<object | string>} Raw API response data, or a JSON string extracted from the response when `jsonSchema` is provided.
  */
-export async function generateRawData({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, prefill = '', jsonSchema = null } = {}) {
+export async function generateRawData({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, prefill = '', jsonSchema = null, oaiSettingsOverride = null } = {}) {
     if (!api) {
         api = main_api;
     }
@@ -4023,7 +4024,7 @@ export async function generateRawData({ prompt = '', api = null, instructOverrid
         if (api === 'koboldhorde') {
             data = await generateHorde(prompt.toString(), generateData, abortController.signal, false);
         } else if (api === 'openai') {
-            data = await sendOpenAIRequest('quiet', generateData, abortController.signal, { jsonSchema });
+            data = await sendOpenAIRequest('quiet', generateData, abortController.signal, { jsonSchema, oaiSettingsOverride });
         } else {
             const generateUrl = getGenerateUrl(api);
             const response = await fetch(generateUrl, {
@@ -4068,13 +4069,13 @@ export async function generateRawData({ prompt = '', api = null, instructOverrid
  * @param {GenerateRawParams} params Parameters for generating a message
  * @returns {Promise<string>} Generated output: a cleaned-up message string when `jsonSchema` is not provided, or an extracted JSON string conforming to `jsonSchema` when it is.
  */
-export async function generateRaw({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null } = {}) {
+export async function generateRaw({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null, oaiSettingsOverride = null } = {}) {
     if (arguments.length > 0 && typeof arguments[0] !== 'object') {
         console.trace('generateRaw called with positional arguments. Please use an object instead.');
         [prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, trimNames, prefill, jsonSchema] = arguments;
     }
 
-    const data = await generateRawData({ prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, prefill, jsonSchema });
+    const data = await generateRawData({ prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, prefill, jsonSchema, oaiSettingsOverride });
 
     // JSON string (matching the provided schema) will already be extracted.
     if (jsonSchema) {
@@ -5990,29 +5991,7 @@ function cleanupPersistedPromptWrapperMetadataFromChat() {
     let changed = 0;
 
     for (const message of chat) {
-        if (!message || typeof message !== 'object') continue;
-
-        if (message.extra?.prompt_wrapper) {
-            const result = cleanupPersistedPromptWrapperSlot(message.mes ?? '', message.extra);
-            if (result.changed) {
-                message.mes = result.text;
-                message.extra = result.extra;
-                changed++;
-            }
-        }
-
-        if (!Array.isArray(message.swipes)) continue;
-        message.swipe_info ??= [];
-        for (let i = 0; i < message.swipes.length; i++) {
-            const swipeInfo = message.swipe_info[i];
-            if (!swipeInfo?.extra?.prompt_wrapper) continue;
-            const result = cleanupPersistedPromptWrapperSlot(message.swipes[i] ?? '', swipeInfo.extra);
-            if (result.changed) {
-                message.swipes[i] = result.text;
-                swipeInfo.extra = result.extra;
-                changed++;
-            }
-        }
+        changed += cleanupPersistedPromptWrapperMessage(message);
     }
 
     if (changed > 0) chat_metadata.tainted = true;
@@ -6261,6 +6240,7 @@ function setInContextMessages(msgInContextCount, type) {
 /**
  * @typedef {object} AdditionalRequestOptions
  * @property {JsonSchema} [jsonSchema]
+ * @property {ChatCompletionSettings} [oaiSettingsOverride]
  */
 
 /**
@@ -8589,6 +8569,12 @@ export async function messageEdit(editMessageId) {
 
     this_edit_mes_id = editMessageId;
     this_edit_mes_chname = editMessage.name || (editMessage.is_user ? name1 : name2);
+
+    const cleanedPromptWrappers = cleanupPersistedPromptWrapperMessage(editMessage);
+    if (cleanedPromptWrappers > 0) {
+        chat_metadata.tainted = true;
+        saveChatDebounced();
+    }
 
     refreshSwipeButtons();
 
