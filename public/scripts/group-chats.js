@@ -87,7 +87,15 @@ import {
     getExtensionPromptRoleByName,
     setExtensionPrompt,
 } from '../script.js';
-import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, tag_map, applyTagsOnGroupSelect, printTagFilters, tag_filter_type } from './tags.js';
+import {
+    printTagList,
+    createTagMapFromList,
+    applyTagsOnCharacterSelect,
+    tag_map,
+    applyTagsOnGroupSelect,
+    printTagFilters,
+    tag_filter_type,
+} from './tags.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -114,6 +122,20 @@ export {
     resetSelectedGroup,
     select_group_chats,
     getGroupChatNames,
+    normalizeDirectorMemberIdList,
+    normalizeDirectorHistoryArray,
+    filterDirectorQueueForMembers,
+    filterDirectorControlledDisabledMembers,
+    filterDirectorHistoryByMessageRefs,
+    filterDirectorStateForGroup,
+    buildDirectorDisabledMembersForInspectorSave,
+    applyDirectorInspectorStateToGroup,
+    formatDirectorDirectionsForPrompt,
+    runDirector,
+    refreshDirectorPromptInjectionForGroup,
+    setDirectorStatusRunning,
+    setDirectorStatusPreview,
+    hideDirectorStatus,
 };
 
 let is_group_generating = false; // Group generation flag
@@ -153,7 +175,7 @@ let groupChatQueueOrder = new Map();
 
 function setAutoModeWorker() {
     clearInterval(autoModeWorker);
-    const autoModeDelay = groups.find(x => x.id === selected_group)?.auto_mode_delay ?? DEFAULT_AUTO_MODE_DELAY;
+    const autoModeDelay = groups.find((x) => x.id === selected_group)?.auto_mode_delay ?? DEFAULT_AUTO_MODE_DELAY;
     autoModeWorker = setInterval(groupChatAutoModeWorker, autoModeDelay * 1000);
 }
 
@@ -182,7 +204,7 @@ async function regenerateGroup() {
         const this_generationId = lastMes.extra?.gen_id;
 
         // for new generations after the update
-        if ((generationId && this_generationId) && generationId !== this_generationId) {
+        if (generationId && this_generationId && generationId !== this_generationId) {
             break;
         } else if (lastMes.is_user || lastMes.is_system) {
             // legacy for generations before the update
@@ -211,8 +233,8 @@ async function loadGroupChat(chatId) {
 
     if (response.ok) {
         const responseData = await response.json();
-        const chatArray = Array.isArray(responseData) ? responseData : (responseData.data || []);
-        const corruptLines = Array.isArray(responseData) ? [] : (responseData.corruptLines || []);
+        const chatArray = Array.isArray(responseData) ? responseData : responseData.data || [];
+        const corruptLines = Array.isArray(responseData) ? [] : responseData.corruptLines || [];
 
         if (corruptLines.length > 0) {
             toastr.warning(
@@ -239,8 +261,8 @@ async function validateGroup(group) {
 
     // Validate that all members exist as characters
     let dirty = false;
-    group.members = group.members.filter(member => {
-        const character = characters.find(x => x.avatar === member || x.name === member);
+    group.members = group.members.filter((member) => {
+        const character = characters.find((x) => x.avatar === member || x.name === member);
         if (!character) {
             const msg = t`Warning: Listed member ${member} does not exist as a character. It will be removed from the group.`;
             toastr.warning(msg, t`Group Validation`);
@@ -306,7 +328,7 @@ export async function getGroupChat(groupId, reload = false) {
         chat.splice(0, chat.length);
         chatElement.find('.mes').remove();
         for (let member of group.members) {
-            const character = characters.find(x => x.avatar === member || x.name === member);
+            const character = characters.find((x) => x.avatar === member || x.name === member);
             if (!character) {
                 continue;
             }
@@ -314,14 +336,14 @@ export async function getGroupChat(groupId, reload = false) {
             const mes = await getFirstCharacterMessage(character);
 
             // No first message
-            if (!(mes?.mes)) {
+            if (!mes?.mes) {
                 continue;
             }
 
             chat.push(mes);
-            await eventSource.emit(event_types.MESSAGE_RECEIVED, (chat.length - 1), 'first_message');
+            await eventSource.emit(event_types.MESSAGE_RECEIVED, chat.length - 1, 'first_message');
             addOneMessage(mes);
-            await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, (chat.length - 1), 'first_message');
+            await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat.length - 1, 'first_message');
         }
         await saveGroupChat(groupId, false);
     } else if (Array.isArray(data) && data.length) {
@@ -349,7 +371,7 @@ export async function getGroupChat(groupId, reload = false) {
  */
 export function getGroupMembers(groupId = selected_group) {
     const group = groups.find((x) => x.id === groupId);
-    return group?.members.map(member => characters.find(x => x.avatar === member)) ?? [];
+    return group?.members.map((member) => characters.find((x) => x.avatar === member)) ?? [];
 }
 
 /**
@@ -360,10 +382,8 @@ export function getGroupNames() {
     if (!selected_group) {
         return [];
     }
-    const groupMembers = groups.find(x => x.id == selected_group)?.members;
-    return Array.isArray(groupMembers)
-        ? groupMembers.map(x => characters.find(y => y.avatar === x)?.name).filter(x => x)
-        : [];
+    const groupMembers = groups.find((x) => x.id == selected_group)?.members;
+    return Array.isArray(groupMembers) ? groupMembers.map((x) => characters.find((y) => y.avatar === x)?.name).filter((x) => x) : [];
 }
 
 /**
@@ -380,7 +400,7 @@ export function findGroupMemberId(arg, full = false) {
         return;
     }
 
-    const group = groups.find(x => x.id == selected_group);
+    const group = groups.find((x) => x.id == selected_group);
 
     if (!group || !Array.isArray(group.members)) {
         console.warn('WARN: No group found for selected group ID');
@@ -391,10 +411,10 @@ export function findGroupMemberId(arg, full = false) {
     const searchByString = isNaN(index);
 
     if (searchByString) {
-        const memberNames = group.members.map(x => ({
+        const memberNames = group.members.map((x) => ({
             avatar: x,
-            name: characters.find(y => y.avatar === x)?.name,
-            index: characters.findIndex(y => y.avatar === x),
+            name: characters.find((y) => y.avatar === x)?.name,
+            index: characters.findIndex((y) => y.avatar === x),
         }));
         const fuse = new Fuse(memberNames, { keys: ['avatar', 'name'] });
         const result = fuse.search(arg);
@@ -422,7 +442,7 @@ export function findGroupMemberId(arg, full = false) {
             return;
         }
 
-        const chid = characters.findIndex(x => x.avatar === memberAvatar);
+        const chid = characters.findIndex((x) => x.avatar === memberAvatar);
 
         if (chid === -1) {
             console.warn(`WARN: No character found for group member ${memberAvatar} at index ${index}`);
@@ -431,12 +451,14 @@ export function findGroupMemberId(arg, full = false) {
 
         console.log(`Targeting group member ${memberAvatar} at index ${index}`);
 
-        return !full ? chid : {
-            id: chid,
-            avatar: memberAvatar,
-            name: characters.find(y => y.avatar === memberAvatar)?.name,
-            index: index,
-        };
+        return !full
+            ? chid
+            : {
+                id: chid,
+                avatar: memberAvatar,
+                name: characters.find((y) => y.avatar === memberAvatar)?.name,
+                index: index,
+            };
     }
 }
 
@@ -452,7 +474,7 @@ export function getGroupDepthPrompts(groupId, characterId) {
     }
 
     console.debug('getGroupDepthPrompts entered for group: ', groupId);
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     if (!group || !Array.isArray(group.members) || !group.members.length) {
         return [];
@@ -465,7 +487,7 @@ export function getGroupDepthPrompts(groupId, characterId) {
     const depthPrompts = [];
 
     for (const member of group.members) {
-        const index = characters.findIndex(x => x.avatar === member);
+        const index = characters.findIndex((x) => x.avatar === member);
         const character = characters[index];
 
         if (index === -1 || !character) {
@@ -517,7 +539,7 @@ export function getGroupCharacterCards(groupId, characterId) {
  * @returns {{description: string, personality: string, scenario: string, mesExamples: string}} Group character cards with lazy getters
  */
 export function getGroupCharacterCardsLazy(groupId, characterId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     // If no group cards should be generated, return null so caller knows to fall back
     if (!group || !group?.generation_mode || !Array.isArray(group.members) || !group.members.length) {
@@ -569,26 +591,35 @@ export function getGroupCharacterCardsLazy(groupId, characterId) {
     function collectField(fieldName, getter, preprocess = null) {
         const values = [];
         for (const member of group.members) {
-            const index = characters.findIndex(x => x.avatar === member);
+            const index = characters.findIndex((x) => x.avatar === member);
             const character = characters[index];
             if (index === -1 || !character) continue;
-            if (group.disabled_members.includes(member) && characterId !== index && group.generation_mode !== group_generation_mode.APPEND_DISABLED) {
+            if (
+                group.disabled_members.includes(member) &&
+                characterId !== index &&
+                group.generation_mode !== group_generation_mode.APPEND_DISABLED
+            ) {
                 continue;
             }
             values.push(replaceAndPrepareForJoin(getter(character), character.name, fieldName, preprocess));
         }
-        return values.filter(x => x.length).join('\n');
+        return values.filter((x) => x.length).join('\n');
     }
 
     const scenarioOverride = String(chat_metadata.scenario || '');
     const mesExamplesOverride = String(chat_metadata.mes_example || '');
 
     return createLazyFields({
-        description: () => collectField('Description', c => c.description),
-        personality: () => collectField('Personality', c => c.personality),
-        scenario: () => baseChatReplace(scenarioOverride?.trim()) || collectField('Scenario', c => c.scenario),
-        mesExamples: () => baseChatReplace(mesExamplesOverride?.trim()) ||
-            collectField('Example Messages', c => c.mes_example, x => !x.startsWith('<START>') ? `<START>\n${x}` : x),
+        description: () => collectField('Description', (c) => c.description),
+        personality: () => collectField('Personality', (c) => c.personality),
+        scenario: () => baseChatReplace(scenarioOverride?.trim()) || collectField('Scenario', (c) => c.scenario),
+        mesExamples: () =>
+            baseChatReplace(mesExamplesOverride?.trim()) ||
+            collectField(
+                'Example Messages',
+                (c) => c.mes_example,
+                (x) => (!x.startsWith('<START>') ? `<START>\n${x}` : x),
+            ),
     });
 }
 
@@ -602,7 +633,7 @@ async function getFirstCharacterMessage(character) {
 
     // if there are alternate greetings, pick one at random
     if (Array.isArray(character.data?.alternate_greetings)) {
-        const messageTexts = [character.first_mes, ...character.data.alternate_greetings].filter(x => x);
+        const messageTexts = [character.first_mes, ...character.data.alternate_greetings].filter((x) => x);
         messageText = messageTexts[Math.floor(Math.random() * messageTexts.length)];
     }
 
@@ -619,14 +650,9 @@ async function getFirstCharacterMessage(character) {
     mes.name = character.name;
     mes.send_date = getMessageTimeStamp();
     mes.original_avatar = character.avatar;
-    mes.extra = { 'gen_id': Date.now() * Math.random() * 1000000 };
-    mes.mes = messageText
-        ? substituteParams(messageText.trim(), { name2Override: character.name })
-        : '';
-    mes.force_avatar =
-        character.avatar != 'none'
-            ? getThumbnailUrl('avatar', character.avatar)
-            : default_avatar;
+    mes.extra = { gen_id: Date.now() * Math.random() * 1000000 };
+    mes.mes = messageText ? substituteParams(messageText.trim(), { name2Override: character.name }) : '';
+    mes.force_avatar = character.avatar != 'none' ? getThumbnailUrl('avatar', character.avatar) : default_avatar;
     return mes;
 }
 
@@ -643,7 +669,7 @@ function resetSelectedGroup() {
  * @returns {Promise<void>} A promise that resolves when the group chat has been saved.
  */
 async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
-    const group = groups.find(x => x.id == groupId);
+    const group = groups.find((x) => x.id == groupId);
     if (!group) {
         console.warn('Group not found', groupId);
         return;
@@ -700,7 +726,7 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
             }
 
             const diskData = await diskResponse.json();
-            const diskMessages = Array.isArray(diskData) ? diskData : (diskData.data || []);
+            const diskMessages = Array.isArray(diskData) ? diskData : diskData.data || [];
             diskMessages.shift();
 
             const mergedMessages = await showIntegrityDiffPopup([...chat], diskMessages);
@@ -725,7 +751,7 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
 }
 
 async function saveGroupChatWithData(groupId, shouldSaveGroup, chatData, force = false) {
-    const group = groups.find(x => x.id == groupId);
+    const group = groups.find((x) => x.id == groupId);
 
     if (!group) {
         console.warn('Group not found', groupId);
@@ -788,7 +814,7 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
     for (const group of groups) {
         try {
             // Try finding the member by old avatar link
-            const memberIndex = group.members.findIndex(x => x == oldAvatar);
+            const memberIndex = group.members.findIndex((x) => x == oldAvatar);
 
             // Character was not present in the group...
             if (memberIndex == -1) {
@@ -824,7 +850,10 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
                         // Update name, avatar thumbnail URL and original avatar link
                         if (message.force_avatar && message.force_avatar.indexOf(encodeURIComponent(oldAvatar)) !== -1) {
                             message.name = newName;
-                            message.force_avatar = message.force_avatar.replace(encodeURIComponent(oldAvatar), encodeURIComponent(newAvatar));
+                            message.force_avatar = message.force_avatar.replace(
+                                encodeURIComponent(oldAvatar),
+                                encodeURIComponent(newAvatar),
+                            );
                             message.original_avatar = newAvatar;
                             hadChanges = true;
                         }
@@ -881,15 +910,15 @@ async function getGroups() {
                 group.chat_id = group.id;
                 group.chats = [group.id];
                 group.members = group.members
-                    .map(x => characters.find(y => y.name == x)?.avatar)
-                    .filter(x => x)
+                    .map((x) => characters.find((y) => y.name == x)?.avatar)
+                    .filter((x) => x)
                     .filter(onlyUnique);
             }
             if (typeof group.chat_id === 'number') {
                 group.chat_id = String(group.chat_id);
             }
-            if (Array.isArray(group.chats) && group.chats.some(x => typeof x === 'number')) {
-                group.chats = group.chats.map(x => String(x));
+            if (Array.isArray(group.chats) && group.chats.some((x) => typeof x === 'number')) {
+                group.chats = group.chats.map((x) => String(x));
             }
         }
     }
@@ -907,7 +936,7 @@ export function getGroupBlock(group) {
     // Build inline name list
     if (Array.isArray(group.members) && group.members.length) {
         for (const member of group.members) {
-            const character = characters.find(x => x.avatar === member || x.name === member);
+            const character = characters.find((x) => x.avatar === member || x.name === member);
             if (character) {
                 namesList.push(character.name);
                 count++;
@@ -983,7 +1012,7 @@ function getGroupAvatar(group) {
     const memberAvatars = [];
     if (group && Array.isArray(group.members) && group.members.length) {
         for (const member of group.members) {
-            const charIndex = characters.findIndex(x => x.avatar === member);
+            const charIndex = characters.findIndex((x) => x.avatar === member);
             if (charIndex !== -1 && characters[charIndex].avatar !== 'none') {
                 const avatar = getThumbnailUrl('avatar', characters[charIndex].avatar);
                 memberAvatars.push(avatar);
@@ -1025,7 +1054,7 @@ function getGroupAvatar(group) {
  * @returns {string[]} Array of chat IDs
  */
 function getGroupChatNames(groupId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     if (!group) {
         return [];
@@ -1070,7 +1099,6 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
 
     /** @type {any} Caution: JS war crimes ahead */
     let textResult = '';
-    let directorPromptInjected = false;
     const group = groups.find((x) => x.id === selected_group);
 
     if (!group || !Array.isArray(group.members) || !group.members.length) {
@@ -1104,7 +1132,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         }
 
         const activationStrategy = Number(group.activation_strategy ?? group_activation_strategy.NATURAL);
-        const enabledMembers = group.members.filter(x => !group.disabled_members.includes(x));
+        const enabledMembers = group.members.filter((x) => !group.disabled_members.includes(x));
         let activatedMembers = [];
         let useDirectorOverride = false;
         let directorRunSucceeded = false;
@@ -1145,11 +1173,19 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
                 ? directorOverride
                 : activateNaturalOrder(enabledMembers, activationText, lastMessage, group.allow_self_responses, isUserInput);
         } else if (activationStrategy === group_activation_strategy.MANUAL && !isUserInput) {
-            activatedMembers = shuffle(enabledMembers).slice(0, 1).map(x => characters.findIndex(y => y.avatar === x)).filter(x => x !== -1);
+            activatedMembers = shuffle(enabledMembers)
+                .slice(0, 1)
+                .map((x) => characters.findIndex((y) => y.avatar === x))
+                .filter((x) => x !== -1);
         }
 
-        if (activatedMembers.length > 0 && activationStrategy === group_activation_strategy.DIRECTOR && directorRunSucceeded) {
-            directorPromptInjected = applyDirectorPromptInjection(group);
+        const directorPromptApplied =
+            activatedMembers.length > 0 &&
+            activationStrategy === group_activation_strategy.DIRECTOR &&
+            directorRunSucceeded &&
+            applyDirectorPromptInjection(group);
+        if (!directorPromptApplied) {
+            clearDirectorPromptInjection();
         }
 
         if (activatedMembers.length === 0) {
@@ -1159,7 +1195,9 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             const bias = getBiasStrings(userInput, type);
             await sendMessageAsUser(userInput, bias.messageBias);
             await saveChatConditional();
-            $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
+            $('#send_textarea')
+                .val('')[0]
+                .dispatchEvent(new Event('input', { bubbles: true }));
         }
         groupChatQueueOrder = new Map();
 
@@ -1198,13 +1236,11 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             }
 
             if (useDirectorOverride && consumeDirectorQueueSpeaker(group, generatedAvatar)) {
-                await _save(group, false);
+                await saveDirectorStateAndRefreshPrompt(group, false);
             }
         }
     } finally {
-        if (directorPromptInjected) {
-            clearDirectorPromptInjection();
-        }
+        clearDirectorPromptInjection();
         is_group_generating = false;
         setSendButtonState(false);
         setCharacterId(undefined);
@@ -1244,9 +1280,7 @@ function getLastMessageGenerationId() {
 function activateImpersonate(members) {
     const randomIndex = Math.floor(Math.random() * members.length);
     const activatedMembers = [members[randomIndex]];
-    const memberIds = activatedMembers
-        .map((x) => characters.findIndex((y) => y.avatar === x))
-        .filter((x) => x !== -1);
+    const memberIds = activatedMembers.map((x) => characters.findIndex((y) => y.avatar === x)).filter((x) => x !== -1);
     return memberIds;
 }
 
@@ -1284,7 +1318,7 @@ function activateSwipe(members, { allowSystem = false } = {}) {
 
     // pre-update group chat swipe
     if (!lastMessage.original_avatar) {
-        const matches = characters.filter(x => x.name == lastMessage.name);
+        const matches = characters.filter((x) => x.name == lastMessage.name);
 
         for (const match of matches) {
             if (members.includes(match.avatar)) {
@@ -1296,9 +1330,7 @@ function activateSwipe(members, { allowSystem = false } = {}) {
         activatedNames.push(lastMessage.original_avatar);
     }
 
-    const memberIds = activatedNames
-        .map((x) => characters.findIndex((y) => y.avatar === x))
-        .filter((x) => x !== -1);
+    const memberIds = activatedNames.map((x) => characters.findIndex((y) => y.avatar === x)).filter((x) => x !== -1);
     return memberIds;
 }
 
@@ -1311,9 +1343,7 @@ function activateListOrder(members) {
     let activatedMembers = members.filter(onlyUnique);
 
     // map to character ids
-    const memberIds = activatedMembers
-        .map((x) => characters.findIndex((y) => y.avatar === x))
-        .filter((x) => x !== -1);
+    const memberIds = activatedMembers.map((x) => characters.findIndex((y) => y.avatar === x)).filter((x) => x !== -1);
     return memberIds;
 }
 
@@ -1344,7 +1374,7 @@ function activatePooledOrder(members, lastMessage, isUserInput) {
         }
     }
 
-    const haveNotSpoken = members.filter(x => !spokenSinceUser.includes(x));
+    const haveNotSpoken = members.filter((x) => !spokenSinceUser.includes(x));
 
     if (haveNotSpoken.length) {
         activatedMember = haveNotSpoken[Math.floor(Math.random() * haveNotSpoken.length)];
@@ -1352,11 +1382,11 @@ function activatePooledOrder(members, lastMessage, isUserInput) {
 
     if (activatedMember === null) {
         const lastMessageAvatar = members.length > 1 && lastMessage && !lastMessage.is_user && lastMessage.original_avatar;
-        const randomPool = lastMessageAvatar ? members.filter(x => x !== lastMessage.original_avatar) : members;
+        const randomPool = lastMessageAvatar ? members.filter((x) => x !== lastMessage.original_avatar) : members;
         activatedMember = randomPool[Math.floor(Math.random() * randomPool.length)];
     }
 
-    const memberId = characters.findIndex(y => y.avatar === activatedMember);
+    const memberId = characters.findIndex((y) => y.avatar === activatedMember);
     return memberId !== -1 ? [memberId] : [];
 }
 
@@ -1384,7 +1414,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
     if (input && input.length) {
         for (let inputWord of extractAllWords(input)) {
             for (let member of members) {
-                const character = characters.find(x => x.avatar === member);
+                const character = characters.find((x) => x.avatar === member);
 
                 if (!character || character.name === bannedUser) {
                     continue;
@@ -1409,9 +1439,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
         }
 
         const rollValue = Math.random();
-        const talkativeness = isNaN(character.talkativeness)
-            ? talkativeness_default
-            : Number(character.talkativeness);
+        const talkativeness = isNaN(character.talkativeness) ? talkativeness_default : Number(character.talkativeness);
         if (talkativeness >= rollValue) {
             activatedMembers.push(member);
         }
@@ -1439,9 +1467,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
     activatedMembers = activatedMembers.filter(onlyUnique);
 
     // map to character ids
-    const memberIds = activatedMembers
-        .map((x) => characters.findIndex((y) => y.avatar === x))
-        .filter((x) => x !== -1);
+    const memberIds = activatedMembers.map((x) => characters.findIndex((y) => y.avatar === x)).filter((x) => x !== -1);
     return memberIds;
 }
 
@@ -1506,7 +1532,7 @@ export async function editGroup(id, immediately, reload = true) {
  * @returns {Promise<void>} Promise that resolves when all group members are unshallowed
  */
 export async function unshallowGroupMembers(groupId) {
-    const group = groups.find(x => x.id == groupId);
+    const group = groups.find((x) => x.id == groupId);
     if (!group) {
         return;
     }
@@ -1515,7 +1541,7 @@ export async function unshallowGroupMembers(groupId) {
         return;
     }
     for (const member of members) {
-        const index = characters.findIndex(x => x.avatar === member);
+        const index = characters.findIndex((x) => x.avatar === member);
         if (index === -1) {
             continue;
         }
@@ -1622,6 +1648,9 @@ async function onGroupActivationStrategyInput(e) {
     if (openGroupId) {
         let _thisGroup = groups.find((x) => x.id == openGroupId);
         _thisGroup.activation_strategy = Number(e.target.value);
+        if (!isDirectorStrategy(_thisGroup)) {
+            clearDirectorPromptInjection();
+        }
         await editGroup(openGroupId, false, false);
     }
 }
@@ -1817,7 +1846,7 @@ function getGroupCharacterBlock(character) {
     const template = $('#group_member_template .group_member').clone();
     const isFav = !!character.fav || character.fav == 'true';
     template.data('id', character.avatar);
-    template.find('.avatar img').attr({ 'src': avatar, 'title': character.avatar });
+    template.find('.avatar img').attr({ src: avatar, title: character.avatar });
     template.find('.ch_name').text(character.name);
     template.attr('data-chid', characters.indexOf(character));
     template.find('.ch_fav').val(String(isFav));
@@ -1873,7 +1902,12 @@ async function onDeleteGroupClick() {
         return;
     }
 
-    const confirm = await Popup.show.confirm(t`Delete the group?`, '<p>' + t`This will also delete all your chats with that group. If you want to delete a single conversation, select a "View past chats" option in the lower left menu.` + '</p>');
+    const confirm = await Popup.show.confirm(
+        t`Delete the group?`,
+        '<p>' +
+        t`This will also delete all your chats with that group. If you want to delete a single conversation, select a "View past chats" option in the lower left menu.` +
+        '</p>',
+    );
     if (confirm) {
         deleteGroup(openGroupId);
     }
@@ -1968,8 +2002,12 @@ function select_group_chats(groupId, skipAnimation) {
     $('#rm_group_hidemutedsprites').prop('checked', group && group.hideMutedSprites);
     $('#rm_group_automode_delay').val(group?.auto_mode_delay ?? DEFAULT_AUTO_MODE_DELAY);
 
-    $('#rm_group_generation_mode_join_prefix').val(group?.generation_mode_join_prefix ?? '').attr('setting', 'generation_mode_join_prefix');
-    $('#rm_group_generation_mode_join_suffix').val(group?.generation_mode_join_suffix ?? '').attr('setting', 'generation_mode_join_suffix');
+    $('#rm_group_generation_mode_join_prefix')
+        .val(group?.generation_mode_join_prefix ?? '')
+        .attr('setting', 'generation_mode_join_prefix');
+    $('#rm_group_generation_mode_join_suffix')
+        .val(group?.generation_mode_join_suffix ?? '')
+        .attr('setting', 'generation_mode_join_suffix');
     toggleHiddenControls(group, generationMode);
 
     // bottom buttons
@@ -2006,7 +2044,7 @@ function select_group_chats(groupId, skipAnimation) {
 
     // Toggle textbox sizes, as input events have not fired here
     if (!CSS.supports('field-sizing', 'content')) {
-        $('#rm_group_chats_block .autoSetHeight').each(element => {
+        $('#rm_group_chats_block .autoSetHeight').each((element) => {
             resetScrollHeight(element);
         });
     }
@@ -2071,7 +2109,10 @@ async function uploadGroupAvatar(event) {
 }
 
 async function restoreGroupAvatar() {
-    const confirm = await Popup.show.confirm('Are you sure you want to restore the group avatar?', 'Your custom image will be deleted, and a collage will be used instead.');
+    const confirm = await Popup.show.confirm(
+        'Are you sure you want to restore the group avatar?',
+        'Your custom image will be deleted, and a collage will be used instead.',
+    );
     if (!confirm) {
         return;
     }
@@ -2104,7 +2145,7 @@ async function onGroupActionClick(event) {
 
     if (action === 'enable') {
         member.removeClass('disabled');
-        const _thisGroup = groups.find(x => x.id === openGroupId);
+        const _thisGroup = groups.find((x) => x.id === openGroupId);
         const index = _thisGroup.disabled_members.indexOf(member.data('id'));
         if (index !== -1) {
             _thisGroup.disabled_members.splice(index, 1);
@@ -2114,7 +2155,7 @@ async function onGroupActionClick(event) {
 
     if (action === 'disable') {
         member.addClass('disabled');
-        const _thisGroup = groups.find(x => x.id === openGroupId);
+        const _thisGroup = groups.find((x) => x.id === openGroupId);
         if (!_thisGroup.disabled_members.includes(member.data('id'))) {
             _thisGroup.disabled_members.push(member.data('id'));
             await editGroup(openGroupId, false, false);
@@ -2157,7 +2198,7 @@ export async function openGroupById(groupId) {
         return false;
     }
 
-    if (!groups.find(x => x.id === groupId)) {
+    if (!groups.find((x) => x.id === groupId)) {
         console.log('Group not found', groupId);
         return false;
     }
@@ -2227,7 +2268,10 @@ async function createGroup() {
     let generationMode = Number($('#rm_group_generation_mode').find(':selected').val()) ?? group_generation_mode.SWAP;
     let autoModeDelay = Number($('#rm_group_automode_delay').val()) ?? DEFAULT_AUTO_MODE_DELAY;
     const members = newGroupMembers;
-    const memberNames = characters.filter(x => members.includes(x.avatar)).map(x => x.name).join(', ');
+    const memberNames = characters
+        .filter((x) => members.includes(x.avatar))
+        .map((x) => x.name)
+        .join(', ');
 
     if (!name) {
         name = t`Group: ${memberNames}`;
@@ -2274,7 +2318,7 @@ async function createGroup() {
  * @returns {Promise<void>} Promise that resolves when the new group chat is created
  */
 export async function createNewGroupChat(groupId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     if (!group) {
         return;
@@ -2296,7 +2340,7 @@ export async function createNewGroupChat(groupId) {
  * @returns {Promise<Array<import('../../src/endpoints/chats.js').ChatInfo>>} Array of past chats
  */
 export async function getGroupPastChats(groupId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     if (!group) {
         return [];
@@ -2330,7 +2374,7 @@ export async function getGroupPastChats(groupId) {
  */
 export async function openGroupChat(groupId, chatId) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     if (!group || !group.chats.includes(chatId)) {
         return;
@@ -2353,7 +2397,7 @@ export async function openGroupChat(groupId, chatId) {
  * @returns {Promise<void>} Promise that resolves when the group chat is renamed
  */
 export async function renameGroupChat(groupId, oldChatId, newChatId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     if (!group || !group.chats.includes(oldChatId)) {
         return;
@@ -2376,7 +2420,7 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
  * @returns {Promise<void>}
  */
 export async function deleteGroupChatByName(groupId, chatName) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
     if (!group || !group.chats.includes(chatName)) {
         return;
     }
@@ -2413,7 +2457,7 @@ export async function deleteGroupChatByName(groupId, chatName) {
  * @param {boolean} [options.jumpToNewChat=true] Whether to jump to a new chat after deletion (existing one, or create a new one if none exists)
  */
 export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } = {}) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     if (!group || !group.chats.includes(chatId)) {
         return;
@@ -2464,7 +2508,7 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
         const data = await fetchResult.json();
         if (data.res) {
             const chatId = data.res;
-            const group = groups.find(x => x.id == selected_group);
+            const group = groups.find((x) => x.id == selected_group);
 
             if (group) {
                 group.chats.push(chatId);
@@ -2493,7 +2537,7 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
  * @returns {Promise<void>} Promise that resolves when the group chat is saved
  */
 export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chatData = undefined) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groups.find((x) => x.id === groupId);
 
     if (!group) {
         return;
@@ -2511,7 +2555,7 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
     /** @type {ChatMessage[]} */
     const trimmedChat = Array.isArray(chatData)
         ? chatData
-        : (mesId !== undefined && mesId >= 0 && mesId < chat.length)
+        : mesId !== undefined && mesId >= 0 && mesId < chat.length
             ? chat.slice(0, Number(mesId) + 1)
             : chat;
 
@@ -2559,7 +2603,8 @@ function doCurMemberListPopout() {
     </div>`;
         const newElement = $(template);
 
-        newElement.attr('id', 'groupMemberListPopout')
+        newElement
+            .attr('id', 'groupMemberListPopout')
             .removeClass('zoomed_avatar')
             .addClass('draggable')
             .empty()
@@ -2573,18 +2618,23 @@ function doCurMemberListPopout() {
         loadMovingUIState();
         $('#groupMemberListPopout').fadeIn(animation_duration);
         dragElement(newElement);
-        $('#groupMemberListPopoutClose').off('click').on('click', function () {
-            $('#groupMemberListPopout').fadeOut(animation_duration, () => { $('#groupMemberListPopout').remove(); });
-        });
+        $('#groupMemberListPopoutClose')
+            .off('click')
+            .on('click', function () {
+                $('#groupMemberListPopout').fadeOut(animation_duration, () => {
+                    $('#groupMemberListPopout').remove();
+                });
+            });
 
         // Re-add pagination not working in popout
         printGroupMembers();
     } else {
         console.debug('saw existing popout, removing');
-        $('#groupMemberListPopout').fadeOut(animation_duration, () => { $('#groupMemberListPopout').remove(); });
+        $('#groupMemberListPopout').fadeOut(animation_duration, () => {
+            $('#groupMemberListPopout').remove();
+        });
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════
 // Director – Invisible per-group scene director
@@ -2644,7 +2694,9 @@ function normalizeDirectorPromptPlacement(promptPlacement) {
     const defaults = DEFAULT_DIRECTOR_SETTINGS.promptPlacement;
     const source = isPlainObject(promptPlacement) ? promptPlacement : {};
     const rawType = String(source.type ?? source.position ?? defaults.type).toLowerCase();
-    const type = ['in_chat', 'in-chat', 'chat', 'absolute', String(extension_prompt_types.IN_CHAT)].includes(rawType) ? 'in_chat' : 'relative';
+    const type = ['in_chat', 'in-chat', 'chat', 'absolute', String(extension_prompt_types.IN_CHAT)].includes(rawType)
+        ? 'in_chat'
+        : 'relative';
     const rawRole = String(source.role ?? defaults.role).toLowerCase();
     /** @type {'system'|'user'|'assistant'} */
     const role = rawRole === 'user' || rawRole === 'assistant' || rawRole === 'system' ? rawRole : defaults.role;
@@ -2671,6 +2723,317 @@ function normalizeDirectorSettings(settings) {
         countUserMessages: normalizeBoolean(source.countUserMessages, defaults.countUserMessages),
         promptPlacement: normalizeDirectorPromptPlacement(source.promptPlacement),
     };
+}
+
+/**
+ * Normalizes a Director member id list.
+ * @param {any} value Source list.
+ * @param {Set<string>?} memberSet Optional valid members.
+ * @returns {string[]} Deduplicated member IDs.
+ */
+function normalizeDirectorMemberIdList(value, memberSet = null) {
+    const source = Array.isArray(value) ? value : [];
+    const seen = new Set();
+    const result = [];
+
+    for (const item of source) {
+        const id = typeof item === 'string' ? item.trim() : '';
+        if (!id || seen.has(id) || (memberSet && !memberSet.has(id))) {
+            continue;
+        }
+
+        seen.add(id);
+        result.push(id);
+    }
+
+    return result;
+}
+
+/**
+ * Normalizes a Director history array.
+ * @param {any} value Source history.
+ * @returns {object[]} Plain object records only.
+ */
+function normalizeDirectorHistoryArray(value) {
+    return Array.isArray(value) ? value.filter((record) => isPlainObject(record)) : [];
+}
+
+/**
+ * @param {Group|undefined|null} group
+ * @returns {Set<string>}
+ */
+function getDirectorGroupMemberSet(group) {
+    return new Set(Array.isArray(group?.members) ? group.members.filter((id) => typeof id === 'string') : []);
+}
+
+/**
+ * Filters Director queue to current group members.
+ * @param {any} queue Source queue.
+ * @param {Group|Set<string>} groupOrMemberSet Group or member set.
+ * @returns {string[]} Valid queued members.
+ */
+function filterDirectorQueueForMembers(queue, groupOrMemberSet) {
+    const memberSet = groupOrMemberSet instanceof Set ? groupOrMemberSet : getDirectorGroupMemberSet(groupOrMemberSet);
+    return normalizeDirectorMemberIdList(queue, memberSet);
+}
+
+/**
+ * Filters Director-controlled disabled members to current group members.
+ * @param {any} controlledDisabledMembers Source controlled mutes.
+ * @param {Group|Set<string>} groupOrMemberSet Group or member set.
+ * @returns {string[]} Valid controlled mutes.
+ */
+function filterDirectorControlledDisabledMembers(controlledDisabledMembers, groupOrMemberSet) {
+    const memberSet = groupOrMemberSet instanceof Set ? groupOrMemberSet : getDirectorGroupMemberSet(groupOrMemberSet);
+    return normalizeDirectorMemberIdList(controlledDisabledMembers, memberSet);
+}
+
+/**
+ * @param {object} record Director history record.
+ * @returns {any[]} Message refs.
+ */
+function getDirectorHistoryMessageRefs(record) {
+    const refs = [];
+    const addRefs = (value) => {
+        if (Array.isArray(value)) {
+            refs.push(...value);
+        } else if (value !== undefined && value !== null) {
+            refs.push(value);
+        }
+    };
+
+    addRefs(record.inputMessageIds);
+    addRefs(record.messageIds);
+    addRefs(record.messageRefs);
+    addRefs(record.messageRef);
+
+    return refs;
+}
+
+/**
+ * @param {any} ref Message ref.
+ * @param {any[]} chatMessages Current chat messages.
+ * @returns {boolean} True when ref cannot be trusted.
+ */
+function isInvalidDirectorMessageRef(ref, chatMessages) {
+    if (Number.isInteger(ref)) {
+        return ref < 0 || ref >= chatMessages.length || !chatMessages[ref];
+    }
+
+    if (typeof ref === 'string') {
+        return !ref.trim();
+    }
+
+    return true;
+}
+
+/**
+ * @param {object[]} history Director history records.
+ * @returns {boolean} True when history uses numeric chat indices.
+ */
+function hasNumericDirectorMessageRefs(history) {
+    return history.some((record) => getDirectorHistoryMessageRefs(record).some((ref) => Number.isInteger(ref)));
+}
+
+/**
+ * Filters Director history against current chat message refs.
+ * @param {any} history Source history.
+ * @param {any[]?} chatMessages Current chat messages.
+ * @param {{clearUnsafeNumericRefs?: boolean}} options Filtering options.
+ * @returns {object[]} Filtered history.
+ */
+function filterDirectorHistoryByMessageRefs(history, chatMessages = null, { clearUnsafeNumericRefs = false } = {}) {
+    const normalizedHistory = normalizeDirectorHistoryArray(history);
+
+    if (clearUnsafeNumericRefs && hasNumericDirectorMessageRefs(normalizedHistory)) {
+        return [];
+    }
+
+    if (!Array.isArray(chatMessages)) {
+        return normalizedHistory;
+    }
+
+    return normalizedHistory.filter((record) =>
+        getDirectorHistoryMessageRefs(record).every((ref) => !isInvalidDirectorMessageRef(ref, chatMessages)),
+    );
+}
+
+/**
+ * Clears Director decision-derived history.
+ * @param {GroupDirectorConfig} directorData Director state.
+ */
+function clearDecisionDerivedDirectorHistory(directorData) {
+    directorData.decisionHistory = [];
+    directorData.decisions = directorData.decisionHistory;
+    directorData.stateHistory = [];
+    directorData.lastDirections = null;
+}
+
+function syncDirectorLastDirectionsQueue(directorData) {
+    if (!directorData.lastDirections) {
+        return;
+    }
+
+    directorData.lastDirections.queue = Array.isArray(directorData.queue) ? [...directorData.queue] : [];
+}
+
+function clearDirectorLastDirectionsIfStale(directorData) {
+    if (!directorData.lastDirections?.timestamp) {
+        return;
+    }
+
+    const timestamp = directorData.lastDirections.timestamp;
+    const hasBackingHistory =
+        normalizeDirectorHistoryArray(directorData.decisionHistory).some((record) => record.timestamp === timestamp) ||
+        normalizeDirectorHistoryArray(directorData.stateHistory).some((record) => record.timestamp === timestamp);
+
+    if (!hasBackingHistory) {
+        directorData.lastDirections = null;
+    }
+}
+
+/**
+ * Clears Director fields derived from prior chat decisions.
+ * @param {GroupDirectorConfig} directorData Director state.
+ */
+function clearDecisionDerivedDirectorState(directorData) {
+    directorData.queue = [];
+    clearDecisionDerivedDirectorHistory(directorData);
+}
+
+/**
+ * Sanitizes normalized Director state for current group/chat.
+ * @param {Group} group Group to sanitize.
+ * @param {GroupDirectorConfig} directorData Director state.
+ * @param {{chatMessages?: any[]|null, clearUnsafeNumericRefs?: boolean, syncLastDirectionsQueue?: boolean}} options Sanitizing options.
+ */
+function sanitizeDirectorStateForGroup(
+    group,
+    directorData,
+    { chatMessages = null, clearUnsafeNumericRefs = false, syncLastDirectionsQueue = false } = {},
+) {
+    const memberSet = getDirectorGroupMemberSet(group);
+    directorData.queue = filterDirectorQueueForMembers(directorData.queue, memberSet);
+    directorData.controlledDisabledMembers = filterDirectorControlledDisabledMembers(directorData.controlledDisabledMembers, memberSet);
+    if (syncLastDirectionsQueue) {
+        syncDirectorLastDirectionsQueue(directorData);
+    }
+
+    const sourceDecisionHistory = Array.isArray(directorData.decisionHistory) ? directorData.decisionHistory : directorData.decisions;
+    const normalizedDecisionHistory = normalizeDirectorHistoryArray(sourceDecisionHistory);
+    const normalizedStateHistory = normalizeDirectorHistoryArray(directorData.stateHistory);
+    if (
+        clearUnsafeNumericRefs &&
+        (hasNumericDirectorMessageRefs(normalizedDecisionHistory) || hasNumericDirectorMessageRefs(normalizedStateHistory))
+    ) {
+        clearDecisionDerivedDirectorHistory(directorData);
+        return;
+    }
+
+    const filteredDecisionHistory = filterDirectorHistoryByMessageRefs(normalizedDecisionHistory, chatMessages, {
+        clearUnsafeNumericRefs: false,
+    });
+    const keptDecisions = new Set(filteredDecisionHistory);
+    const removedDecisionTimestamps = new Set(
+        normalizedDecisionHistory
+            .filter((record) => !keptDecisions.has(record))
+            .map((record) => (typeof record.timestamp === 'string' ? record.timestamp : ''))
+            .filter(Boolean),
+    );
+
+    directorData.decisionHistory = filteredDecisionHistory;
+    directorData.decisions = directorData.decisionHistory;
+
+    let stateHistory = filterDirectorHistoryByMessageRefs(normalizedStateHistory, chatMessages, { clearUnsafeNumericRefs: false });
+    if (removedDecisionTimestamps.size) {
+        stateHistory = stateHistory.filter((record) => !removedDecisionTimestamps.has(record.timestamp));
+        directorData.lastDirections = null;
+    }
+    directorData.stateHistory = stateHistory;
+}
+
+/**
+ * Filters Director state for current group/chat and reports if anything changed.
+ * @param {Group} group Group to sanitize.
+ * @param {{chatMessages?: any[]|null, clearUnsafeNumericRefs?: boolean}} options Sanitizing options.
+ * @returns {boolean} True if state changed.
+ */
+function filterDirectorStateForGroup(group, options = {}) {
+    const directorData = getDirectorData(group);
+    const before = JSON.stringify({
+        queue: directorData.queue,
+        controlledDisabledMembers: directorData.controlledDisabledMembers,
+        decisionHistory: directorData.decisionHistory,
+        stateHistory: directorData.stateHistory,
+        lastDirections: directorData.lastDirections,
+    });
+
+    sanitizeDirectorStateForGroup(group, directorData, { ...options, syncLastDirectionsQueue: true });
+
+    const after = JSON.stringify({
+        queue: directorData.queue,
+        controlledDisabledMembers: directorData.controlledDisabledMembers,
+        decisionHistory: directorData.decisionHistory,
+        stateHistory: directorData.stateHistory,
+        lastDirections: directorData.lastDirections,
+    });
+
+    return before !== after;
+}
+
+/**
+ * Recomputes Director state after the selected group's chat changes.
+ * @returns {Promise<boolean>} True when selected group state was recomputed.
+ */
+// eslint-disable-next-line no-unused-vars
+export async function recomputeDirectorStateAfterChatMutation() {
+    if (_directorRunning) {
+        _directorRecomputePending = true;
+        return false;
+    }
+
+    const selectedGroupId = selected_group;
+    const group = groups.find((x) => x.id === selectedGroupId);
+    if (!group) {
+        return false;
+    }
+
+    const directorData = getDirectorData(group);
+
+    reconcileDirectorControlledMutes(group);
+    filterDirectorStateForGroup(group, { chatMessages: chat, clearUnsafeNumericRefs: true });
+    clearDecisionDerivedDirectorState(directorData);
+    await saveDirectorStateAndRefreshPrompt(group, false);
+
+    if (selected_group === selectedGroupId && isDirectorStrategy(group)) {
+        await runDirector(group);
+    }
+
+    return true;
+}
+
+const scheduleDirectorRecomputeAfterChatMutation = debounce(() => {
+    recomputeDirectorStateAfterChatMutation().catch((error) => {
+        console.error('Director recompute failed after chat mutation:', error);
+    });
+}, 250);
+
+function getDirectorChatMutationEventTypes() {
+    const mutationEventTypes = [event_types.MESSAGE_DELETED, event_types.MESSAGE_SWIPE_DELETED];
+
+    for (const optionalEventType of [event_types.MESSAGE_REGENERATED, event_types.MESSAGE_UPDATED]) {
+        if (optionalEventType) {
+            mutationEventTypes.push(optionalEventType);
+        }
+    }
+
+    return [...new Set(mutationEventTypes.filter(Boolean))];
+}
+
+function registerDirectorChatMutationListeners() {
+    for (const eventType of getDirectorChatMutationEventTypes()) {
+        eventSource.on(eventType, scheduleDirectorRecomputeAfterChatMutation);
+    }
 }
 
 function readLegacyDirectorSettings(group, director) {
@@ -2739,17 +3102,21 @@ function getDirectorData(group) {
     d.settings = normalizeDirectorSettings(readLegacyDirectorSettings(group, d));
     d.journal = typeof d.journal === 'string' ? d.journal : defaults.journal;
     d.queue = Array.isArray(d.queue) ? d.queue : defaults.queue;
-    d.controlledDisabledMembers = Array.isArray(d.controlledDisabledMembers) ? d.controlledDisabledMembers : defaults.controlledDisabledMembers;
+    d.controlledDisabledMembers = Array.isArray(d.controlledDisabledMembers)
+        ? d.controlledDisabledMembers
+        : defaults.controlledDisabledMembers;
 
-    const decisionHistory = Array.isArray(d.decisionHistory) ? d.decisionHistory : (Array.isArray(d.decisions) ? d.decisions : defaults.decisionHistory);
+    const decisionHistory = Array.isArray(d.decisionHistory)
+        ? d.decisionHistory
+        : Array.isArray(d.decisions)
+            ? d.decisions
+            : defaults.decisionHistory;
     d.decisionHistory = decisionHistory;
     d.decisions = decisionHistory;
     d.stateHistory = Array.isArray(d.stateHistory) ? d.stateHistory : defaults.stateHistory;
     d.lastDirections = isPlainObject(d.lastDirections) ? d.lastDirections : null;
 
-    const memberSet = new Set(group.members || []);
-    d.queue = d.queue.filter(id => memberSet.has(id));
-    d.controlledDisabledMembers = d.controlledDisabledMembers.filter(id => memberSet.has(id));
+    sanitizeDirectorStateForGroup(group, d);
 
     group.director = d;
     return d;
@@ -2824,8 +3191,8 @@ function buildDirectorPrompt(group, contextMessages) {
     const directorDisabled = Array.isArray(d.controlledDisabledMembers) ? d.controlledDisabledMembers : [];
 
     // Build member state list
-    const memberStates = members.map(memberId => {
-        const char = characters.find(c => c.avatar === memberId);
+    const memberStates = members.map((memberId) => {
+        const char = characters.find((c) => c.avatar === memberId);
         const displayName = char?.name || memberId;
         let state = 'active';
         if (manualDisabled.includes(memberId)) {
@@ -2838,18 +3205,16 @@ function buildDirectorPrompt(group, contextMessages) {
         return { id: memberId, name: displayName, state };
     });
 
-    const memberStateText = memberStates
-        .map(m => `- ${m.name} (${m.id}): ${m.state}`)
+    const memberStateText = memberStates.map((m) => `- ${m.name} (${m.id}): ${m.state}`).join('\n');
+
+    const validMemberIds = members.filter((id) => !manualDisabled.includes(id)).join(', ');
+
+    const recentContext = contextMessages
+        .map((m) => {
+            const speaker = m.is_user ? m.name : m.name;
+            return `${speaker}: ${m.mes}`;
+        })
         .join('\n');
-
-    const validMemberIds = members
-        .filter(id => !manualDisabled.includes(id))
-        .join(', ');
-
-    const recentContext = contextMessages.map(m => {
-        const speaker = m.is_user ? m.name : m.name;
-        return `${speaker}: ${m.mes}`;
-    }).join('\n');
 
     const currentQueue = Array.isArray(d.queue) ? d.queue.join(', ') : '(empty)';
 
@@ -2954,14 +3319,12 @@ function parseDirectorResponse(raw) {
         if (typeof parsed.summary !== 'string') parsed.summary = '';
 
         // Validate individual actions
-        parsed.actions = parsed.actions.filter(a =>
-            a && typeof a === 'object' &&
-            typeof a.memberId === 'string' &&
-            ['leave', 'enter', 'stay'].includes(a.action),
+        parsed.actions = parsed.actions.filter(
+            (a) => a && typeof a === 'object' && typeof a.memberId === 'string' && ['leave', 'enter', 'stay'].includes(a.action),
         );
 
         // Validate queue entries are strings
-        parsed.queue = parsed.queue.filter(id => typeof id === 'string');
+        parsed.queue = parsed.queue.filter((id) => typeof id === 'string');
 
         return parsed;
     } catch {
@@ -2977,7 +3340,7 @@ function parseDirectorResponse(raw) {
 function getManualDisabledMembers(group) {
     const disabledMembers = Array.isArray(group.disabled_members) ? group.disabled_members : [];
     const directorControlled = Array.isArray(group.director?.controlledDisabledMembers) ? group.director.controlledDisabledMembers : [];
-    return disabledMembers.filter(id => !directorControlled.includes(id));
+    return disabledMembers.filter((id) => !directorControlled.includes(id));
 }
 
 /**
@@ -2989,10 +3352,10 @@ function reconcileDirectorControlledMutes(group) {
     const memberSet = new Set(group.members || []);
 
     // Filter stale members from controlled list
-    d.controlledDisabledMembers = d.controlledDisabledMembers.filter(id => memberSet.has(id));
+    d.controlledDisabledMembers = d.controlledDisabledMembers.filter((id) => memberSet.has(id));
 
-    // Ensure all Director-controlled mutes are in disabled_members
-    const disabledSet = new Set(group.disabled_members || []);
+    // Ensure all Director-controlled mutes are in disabled_members and remove stale mutes
+    const disabledSet = new Set((Array.isArray(group.disabled_members) ? group.disabled_members : []).filter((id) => memberSet.has(id)));
     for (const id of d.controlledDisabledMembers) {
         disabledSet.add(id);
     }
@@ -3059,9 +3422,7 @@ function applyDirectorDecision(group, parsed) {
     d.journal = parsed.journal;
 
     // Update queue: filter to valid, non-manual-disabled, eligible members, deduplicated, order preserved
-    const eligibleSet = new Set(
-        [...memberSet].filter(id => !manualDisabledSet.has(id)),
-    );
+    const eligibleSet = new Set([...memberSet].filter((id) => !manualDisabledSet.has(id)));
     const seen = new Set();
     const filteredQueue = [];
     for (const id of parsed.queue) {
@@ -3082,20 +3443,129 @@ function applyDirectorDecision(group, parsed) {
  * @returns {Promise<boolean>} Whether Director ran successfully
  */
 let _directorRunning = false;
+let _directorRecomputePending = false;
+let directorStatusHideTimer = null;
+let directorStatusToken = 0;
+
+async function drainPendingDirectorRecompute() {
+    if (!_directorRecomputePending) {
+        return;
+    }
+
+    _directorRecomputePending = false;
+    try {
+        await recomputeDirectorStateAfterChatMutation();
+    } catch (error) {
+        console.error('Director recompute failed after queued chat mutation:', error);
+    }
+}
+
+function clearDirectorStatusHideTimer() {
+    if (directorStatusHideTimer !== null) {
+        clearTimeout(directorStatusHideTimer);
+        directorStatusHideTimer = null;
+    }
+}
+
+function scheduleDirectorStatusHide(statusToken) {
+    directorStatusHideTimer = setTimeout(() => hideDirectorStatus(statusToken), 4000);
+}
+
+function getDirectorStatusElement() {
+    const status = $('#director_status');
+    return status.length ? status : null;
+}
+
+function getDirectorQueuePreviewText(queue) {
+    const labels = (Array.isArray(queue) ? queue : [])
+        .map((memberId) => {
+            const character = characters.find((c) => c.avatar === memberId);
+            return character?.name || memberId;
+        })
+        .filter(Boolean);
+
+    return labels.length ? `Director queue: ${labels.join(' → ')}` : 'Director queue empty.';
+}
+
+function setDirectorStatusRunning() {
+    clearDirectorStatusHideTimer();
+    directorStatusToken += 1;
+
+    const status = getDirectorStatusElement();
+    if (!status) {
+        return;
+    }
+
+    status.removeClass('preview').addClass('running').text('Director working…');
+}
+
+function setDirectorStatusPreview(queue) {
+    clearDirectorStatusHideTimer();
+    const statusToken = directorStatusToken + 1;
+    directorStatusToken = statusToken;
+
+    const status = getDirectorStatusElement();
+    if (!status) {
+        return;
+    }
+
+    status.removeClass('running').addClass('preview').text(getDirectorQueuePreviewText(queue));
+
+    scheduleDirectorStatusHide(statusToken);
+}
+
+function setDirectorStatusFailed() {
+    clearDirectorStatusHideTimer();
+    const statusToken = directorStatusToken + 1;
+    directorStatusToken = statusToken;
+
+    const status = getDirectorStatusElement();
+    if (!status) {
+        return;
+    }
+
+    status.removeClass('running').addClass('preview').text('Director failed.');
+
+    scheduleDirectorStatusHide(statusToken);
+}
+
+function hideDirectorStatus(statusToken = null) {
+    if (statusToken !== null && statusToken !== directorStatusToken) {
+        return;
+    }
+
+    clearDirectorStatusHideTimer();
+    directorStatusToken += 1;
+
+    const status = getDirectorStatusElement();
+    if (!status) {
+        return;
+    }
+
+    status.removeClass('running preview').text('');
+}
 
 async function runDirector(group) {
     const d = getDirectorData(group);
     const settings = d.settings;
 
     // Skip unless Director is the selected reply strategy.
-    if (!isDirectorStrategy(group)) return false;
+    if (!isDirectorStrategy(group)) {
+        refreshDirectorPromptInjectionForGroup(group);
+        return false;
+    }
 
     // Skip when no profile selected
-    if (!settings.connectionProfileId) return false;
+    if (!settings.connectionProfileId) {
+        refreshDirectorPromptInjectionForGroup(group);
+        return false;
+    }
 
     // Prevent duplicate concurrent runs
     if (_directorRunning) return false;
     _directorRunning = true;
+    let directorSucceeded = false;
+    setDirectorStatusRunning();
 
     try {
         // Reconcile controlled mutes first
@@ -3104,8 +3574,15 @@ async function runDirector(group) {
         // Resolve connection profile
         const directorProfile = getDirectorConnectionProfile(settings.connectionProfileId);
         if (!directorProfile) {
-            recordDirectorDecision(group, { rawResponse: '', parsed: null, appliedActions: [], error: 'Profile not found or incompatible', profileId: settings.connectionProfileId, settings });
-            await _save(group, true);
+            recordDirectorDecision(group, {
+                rawResponse: '',
+                parsed: null,
+                appliedActions: [],
+                error: 'Profile not found or incompatible',
+                profileId: settings.connectionProfileId,
+                settings,
+            });
+            await saveDirectorStateAndRefreshPrompt(group, true);
             return false;
         }
         settings.connectionProfileId = directorProfile.id;
@@ -3132,9 +3609,10 @@ async function runDirector(group) {
             if (typeof response === 'function') {
                 throw new Error('Director request unexpectedly returned a streaming response');
             }
-            rawResponse = response && typeof response === 'object' && 'content' in response && typeof response.content === 'string'
-                ? response.content
-                : JSON.stringify(response ?? '');
+            rawResponse =
+                response && typeof response === 'object' && 'content' in response && typeof response.content === 'string'
+                    ? response.content
+                    : JSON.stringify(response ?? '');
         } catch (genError) {
             error = String(genError?.cause?.message || genError?.message || genError);
         }
@@ -3147,7 +3625,7 @@ async function runDirector(group) {
             parsed = parseDirectorResponse(rawResponse);
             if (parsed) {
                 // Check if group/director state is still valid before applying
-                const currentGroup = groups.find(g => g.id === group.id);
+                const currentGroup = groups.find((g) => g.id === group.id);
                 if (!currentGroup || !isDirectorStrategy(currentGroup)) {
                     error = 'Group changed or Director strategy was changed before completion';
                     appliedActions = [];
@@ -3172,11 +3650,18 @@ async function runDirector(group) {
         });
 
         // Save group after recording decision
-        await _save(group, true);
+        await saveDirectorStateAndRefreshPrompt(group, true);
 
-        return !error;
+        directorSucceeded = !error;
+        return directorSucceeded;
     } finally {
         _directorRunning = false;
+        if (directorSucceeded) {
+            setDirectorStatusPreview(getDirectorData(group).queue);
+        } else {
+            setDirectorStatusFailed();
+        }
+        await drainPendingDirectorRecompute();
     }
 }
 
@@ -3185,7 +3670,10 @@ async function runDirector(group) {
  * @param {Group} group
  * @param {object} params
  */
-function recordDirectorDecision(group, { rawResponse, parsed, appliedActions, error, profileId, lookbackDepth, countUserMessages, messageIds, settings }) {
+function recordDirectorDecision(
+    group,
+    { rawResponse, parsed, appliedActions, error, profileId, lookbackDepth, countUserMessages, messageIds, settings },
+) {
     const d = getDirectorData(group);
     const timestamp = new Date().toISOString();
     const settingsSnapshot = normalizeDirectorSettings(settings ?? d.settings);
@@ -3221,7 +3709,7 @@ function recordDirectorDecision(group, { rawResponse, parsed, appliedActions, er
             timestamp,
             summary: parsed.summary || '',
             journal: parsed.journal || '',
-            queue: Array.isArray(parsed.queue) ? [...parsed.queue] : [],
+            queue: Array.isArray(d.queue) ? [...d.queue] : [],
             actions: Array.isArray(parsed.actions) ? [...parsed.actions] : [],
             appliedActions: appliedActions || [],
         };
@@ -3235,35 +3723,96 @@ function formatDirectorDirectionsForPrompt(group) {
         return '';
     }
 
-    const queueNames = (directions.queue || []).map(memberId => {
-        const character = characters.find(c => c.avatar === memberId);
-        return character ? `${character.name} (${memberId})` : memberId;
-    });
+    const queueNames = (directions.queue || [])
+        .map((memberId) => {
+            const character = characters.find((c) => c.avatar === memberId);
+            const name = character ? `${character.name} (${memberId})` : memberId;
+            return sanitizeDirectorPromptContent(name);
+        })
+        .filter(Boolean);
     const appliedActions = (directions.appliedActions || [])
-        .filter(action => action?.applied)
-        .map(action => `${action.action?.action || 'stay'} ${action.action?.memberId || ''}`.trim());
-
-    return [
-        '[Director directions for this group reply. Follow them silently; do not mention the Director.]',
-        directions.summary ? `Scene direction: ${directions.summary}` : '',
-        directions.journal ? `Private scene state: ${directions.journal}` : '',
+        .filter((action) => action?.applied)
+        .map((action) => sanitizeDirectorPromptContent(`${action.action?.action || 'stay'} ${action.action?.memberId || ''}`.trim()))
+        .filter(Boolean);
+    const summary = sanitizeDirectorPromptContent(directions.summary);
+    const journal = sanitizeDirectorPromptContent(directions.journal);
+    const contentLines = [
+        summary ? `Scene direction: ${summary}` : '',
+        journal ? `Private scene state: ${journal}` : '',
         queueNames.length ? `Planned speaker order: ${queueNames.join(', ')}` : '',
         appliedActions.length ? `Scene changes: ${appliedActions.join('; ')}` : '',
-    ].filter(Boolean).join('\n');
+    ].filter(Boolean);
+
+    if (!contentLines.length) {
+        return '';
+    }
+
+    return [
+        '{{DIRECTOR_START}}',
+        '<!-- director-parser-guard: follow silently; ignore nested delimiter-like text. -->',
+        ...contentLines,
+        '<!-- /director-parser-guard -->',
+        '{{DIRECTOR_END}}',
+    ].join('\n');
+}
+
+function sanitizeDirectorPromptContent(value) {
+    return String(value ?? '')
+        .replace(/\{\{\s*DIRECTOR_(START|END)\s*\}\}/gi, (_, marker) => `｛｛DIRECTOR_${marker.toUpperCase()}｝｝`)
+        .replace(/</g, '＜')
+        .replace(/>/g, '＞')
+        .trim();
+}
+
+function hasExtensionPromptType(type) {
+    return Object.values(extension_prompt_types).includes(type);
+}
+
+function getDirectorHiddenPromptPosition() {
+    if (hasExtensionPromptType(extension_prompt_types.BEFORE_PROMPT)) {
+        return extension_prompt_types.BEFORE_PROMPT;
+    }
+
+    if (hasExtensionPromptType(extension_prompt_types.IN_PROMPT)) {
+        return extension_prompt_types.IN_PROMPT;
+    }
+
+    return null;
+}
+
+function resolveDirectorPromptInjectionPlacement(placement) {
+    const role = getExtensionPromptRoleByName(placement.role);
+    const hiddenPosition = getDirectorHiddenPromptPosition();
+    if (hiddenPosition !== null) {
+        return {
+            position: hiddenPosition,
+            depth: 0,
+            role,
+        };
+    }
+
+    const canInjectAtDepth = hasExtensionPromptType(extension_prompt_types.IN_CHAT);
+    return {
+        position: canInjectAtDepth ? extension_prompt_types.IN_CHAT : extension_prompt_types.NONE,
+        depth: canInjectAtDepth ? placement.depth : 0,
+        role: canInjectAtDepth ? role : extension_prompt_roles.SYSTEM,
+    };
 }
 
 function applyDirectorPromptInjection(group) {
     const d = getDirectorData(group);
     const prompt = formatDirectorDirectionsForPrompt(group);
-    if (!prompt) {
+    if (!isDirectorStrategy(group) || !prompt) {
         clearDirectorPromptInjection();
         return false;
     }
 
     const placement = normalizeDirectorPromptPlacement(d.settings.promptPlacement);
-    const position = placement.type === 'in_chat' ? extension_prompt_types.IN_CHAT : extension_prompt_types.IN_PROMPT;
-    const depth = placement.type === 'in_chat' ? placement.depth : 0;
-    const role = getExtensionPromptRoleByName(placement.role);
+    const { position, depth, role } = resolveDirectorPromptInjectionPlacement(placement);
+    if (position === extension_prompt_types.NONE) {
+        clearDirectorPromptInjection();
+        return false;
+    }
 
     setExtensionPrompt(DIRECTOR_EXTENSION_PROMPT_KEY, prompt, position, depth, false, role);
     return true;
@@ -3271,6 +3820,31 @@ function applyDirectorPromptInjection(group) {
 
 function clearDirectorPromptInjection() {
     setExtensionPrompt(DIRECTOR_EXTENSION_PROMPT_KEY, '', extension_prompt_types.NONE, 0, false, extension_prompt_roles.SYSTEM);
+}
+
+function refreshDirectorPromptInjectionForGroup(group) {
+    if (group && group.id === selected_group && isDirectorStrategy(group)) {
+        return applyDirectorPromptInjection(group);
+    }
+
+    clearDirectorPromptInjection();
+    return false;
+}
+
+function prepareDirectorStateForSave(group) {
+    if (!group) {
+        return;
+    }
+
+    const directorData = getDirectorData(group);
+    reconcileDirectorControlledMutes(group);
+    sanitizeDirectorStateForGroup(group, directorData, { syncLastDirectionsQueue: true });
+}
+
+async function saveDirectorStateAndRefreshPrompt(group, reload = false) {
+    prepareDirectorStateForSave(group);
+    await _save(group, reload);
+    refreshDirectorPromptInjectionForGroup(group);
 }
 
 /**
@@ -3289,7 +3863,7 @@ function getDirectorConnectionProfile(profileId) {
             return null;
         }
 
-        const profile = profiles.find(p => p.id === profileId || p.name === profileId);
+        const profile = profiles.find((p) => p.id === profileId || p.name === profileId);
         if (!profile) {
             return null;
         }
@@ -3330,7 +3904,7 @@ function getDirectorActivationOverride(group) {
         // Must not be currently disabled
         if (disabledSet.has(avatarId)) continue;
         // Find character index
-        const chId = characters.findIndex(c => c.avatar === avatarId);
+        const chId = characters.findIndex((c) => c.avatar === avatarId);
         if (chId !== -1 && !result.includes(chId)) {
             result.push(chId);
         }
@@ -3353,6 +3927,7 @@ function consumeDirectorQueueSpeaker(group, memberId) {
 
     if (d.queue[0] === memberId) {
         d.queue.shift();
+        syncDirectorLastDirectionsQueue(d);
         return true;
     }
 
@@ -3362,9 +3937,9 @@ function consumeDirectorQueueSpeaker(group, memberId) {
     }
 
     d.queue.splice(index, 1);
+    syncDirectorLastDirectionsQueue(d);
     return true;
 }
-
 
 /**
  * Loads/migrates Director settings from the group.
@@ -3396,25 +3971,20 @@ function loadDirectorSettings(group) {
     }
 }
 
-function createDirectorJsonDetails(summaryText, value) {
-    const details = $('<details></details>');
-    details.append($('<summary></summary>').text(summaryText));
-    details.append($('<pre class="monospace"></pre>').text(JSON.stringify(value ?? null, null, 2)));
-    return details;
-}
-
 function appendDirectorProfileOptions(select, selectedProfileId) {
     select.empty();
     select.append($('<option></option>').attr('value', '').attr('data-i18n', 'None').text('None'));
 
     const profiles = extension_settings.connectionManager?.profiles || [];
     const sorted = [...profiles]
-        .filter(profile => getDirectorConnectionProfile(profile.id))
+        .filter((profile) => getDirectorConnectionProfile(profile.id))
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
     let foundSelected = false;
     for (const profile of sorted) {
-        const option = $('<option></option>').attr('value', profile.id).text(profile.name || 'Unnamed');
+        const option = $('<option></option>')
+            .attr('value', profile.id)
+            .text(profile.name || 'Unnamed');
         if (profile.id === selectedProfileId || profile.name === selectedProfileId) {
             option.prop('selected', true);
             foundSelected = true;
@@ -3423,8 +3993,272 @@ function appendDirectorProfileOptions(select, selectedProfileId) {
     }
 
     if (selectedProfileId && !foundSelected) {
-        select.append($('<option></option>').attr('value', selectedProfileId).text(`${selectedProfileId} (missing)`).prop('selected', true).prop('disabled', true));
+        select.append(
+            $('<option></option>')
+                .attr('value', selectedProfileId)
+                .text(`${selectedProfileId} (missing)`)
+                .prop('selected', true)
+                .prop('disabled', true),
+        );
     }
+}
+
+function getDirectorMemberLabel(memberId) {
+    const character = characters.find((c) => c.avatar === memberId || c.name === memberId);
+    return character ? `${character.name} (${memberId})` : memberId;
+}
+
+function appendDirectorMemberOptions(select, group, selectedMemberId = '') {
+    select.empty();
+    select.append($('<option></option>').attr('value', '').text('(none)'));
+
+    for (const memberId of group.members || []) {
+        select.append($('<option></option>').attr('value', memberId).text(getDirectorMemberLabel(memberId)));
+    }
+
+    select.val(selectedMemberId);
+}
+
+function createDirectorSection(title, description = '') {
+    const section = $('<details open></details>');
+    section.append($('<summary></summary>').text(title));
+    if (description) {
+        section.append($('<p class="notes"></p>').text(description));
+    }
+    return section;
+}
+
+function createDirectorQueueEditor(group, queue) {
+    const section = createDirectorSection('Speaker Queue', 'Order members for upcoming Director-controlled replies.');
+    const list = $('<div id="director_inspector_queue" class="flexFlowColumn flexGap5"></div>');
+
+    const appendQueueRow = (memberId = '') => {
+        const row = $('<div class="director_inspector_queue_row flex-container alignItemsCenter flexGap5"></div>');
+        const select = $('<select class="director_inspector_queue_member text_pole wide100p"></select>');
+        appendDirectorMemberOptions(select, group, memberId);
+        row.append(select);
+        row.append($('<button type="button" class="menu_button director_inspector_queue_up">↑</button>').attr('title', 'Move up'));
+        row.append($('<button type="button" class="menu_button director_inspector_queue_down">↓</button>').attr('title', 'Move down'));
+        row.append($('<button type="button" class="menu_button director_inspector_queue_remove">Remove</button>'));
+        list.append(row);
+    };
+
+    for (const memberId of queue || []) {
+        appendQueueRow(memberId);
+    }
+
+    const actions = $('<div class="flex-container flexGap5"></div>');
+    actions.append($('<button id="director_inspector_queue_add" type="button" class="menu_button">Add Queue Entry</button>'));
+    actions.append($('<button id="director_inspector_queue_clear" type="button" class="menu_button">Clear Queue</button>'));
+    section.append(list, actions);
+    section.data('appendQueueRow', appendQueueRow);
+    return section;
+}
+
+function createDirectorControlledMutesEditor(group, controlledDisabledMembers) {
+    const section = createDirectorSection(
+        'Director-controlled Disabled Members',
+        'Checked members are muted by Director state, not manual group mute.',
+    );
+    const list = $('<div id="director_inspector_controlled_mutes" class="flexFlowColumn flexGap5"></div>');
+    const controlledSet = new Set(controlledDisabledMembers || []);
+
+    for (const memberId of group.members || []) {
+        const id = `director_inspector_controlled_mute_${memberId.replace(/[^a-z0-9_-]/gi, '_')}`;
+        const label = $('<label class="checkbox_label"></label>');
+        label.append(
+            $('<input type="checkbox" class="director_inspector_controlled_mute">')
+                .attr('id', id)
+                .attr('value', memberId)
+                .prop('checked', controlledSet.has(memberId)),
+        );
+        label.append($('<span></span>').text(getDirectorMemberLabel(memberId)));
+        list.append(label);
+    }
+
+    if (!Array.isArray(group.members) || !group.members.length) {
+        list.append($('<p></p>').text('No group members available.'));
+    }
+
+    section.append(list);
+    section.append($('<button id="director_inspector_mutes_clear" type="button" class="menu_button">Clear Director Mutes</button>'));
+    return section;
+}
+
+function getDirectorHistorySummary(record, fallback) {
+    const summary = record?.parsed?.summary || record?.state?.summary || record?.error || record?.rawResponse || record?.rawOutput || '';
+    const timestamp = record?.timestamp || fallback;
+    return summary ? `${timestamp} — ${String(summary).slice(0, 160)}` : timestamp;
+}
+
+function createDirectorHistoryRemovalSection(title, history, type) {
+    const section = createDirectorSection(title, 'Select entries to remove on save.');
+    const list = $('<div class="director_inspector_history flexFlowColumn flexGap5"></div>');
+    const idPrefix = type === 'decision' ? 'director_inspector_remove_decision' : 'director_inspector_remove_state';
+    const className = type === 'decision' ? 'director_inspector_remove_decision' : 'director_inspector_remove_state';
+    const records = Array.isArray(history) ? history.map((record, index) => ({ record, index })).reverse() : [];
+
+    if (records.length) {
+        for (const { record, index } of records) {
+            const checkboxId = `${idPrefix}_${index}`;
+            const label = $('<label class="checkbox_label"></label>');
+            label.append($('<input type="checkbox">').addClass(className).attr('id', checkboxId).attr('value', String(index)));
+            label.append($('<span></span>').text(getDirectorHistorySummary(record, `${title} #${index + 1}`)));
+            list.append(label);
+        }
+    } else {
+        list.append($('<p></p>').text('No entries recorded.'));
+    }
+
+    const clearButtonId = type === 'decision' ? 'director_inspector_decisions_clear' : 'director_inspector_states_clear';
+    section.append(list);
+    section.append(
+        $('<button type="button" class="menu_button"></button>')
+            .attr('id', clearButtonId)
+            .text(`Mark All ${type === 'decision' ? 'Decisions' : 'State Records'} for Removal`),
+    );
+    return section;
+}
+
+function createDirectorLastDirectionsSummary(directions) {
+    const section = createDirectorSection('Last Directions', 'Most recent Director output used for prompt directions.');
+    if (!directions) {
+        section.append($('<p></p>').text('No directions recorded.'));
+        return section;
+    }
+
+    const fields = [
+        ['Timestamp', directions.timestamp || 'Unknown'],
+        ['Summary', directions.summary || '(empty)'],
+        ['Journal', directions.journal || '(empty)'],
+        [
+            'Queue',
+            Array.isArray(directions.queue) && directions.queue.length
+                ? directions.queue.map(getDirectorMemberLabel).join(', ')
+                : '(empty)',
+        ],
+        [
+            'Actions',
+            Array.isArray(directions.actions) && directions.actions.length
+                ? directions.actions.map((action) => `${action.action || 'stay'} ${action.memberId || ''}`.trim()).join('; ')
+                : '(empty)',
+        ],
+    ];
+
+    const list = $('<dl></dl>');
+    for (const [label, value] of fields) {
+        list.append($('<dt></dt>').text(label));
+        list.append($('<dd></dd>').text(value));
+    }
+    section.append(list);
+    return section;
+}
+
+function readDirectorQueueFromInspector(group) {
+    const queue = [];
+
+    $('#director_inspector_queue .director_inspector_queue_member').each(function () {
+        queue.push(String($(this).val() || ''));
+    });
+
+    return filterDirectorQueueForMembers(queue, group);
+}
+
+function readDirectorControlledMutesFromInspector(group) {
+    return filterDirectorControlledDisabledMembers(
+        $('.director_inspector_controlled_mute:checked')
+            .map((_, input) => String($(input).val() || ''))
+            .get(),
+        group,
+    );
+}
+
+function buildDirectorDisabledMembersForInspectorSave(group, previousControlledMutes, nextControlledMutes) {
+    const previousControlledSet = new Set(normalizeDirectorMemberIdList(previousControlledMutes));
+    const disabledSet = new Set(
+        (Array.isArray(group?.disabled_members) ? group.disabled_members : []).filter(
+            (memberId) => typeof memberId === 'string' && !previousControlledSet.has(memberId),
+        ),
+    );
+
+    for (const memberId of filterDirectorControlledDisabledMembers(nextControlledMutes, group)) {
+        disabledSet.add(memberId);
+    }
+
+    return [...disabledSet];
+}
+
+function readDirectorHistoryRemovalIndexes(selector) {
+    return new Set(
+        $(selector)
+            .map((_, input) => Number($(input).val()))
+            .get()
+            .filter((index) => Number.isInteger(index) && index >= 0),
+    );
+}
+
+function removeDirectorHistoryByOriginalIndexes(history, removalIndexes) {
+    const source = Array.isArray(history) ? history : [];
+    const indexes = removalIndexes instanceof Set ? removalIndexes : new Set();
+    return normalizeDirectorHistoryArray(source.filter((_, index) => !indexes.has(index)));
+}
+
+/**
+ * Applies validated Inspector edits to Director state.
+ * @param {Group} group Group to update.
+ * @param {object} edits Inspector edits.
+ * @param {any} edits.settings Director settings.
+ * @param {any} edits.journal Director journal.
+ * @param {any} edits.queue Queue member IDs.
+ * @param {any} edits.controlledDisabledMembers Director-controlled mutes.
+ * @param {Set<number>} edits.decisionRemovalIndexes Decision history indexes to remove.
+ * @param {Set<number>} edits.stateRemovalIndexes State history indexes to remove.
+ * @param {boolean} edits.clearAll Whether to clear all Director state.
+ * @returns {GroupDirectorConfig} Updated Director state.
+ */
+function applyDirectorInspectorStateToGroup(
+    group,
+    {
+        settings,
+        journal = '',
+        queue = [],
+        controlledDisabledMembers = [],
+        decisionRemovalIndexes = new Set(),
+        stateRemovalIndexes = new Set(),
+        clearAll = false,
+    },
+) {
+    const directorData = getDirectorData(group);
+    const previousControlledMutes = [...directorData.controlledDisabledMembers];
+
+    directorData.settings = normalizeDirectorSettings(settings);
+
+    if (clearAll) {
+        directorData.journal = '';
+        directorData.queue = [];
+        directorData.controlledDisabledMembers = [];
+        directorData.decisionHistory = [];
+        directorData.decisions = directorData.decisionHistory;
+        directorData.stateHistory = [];
+        directorData.lastDirections = null;
+    } else {
+        directorData.journal = String(journal || '');
+        directorData.queue = filterDirectorQueueForMembers(queue, group);
+        directorData.controlledDisabledMembers = filterDirectorControlledDisabledMembers(controlledDisabledMembers, group);
+        directorData.decisionHistory = removeDirectorHistoryByOriginalIndexes(directorData.decisionHistory, decisionRemovalIndexes);
+        directorData.decisions = directorData.decisionHistory;
+        directorData.stateHistory = removeDirectorHistoryByOriginalIndexes(directorData.stateHistory, stateRemovalIndexes);
+        clearDirectorLastDirectionsIfStale(directorData);
+    }
+
+    group.disabled_members = buildDirectorDisabledMembersForInspectorSave(
+        group,
+        previousControlledMutes,
+        directorData.controlledDisabledMembers,
+    );
+    reconcileDirectorControlledMutes(group);
+    syncDirectorLastDirectionsQueue(directorData);
+    return directorData;
 }
 
 /**
@@ -3432,7 +4266,7 @@ function appendDirectorProfileOptions(select, selectedProfileId) {
  */
 async function openDirectorInspectorModal() {
     const originalGroupId = selected_group;
-    const group = groups.find(x => x.id === originalGroupId);
+    const group = groups.find((x) => x.id === originalGroupId);
     if (!group) {
         toastr.warning(t`Open a group before configuring Director.`);
         return;
@@ -3441,7 +4275,7 @@ async function openDirectorInspectorModal() {
     const d = getDirectorData(group);
     const settings = normalizeDirectorSettings(d.settings);
     const placement = settings.promptPlacement;
-    const content = $('<div class="director_inspector flexFlowColumn flexGap10"></div>');
+    const content = $('<div class="director_inspector flex flexFlowColumn flexGap10"></div>');
 
     content.append($('<h3></h3>').text('Director Settings'));
 
@@ -3452,7 +4286,9 @@ async function openDirectorInspectorModal() {
     settingsGrid.append(profileSelect);
 
     settingsGrid.append($('<label for="director_inspector_lookback"></label>').text('Lookback Depth'));
-    settingsGrid.append($('<input id="director_inspector_lookback" class="text_pole" type="number" min="0" step="1">').val(settings.lookbackDepth));
+    settingsGrid.append(
+        $('<input id="director_inspector_lookback" class="text_pole" type="number" min="0" step="1">').val(settings.lookbackDepth),
+    );
 
     const countLabel = $('<label class="checkbox_label"></label>');
     countLabel.append($('<input id="director_inspector_count_user" type="checkbox">').prop('checked', settings.countUserMessages));
@@ -3469,7 +4305,11 @@ async function openDirectorInspectorModal() {
     settingsGrid.append($('<label for="director_inspector_role"></label>').text('Prompt Role'));
     const roleSelect = $('<select id="director_inspector_role" class="text_pole wide100p"></select>');
     for (const role of ['system', 'user', 'assistant']) {
-        roleSelect.append($('<option></option>').attr('value', role).text(role[0].toUpperCase() + role.slice(1)));
+        roleSelect.append(
+            $('<option></option>')
+                .attr('value', role)
+                .text(role[0].toUpperCase() + role.slice(1)),
+        );
     }
     roleSelect.val(placement.role);
     settingsGrid.append(roleSelect);
@@ -3482,63 +4322,139 @@ async function openDirectorInspectorModal() {
     content.append(settingsGrid);
 
     content.append($('<h3></h3>').text('Inspector'));
-    content.append(createDirectorJsonDetails('Last Directions', d.lastDirections || null));
 
-    const stateHistory = Array.isArray(d.stateHistory) ? [...d.stateHistory].reverse() : [];
-    const stateSection = $('<details open></details>').append($('<summary></summary>').text(`Structured State History (${stateHistory.length})`));
-    if (stateHistory.length) {
-        for (const record of stateHistory) {
-            stateSection.append(createDirectorJsonDetails(record.timestamp || 'State Record', record));
-        }
-    } else {
-        stateSection.append($('<p></p>').text('No Director state records yet.'));
-    }
-    content.append(stateSection);
+    const journalSection = createDirectorSection('Journal', 'Private Director notes sent to future Director runs.');
+    journalSection.append(
+        $('<textarea id="director_inspector_journal" class="text_pole textarea_compact autoSetHeight wide100p" rows="6"></textarea>').val(
+            d.journal || '',
+        ),
+    );
+    journalSection.append($('<button id="director_inspector_journal_clear" type="button" class="menu_button">Clear Journal</button>'));
+    content.append(journalSection);
 
-    const decisions = Array.isArray(d.decisionHistory) ? [...d.decisionHistory].reverse() : [];
-    const decisionSection = $('<details></details>').append($('<summary></summary>').text(`Decision History (${decisions.length})`));
-    if (decisions.length) {
-        for (const decision of decisions) {
-            const summary = `${decision.timestamp || 'Unknown'} — ${decision.parsed?.summary || decision.error || '(no summary)'}`;
-            decisionSection.append(createDirectorJsonDetails(summary, decision));
-        }
-    } else {
-        decisionSection.append($('<p></p>').text('No Director decisions recorded yet.'));
-    }
-    content.append(decisionSection);
+    const queueSection = createDirectorQueueEditor(group, d.queue);
+    content.append(queueSection);
+    content.append(createDirectorControlledMutesEditor(group, d.controlledDisabledMembers));
+    content.append(createDirectorLastDirectionsSummary(d.lastDirections));
+    content.append(
+        createDirectorHistoryRemovalSection(
+            `Decision History (${Array.isArray(d.decisionHistory) ? d.decisionHistory.length : 0})`,
+            d.decisionHistory,
+            'decision',
+        ),
+    );
+    content.append(
+        createDirectorHistoryRemovalSection(
+            `State History (${Array.isArray(d.stateHistory) ? d.stateHistory.length : 0})`,
+            d.stateHistory,
+            'state',
+        ),
+    );
 
-    const popup = new Popup(content, POPUP_TYPE.CONFIRM, null, { large: true, okButton: 'Save', cancelButton: 'Cancel', allowVerticalScrolling: true, leftAlign: true });
+    content.append(
+        $('<button id="director_inspector_history_clear" type="button" class="menu_button">Mark All History for Removal</button>'),
+    );
+
+    const clearAllControls = $('<div class="flexFlowColumn flexFlowRow flexGap5"></div>');
+    clearAllControls.append(
+        $('<button id="director_inspector_all_clear" type="button" class="menu_button danger_button">Clear All Director State</button>'),
+    );
+    clearAllControls.append(
+        $('<p id="director_inspector_all_clear_status" class="notes"></p>').text(
+            'Clears journal, queue, Director mutes, histories, and last directions on save. Confirmation required.',
+        ),
+    );
+    content.append(clearAllControls);
+    content.data('clearAllDirectorState', false);
+
+    content.on('input', '#director_inspector_journal', function () {
+        resetScrollHeight($(this));
+    });
+    content.on('click', '#director_inspector_journal_clear', () => $('#director_inspector_journal').val('').trigger('input'));
+    content.on('click', '#director_inspector_queue_add', () => queueSection.data('appendQueueRow')(''));
+    content.on('click', '#director_inspector_queue_clear', () => $('#director_inspector_queue').empty());
+    content.on('click', '.director_inspector_queue_remove', function () {
+        $(this).closest('.director_inspector_queue_row').remove();
+    });
+    content.on('click', '.director_inspector_queue_up', function () {
+        const row = $(this).closest('.director_inspector_queue_row');
+        row.prev('.director_inspector_queue_row').before(row);
+    });
+    content.on('click', '.director_inspector_queue_down', function () {
+        const row = $(this).closest('.director_inspector_queue_row');
+        row.next('.director_inspector_queue_row').after(row);
+    });
+    content.on('click', '#director_inspector_mutes_clear', () => $('.director_inspector_controlled_mute').prop('checked', false));
+    content.on('click', '#director_inspector_decisions_clear', () => $('.director_inspector_remove_decision').prop('checked', true));
+    content.on('click', '#director_inspector_states_clear', () => $('.director_inspector_remove_state').prop('checked', true));
+    content.on('click', '#director_inspector_history_clear', () =>
+        $('.director_inspector_remove_decision, .director_inspector_remove_state').prop('checked', true),
+    );
+    content.on('click', '#director_inspector_all_clear', () => {
+        content.data('clearAllDirectorState', true);
+        $('#director_inspector_journal').val('').trigger('input');
+        $('#director_inspector_queue').empty();
+        $('.director_inspector_controlled_mute').prop('checked', false);
+        $('.director_inspector_remove_decision, .director_inspector_remove_state').prop('checked', true);
+        $('#director_inspector_all_clear_status').text('All Director state marked for clearing on save. Confirmation required.');
+    });
+
+    const popup = new Popup(content, POPUP_TYPE.CONFIRM, null, {
+        large: true,
+        okButton: 'Save',
+        cancelButton: 'Cancel',
+        allowVerticalScrolling: true,
+        leftAlign: true,
+    });
     popup.onClose = async (closedPopup) => {
         if (closedPopup.result !== POPUP_RESULT.AFFIRMATIVE) {
             return;
         }
 
-        const currentGroup = groups.find(x => x.id === originalGroupId);
+        const currentGroup = groups.find((x) => x.id === originalGroupId);
         if (!currentGroup) {
             toastr.error(t`Director settings were not saved because the group no longer exists.`);
             return;
         }
 
-        const directorData = getDirectorData(currentGroup);
-        directorData.settings = normalizeDirectorSettings({
-            connectionProfileId: String($('#director_inspector_profile').val() || ''),
-            lookbackDepth: $('#director_inspector_lookback').val(),
-            countUserMessages: !!$('#director_inspector_count_user').prop('checked'),
-            promptPlacement: {
-                type: String($('#director_inspector_placement').val() || 'relative'),
-                role: String($('#director_inspector_role').val() || 'system'),
-                depth: $('#director_inspector_depth').val(),
-                order: $('#director_inspector_order').val(),
+        const clearAll = !!content.data('clearAllDirectorState');
+        if (clearAll) {
+            const confirmClear = await callGenericPopup(t`Clear all Director state? This cannot be undone.`, POPUP_TYPE.CONFIRM);
+            if (confirmClear !== POPUP_RESULT.AFFIRMATIVE) {
+                toastr.info(t`Director state was not cleared.`);
+                return;
+            }
+        }
+
+        applyDirectorInspectorStateToGroup(currentGroup, {
+            settings: {
+                connectionProfileId: String($('#director_inspector_profile').val() || ''),
+                lookbackDepth: $('#director_inspector_lookback').val(),
+                countUserMessages: !!$('#director_inspector_count_user').prop('checked'),
+                promptPlacement: {
+                    type: String($('#director_inspector_placement').val() || 'relative'),
+                    role: String($('#director_inspector_role').val() || 'system'),
+                    depth: $('#director_inspector_depth').val(),
+                    order: $('#director_inspector_order').val(),
+                },
             },
+            journal: $('#director_inspector_journal').val(),
+            queue: readDirectorQueueFromInspector(currentGroup),
+            controlledDisabledMembers: readDirectorControlledMutesFromInspector(currentGroup),
+            decisionRemovalIndexes: readDirectorHistoryRemovalIndexes('.director_inspector_remove_decision:checked'),
+            stateRemovalIndexes: readDirectorHistoryRemovalIndexes('.director_inspector_remove_state:checked'),
+            clearAll,
         });
 
-        await editGroup(currentGroup.id, true, false);
-        toastr.success(t`Director settings saved.`);
+        await saveDirectorStateAndRefreshPrompt(currentGroup, false);
+        toastr.success(clearAll ? t`Director state cleared.` : t`Director settings saved.`);
     };
     await popup.show();
 }
 
 jQuery(() => {
+    registerDirectorChatMutationListeners();
+
     if (!CSS.supports('field-sizing', 'content')) {
         $(document).on('input', '#rm_group_chats_block .autoSetHeight', function () {
             resetScrollHeight($(this));
