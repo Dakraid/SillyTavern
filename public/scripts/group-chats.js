@@ -123,6 +123,7 @@ export {
     select_group_chats,
     getGroupChatNames,
     normalizeDirectorMemberIdList,
+    normalizeDirectorQueueArray,
     normalizeDirectorHistoryArray,
     filterDirectorQueueForMembers,
     filterDirectorControlledDisabledMembers,
@@ -1068,6 +1069,30 @@ function getGroupChatNames(groupId) {
 }
 
 /**
+ * Checks if Director should run before assistant generation.
+ * @param {string?} type Generation type.
+ * @param {boolean} by_auto_mode If generation was triggered by auto mode.
+ * @returns {boolean} True when Director can run pre-generation.
+ */
+function shouldRunDirectorBeforeAssistantGeneration(type, by_auto_mode) {
+    if (by_auto_mode) {
+        return false;
+    }
+
+    return !['auto', 'quiet', 'impersonate'].includes(type);
+}
+
+/**
+ * Checks if a Director queue may override the activated group member.
+ * @param {string?} type Generation type.
+ * @param {boolean} by_auto_mode If generation was triggered by auto mode.
+ * @returns {boolean} True when Director queue can select the active speaker.
+ */
+function shouldUseDirectorActivationOverride(type, by_auto_mode) {
+    return by_auto_mode || !type || type === 'normal';
+}
+
+/**
  * Generates text for the group chat by queueing members according to the activation strategy.
  * @param {boolean} byAutoMode If the generation was triggered by the auto mode.
  * @param {string?} type Generation type
@@ -1145,6 +1170,40 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             if (activatedMembers.length === 0) {
                 activatedMembers = activateListOrder(group.members.slice(0, 1));
             }
+        } else if (type === 'impersonate') {
+            activatedMembers = activateImpersonate(group.members);
+        } else if (activationStrategy === group_activation_strategy.DIRECTOR) {
+            const allowDirectorActivationOverride = shouldUseDirectorActivationOverride(type, byAutoMode);
+            let directorOverride = allowDirectorActivationOverride ? getDirectorActivationOverride(group) : null;
+            useDirectorOverride = !!directorOverride?.length;
+
+            if (!useDirectorOverride && shouldRunDirectorBeforeAssistantGeneration(type, byAutoMode)) {
+                if (!is_group_automode_enabled) {
+                    clearDecisionDerivedDirectorState(getDirectorData(group));
+                }
+
+                try {
+                    directorRunSucceeded = await runDirector(group);
+                } catch (directorError) {
+                    console.error('Director run failed, continuing with natural group generation:', directorError);
+                }
+
+                directorOverride = directorRunSucceeded && allowDirectorActivationOverride ? getDirectorQueueActivationOverride(group) : null;
+                useDirectorOverride = !!directorOverride?.length;
+            }
+
+            if (useDirectorOverride) {
+                activatedMembers = directorOverride;
+            } else if (type === 'swipe' || type === 'continue') {
+                activatedMembers = activateSwipe(group.members, { allowSystem: false });
+
+                if (activatedMembers.length === 0) {
+                    toastr.warning(t`Deleted group member swiped. To get a reply, add them back to the group.`);
+                    throw new Error('Deleted group member swiped');
+                }
+            } else {
+                activatedMembers = activateNaturalOrder(enabledMembers, activationText, lastMessage, group.allow_self_responses, isUserInput);
+            }
         } else if (type === 'swipe' || type === 'continue') {
             activatedMembers = activateSwipe(group.members, { allowSystem: false });
 
@@ -1152,26 +1211,12 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
                 toastr.warning(t`Deleted group member swiped. To get a reply, add them back to the group.`);
                 throw new Error('Deleted group member swiped');
             }
-        } else if (type === 'impersonate') {
-            activatedMembers = activateImpersonate(group.members);
         } else if (activationStrategy === group_activation_strategy.NATURAL) {
             activatedMembers = activateNaturalOrder(enabledMembers, activationText, lastMessage, group.allow_self_responses, isUserInput);
         } else if (activationStrategy === group_activation_strategy.LIST) {
             activatedMembers = activateListOrder(enabledMembers);
         } else if (activationStrategy === group_activation_strategy.POOLED) {
             activatedMembers = activatePooledOrder(enabledMembers, lastMessage, isUserInput);
-        } else if (activationStrategy === group_activation_strategy.DIRECTOR) {
-            try {
-                directorRunSucceeded = await runDirector(group);
-            } catch (directorError) {
-                console.error('Director run failed, continuing with natural group generation:', directorError);
-            }
-
-            const directorOverride = directorRunSucceeded ? getDirectorActivationOverride(group) : null;
-            useDirectorOverride = !!directorOverride?.length && (!type || type === 'normal');
-            activatedMembers = useDirectorOverride
-                ? directorOverride
-                : activateNaturalOrder(enabledMembers, activationText, lastMessage, group.allow_self_responses, isUserInput);
         } else if (activationStrategy === group_activation_strategy.MANUAL && !isUserInput) {
             activatedMembers = shuffle(enabledMembers)
                 .slice(0, 1)
@@ -1182,7 +1227,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         const directorPromptApplied =
             activatedMembers.length > 0 &&
             activationStrategy === group_activation_strategy.DIRECTOR &&
-            directorRunSucceeded &&
+            (directorRunSucceeded || useDirectorOverride) &&
             applyDirectorPromptInjection(group);
         if (!directorPromptApplied) {
             clearDirectorPromptInjection();
@@ -2750,6 +2795,16 @@ function normalizeDirectorMemberIdList(value, memberSet = null) {
 }
 
 /**
+ * Normalizes a Director queue array.
+ * @param {any} value Source queue.
+ * @param {Set<string>?} memberSet Optional valid members.
+ * @returns {string[]} Deduplicated queued member IDs.
+ */
+function normalizeDirectorQueueArray(value, memberSet = null) {
+    return normalizeDirectorMemberIdList(value, memberSet);
+}
+
+/**
  * Normalizes a Director history array.
  * @param {any} value Source history.
  * @returns {object[]} Plain object records only.
@@ -2774,7 +2829,7 @@ function getDirectorGroupMemberSet(group) {
  */
 function filterDirectorQueueForMembers(queue, groupOrMemberSet) {
     const memberSet = groupOrMemberSet instanceof Set ? groupOrMemberSet : getDirectorGroupMemberSet(groupOrMemberSet);
-    return normalizeDirectorMemberIdList(queue, memberSet);
+    return normalizeDirectorQueueArray(queue, memberSet);
 }
 
 /**
@@ -3018,6 +3073,15 @@ const scheduleDirectorRecomputeAfterChatMutation = debounce(() => {
     });
 }, 250);
 
+function requestDirectorRecomputeAfterChatMutation() {
+    if (_directorRunning) {
+        _directorRecomputePending = true;
+        return;
+    }
+
+    scheduleDirectorRecomputeAfterChatMutation();
+}
+
 function getDirectorChatMutationEventTypes() {
     const mutationEventTypes = [event_types.MESSAGE_DELETED, event_types.MESSAGE_SWIPE_DELETED];
 
@@ -3032,7 +3096,7 @@ function getDirectorChatMutationEventTypes() {
 
 function registerDirectorChatMutationListeners() {
     for (const eventType of getDirectorChatMutationEventTypes()) {
-        eventSource.on(eventType, scheduleDirectorRecomputeAfterChatMutation);
+        eventSource.on(eventType, requestDirectorRecomputeAfterChatMutation);
     }
 }
 
@@ -3431,7 +3495,7 @@ function applyDirectorDecision(group, parsed) {
             filteredQueue.push(id);
         }
     }
-    d.queue = filteredQueue;
+    d.queue = filteredQueue.slice(0, 1);
 
     return appliedActions;
 }
@@ -3885,7 +3949,7 @@ function getDirectorConnectionProfile(profileId) {
  * @param {Group} group
  * @returns {number[]|null} Array of character indices, or null to use default behavior
  */
-function getDirectorActivationOverride(group) {
+function getDirectorQueueActivationOverride(group) {
     const d = group ? getDirectorData(group) : null;
     if (!d || !Array.isArray(d.queue) || d.queue.length === 0) {
         return null;
@@ -3911,6 +3975,19 @@ function getDirectorActivationOverride(group) {
     }
 
     return result.length > 0 ? result : null;
+}
+
+/**
+ * Gets the Auto Mode Director activation override for speaker selection.
+ * @param {Group} group
+ * @returns {number[]|null} Array of character indices, or null to use default behavior
+ */
+function getDirectorActivationOverride(group) {
+    if (!is_group_automode_enabled) {
+        return null;
+    }
+
+    return getDirectorQueueActivationOverride(group);
 }
 
 /**
@@ -4469,10 +4546,23 @@ jQuery(() => {
     $('#rm_group_members_filter').on('input', filterGroupMemberList);
     $('#rm_group_submit').on('click', createGroup);
     $('#rm_group_scenario').on('click', setCharacterSettingsOverrides);
-    $('#rm_group_automode').on('input', function () {
+    $('#rm_group_automode').on('input', async function () {
         const value = $(this).prop('checked');
         is_group_automode_enabled = value;
+        let groupToSave = null;
+
+        if (!is_group_automode_enabled) {
+            groupToSave = groups.find((x) => x.id === selected_group);
+            if (groupToSave) {
+                clearDecisionDerivedDirectorState(getDirectorData(groupToSave));
+            }
+        }
+
         eventSource.once(event_types.GENERATION_STOPPED, stopAutoModeGeneration);
+
+        if (groupToSave) {
+            await saveDirectorStateAndRefreshPrompt(groupToSave, false);
+        }
     });
     $('#rm_group_hidemutedsprites').on('input', function () {
         const value = $(this).prop('checked');

@@ -570,6 +570,8 @@ describe('director prompt formatter and filters', () => {
     });
 
     test('normalizes queue member ids and filters stale group members', () => {
+        expect(directorHelpers.normalizeDirectorQueueArray([' alice ', 'bob', 'alice', '', 3, 'ghost'], new Set(['alice', 'bob']))).toEqual(['alice', 'bob']);
+        expect(directorHelpers.normalizeDirectorQueueArray('alice', new Set(['alice']))).toEqual([]);
         expect(directorHelpers.normalizeDirectorMemberIdList([' alice ', 'bob', 'alice', '', 3, 'ghost'], new Set(['alice', 'bob']))).toEqual(['alice', 'bob']);
         expect(directorHelpers.normalizeDirectorMemberIdList('alice', new Set(['alice']))).toEqual([]);
         expect(directorHelpers.filterDirectorQueueForMembers(['alice', 'ghost', ' bob ', 'alice'], { members: ['alice', 'bob'] })).toEqual(['alice', 'bob']);
