@@ -92,6 +92,15 @@ const defaultExampleSeparator = '***';
 const defaultChatStart = '***';
 const defaultToastPosition = 'toast-top-center';
 
+export const DEFAULT_GROUP_CARD_COMBINE_PROMPT = `Create a final character description for a generated group card from the provided input characters.
+Use only core character fields from the input: name, description, personality, scenario, first_mes, mes_example.
+Output one <character>...</character> block for each input character.
+Each <character> block must use the input character's exact name.
+Do not invent, omit, rename, or merge characters.
+Do not output markdown.
+Do not output code fences.
+Output only the final description.`;
+
 const avatar_styles = {
     ROUND: 0,
     RECTANGULAR: 1,
@@ -300,6 +309,7 @@ export const power_user = {
 
     custom_stopping_strings: '',
     custom_stopping_strings_macro: true,
+    group_card_combine_prompt: DEFAULT_GROUP_CARD_COMBINE_PROMPT,
     fuzzy_search: false,
     encode_tags: false,
     experimental_macro_engine: true,

@@ -5,20 +5,464 @@ import {
     characters,
     event_types,
     eventSource,
+    Generate,
     getCharacters,
     getRequestHeaders,
     buildAvatarList,
     characterToEntity,
     printCharactersDebounced,
     deleteCharacter,
+    saveSettingsDebounced,
 } from '../script.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
 import { convertCharacterToPersona } from './personas.js';
-import { callGenericPopup, POPUP_TYPE } from './popup.js';
+import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
+import { power_user } from './power-user.js';
 import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, tag_map, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting } from './tags.js';
 import { t } from './i18n.js';
+import { newWorldInfoEntryTemplate, world_names } from './world-info.js';
+import { escapeHtml } from './utils.js';
+
+const CORE_CHARACTER_FIELDS = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
+const CHARACTER_OPEN_TAG = '<character>';
+const CHARACTER_CLOSE_TAG = '</character>';
+
+/**
+ * Normalizes names for duplicate checks.
+ *
+ * @param {string} name Name to normalize.
+ * @returns {string} Trimmed lowercase name.
+ */
+function normalizeName(name) {
+    return String(name ?? '').trim().toLowerCase();
+}
+
+/**
+ * Gets a character name from top-level or data fields.
+ *
+ * @param {object} character Character object.
+ * @returns {string} Character name.
+ */
+function getCharacterName(character) {
+    return character?.name ?? character?.ch_name ?? character?.data?.name ?? character?.data?.ch_name ?? '';
+}
+
+/**
+ * Resolves selected character ids or objects to valid character objects.
+ *
+ * @param {Array<number|object>} selectedCharacters Selected character ids or objects.
+ * @param {Array<object>} characterList Loaded character list.
+ * @returns {Array<object>} Valid named characters.
+ */
+function getValidSelectedCharacters(selectedCharacters, characterList) {
+    const availableCharacters = characterList ?? [];
+
+    return (selectedCharacters ?? [])
+        .map(character => typeof character === 'number' ? availableCharacters[character] : character)
+        .filter(character => normalizeName(getCharacterName(character)));
+}
+
+/**
+ * Gets one core character field from top-level fields with .data fallback.
+ *
+ * @param {object} character Character object.
+ * @param {string} field Core field name.
+ * @returns {string} String field value.
+ */
+function getCoreCharacterField(character, field) {
+    if (field === 'name') {
+        return String(getCharacterName(character));
+    }
+
+    return String(character?.[field] ?? character?.data?.[field] ?? '');
+}
+
+/**
+ * Gets only core fields used for group-card generation.
+ *
+ * @param {object} character Character object.
+ * @returns {{ name: string, description: string, personality: string, scenario: string, first_mes: string, mes_example: string }} Core payload.
+ */
+function getCoreCharacterPayload(character) {
+    /** @type {{ name: string, description: string, personality: string, scenario: string, first_mes: string, mes_example: string }} */
+    const payload = {
+        name: '',
+        description: '',
+        personality: '',
+        scenario: '',
+        first_mes: '',
+        mes_example: '',
+    };
+
+    for (const field of CORE_CHARACTER_FIELDS) {
+        payload[field] = getCoreCharacterField(character, field);
+    }
+
+    return payload;
+}
+
+/**
+ * Builds an XML-like block for a selected character core payload.
+ *
+ * @param {object} character Character object.
+ * @returns {string} XML-like character block.
+ */
+function buildCoreCharacterPromptBlock(character) {
+    const payload = getCoreCharacterPayload(character);
+    const fields = CORE_CHARACTER_FIELDS
+        .map(field => `  <${field}>${escapeHtml(payload[field])}</${field}>`)
+        .join('\n');
+
+    return `${CHARACTER_OPEN_TAG}\n${fields}\n${CHARACTER_CLOSE_TAG}`;
+}
+
+/**
+ * Builds quiet generation prompt using selected core character fields only.
+ *
+ * @param {string} prompt User-configured combine instructions.
+ * @param {Array<object>} selectedCharacters Valid selected characters.
+ * @returns {string} Quiet prompt.
+ */
+function buildGroupCardCombineQuietPrompt(prompt, selectedCharacters) {
+    const payload = selectedCharacters.map(buildCoreCharacterPromptBlock).join('\n\n');
+
+    return `${String(prompt ?? '').trim()}\n\nInput characters:\n${payload}`;
+}
+
+/**
+ * Removes wrapping triple-backtick fences from generated output.
+ *
+ * @param {string} output Raw generated output.
+ * @returns {string} Unfenced output.
+ */
+function stripTripleBacktickFences(output) {
+    return String(output ?? '')
+        .trim()
+        .replace(/^```[\w-]*\s*/, '')
+        .replace(/\s*```$/, '')
+        .trim();
+}
+
+/**
+ * Extracts and validates generated group card description XML-like output.
+ *
+ * @param {string} output Raw generated output.
+ * @param {number} selectedCharacterCount Count of selected source characters.
+ * @returns {string} Validated generated description.
+ * @throws {Error} When output is empty, not XML-like, or has too few character tags.
+ */
+function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
+    const unfencedOutput = stripTripleBacktickFences(output);
+
+    if (!unfencedOutput) {
+        throw new Error('Generation returned empty output.');
+    }
+
+    const firstCharacterTagIndex = unfencedOutput.indexOf(CHARACTER_OPEN_TAG);
+    const lastCharacterCloseTagIndex = unfencedOutput.lastIndexOf(CHARACTER_CLOSE_TAG);
+
+    if (firstCharacterTagIndex === -1 || lastCharacterCloseTagIndex === -1 || lastCharacterCloseTagIndex < firstCharacterTagIndex) {
+        throw new Error('Generation did not return character XML.');
+    }
+
+    const generatedDescription = unfencedOutput
+        .slice(firstCharacterTagIndex, lastCharacterCloseTagIndex + CHARACTER_CLOSE_TAG.length)
+        .trim();
+    const characterTagCount = generatedDescription.match(/<character>/g)?.length ?? 0;
+
+    if (characterTagCount < selectedCharacterCount) {
+        throw new Error(`Generation returned ${characterTagCount} character block(s), expected at least ${selectedCharacterCount}.`);
+    }
+
+    return generatedDescription;
+}
+
+/**
+ * Formats a core field value for lorebook summary content.
+ *
+ * @param {string} label Human-readable field label.
+ * @param {string} value Core character field value.
+ * @returns {string} Labeled field section, or empty string when value is empty.
+ */
+function formatLorebookSummaryField(label, value) {
+    const trimmedValue = String(value ?? '').trim();
+
+    return trimmedValue ? `${label}:\n${trimmedValue}` : '';
+}
+
+/**
+ * Builds deterministic lorebook content from original core character fields.
+ *
+ * @param {object} character Character object.
+ * @returns {string} Lorebook entry content.
+ */
+function buildLorebookEntryContent(character) {
+    const payload = getCoreCharacterPayload(character);
+    const fields = [
+        `Name: ${payload.name.trim()}`,
+        formatLorebookSummaryField('Description', payload.description),
+        formatLorebookSummaryField('Personality', payload.personality),
+        formatLorebookSummaryField('Scenario', payload.scenario),
+        formatLorebookSummaryField('First message', payload.first_mes),
+        formatLorebookSummaryField('Example messages', payload.mes_example),
+    ].filter(Boolean);
+
+    return fields.join('\n\n');
+}
+
+/**
+ * Builds a lorebook entry for one original selected character.
+ *
+ * @param {object} character Character object.
+ * @param {number} index Entry index.
+ * @returns {object} World info entry data.
+ */
+function buildLorebookEntry(character, index) {
+    const name = getCoreCharacterField(character, 'name').trim();
+    const uid = Number.isInteger(index) && index >= 0 ? index : 0;
+
+    return {
+        uid,
+        ...structuredClone(newWorldInfoEntryTemplate),
+        key: [name],
+        comment: name,
+        content: buildLorebookEntryContent(character),
+        addMemo: true,
+        order: 100 - uid,
+    };
+}
+
+/**
+ * Builds lorebook data containing one entry per selected character.
+ *
+ * @param {Array<object>} selectedCharacters Valid selected characters.
+ * @returns {{ entries: object }} World info data.
+ */
+function buildLorebookData(selectedCharacters) {
+    const entries = Object.fromEntries((selectedCharacters ?? []).map((character, index) => {
+        const entry = buildLorebookEntry(character, index);
+        return [entry.uid, entry];
+    }));
+
+    return { entries };
+}
+
+/**
+ * Throws response text when an API request fails.
+ *
+ * @param {Response} response Fetch response.
+ * @param {string} fallbackMessage Fallback failure message.
+ */
+async function throwIfNotOk(response, fallbackMessage) {
+    if (response.ok) {
+        return;
+    }
+
+    const responseText = await response.text();
+    throw new Error(responseText || fallbackMessage);
+}
+
+/**
+ * Sends an API request and returns response text without throwing.
+ *
+ * @param {string} url API endpoint.
+ * @param {object} body JSON request body.
+ * @returns {Promise<Response>} Fetch response.
+ */
+async function sendJsonRequest(url, body) {
+    return fetch(url, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(body),
+    });
+}
+
+/**
+ * Attempts to delete a partially created lorebook.
+ *
+ * @param {string} groupName Lorebook name.
+ * @returns {Promise<string>} Rollback status message.
+ */
+async function rollbackGeneratedLorebook(groupName) {
+    try {
+        const response = await sendJsonRequest('/api/worldinfo/delete', { name: groupName });
+        await throwIfNotOk(response, `Failed to roll back lorebook "${groupName}".`);
+        return `Rolled back lorebook "${groupName}".`;
+    } catch (error) {
+        return `Failed to roll back lorebook "${groupName}": ${error?.message ?? error}.`;
+    }
+}
+
+/**
+ * Attempts to delete a partially created character.
+ *
+ * @param {string} groupName Character name.
+ * @param {string} avatar Character avatar filename.
+ * @returns {Promise<string>} Rollback status message.
+ */
+async function rollbackGeneratedCharacter(groupName, avatar) {
+    try {
+        const response = await sendJsonRequest('/api/characters/delete', { avatar_url: avatar, delete_chats: false });
+        await throwIfNotOk(response, `Failed to roll back character "${groupName}" (avatar "${avatar}").`);
+        return `Rolled back character "${groupName}" (avatar "${avatar}").`;
+    } catch (error) {
+        return `Failed to roll back character "${groupName}" (avatar "${avatar}"): ${error?.message ?? error}.`;
+    }
+}
+
+/**
+ * Reads created character avatar from the create response.
+ *
+ * @param {Response} response Character create response.
+ * @param {string} groupName Group card name.
+ * @returns {Promise<string>} Created avatar filename.
+ */
+async function readCreatedCharacterAvatar(response, groupName) {
+    const responseText = (await response.text()).trim();
+
+    if (!responseText) {
+        throw new Error(`Character "${groupName}" create response did not include avatar.`);
+    }
+
+    if (responseText.startsWith('{')) {
+        const data = JSON.parse(responseText);
+        const avatar = String(data?.avatar ?? '').trim();
+
+        if (!avatar) {
+            throw new Error(`Character "${groupName}" create response did not include avatar.`);
+        }
+
+        return avatar;
+    }
+
+    return responseText;
+}
+
+/**
+ * Creates a generated group card lorebook, character, then links the lorebook.
+ *
+ * @param {string} groupName Group card and lorebook name.
+ * @param {string} generatedDescription Generated character description.
+ * @param {Array<object>} selectedChars Selected character objects.
+ * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
+ */
+async function createGeneratedGroupCard(groupName, generatedDescription, selectedChars) {
+    const request = validateGroupCardRequest(groupName, selectedChars);
+
+    if (!request) {
+        throw new Error('Group card request is no longer valid.');
+    }
+
+    const sourceNames = request.characters.map(character => getCoreCharacterField(character, 'name').trim()).join(', ');
+    const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
+        name: request.groupName,
+        data: buildLorebookData(request.characters),
+    });
+    await throwIfNotOk(worldResponse, `Failed to create lorebook "${request.groupName}".`);
+
+    const characterResponse = await sendJsonRequest('/api/characters/create', {
+        name: request.groupName,
+        ch_name: request.groupName,
+        description: generatedDescription,
+        personality: '',
+        scenario: '',
+        first_mes: '',
+        mes_example: '',
+        creator_notes: `Generated group card from: ${sourceNames}`,
+        system_prompt: '',
+        post_history_instructions: '',
+        creator: '',
+        character_version: '',
+        tags: [],
+        talkativeness: '0.5',
+        world: '',
+        depth_prompt_prompt: '',
+        depth_prompt_depth: '4',
+        depth_prompt_role: 'system',
+        fav: 'false',
+        alternate_greetings: [],
+        extensions: {},
+    });
+
+    if (!characterResponse.ok) {
+        const responseText = await characterResponse.text();
+        const rollbackMessage = await rollbackGeneratedLorebook(request.groupName);
+        throw new Error(`Failed to create character "${request.groupName}" after lorebook "${request.groupName}" was created. ${responseText || 'No response body.'} ${rollbackMessage}`);
+    }
+
+    let avatar = '';
+
+    try {
+        avatar = await readCreatedCharacterAvatar(characterResponse, request.groupName);
+    } catch (error) {
+        const rollbackMessage = await rollbackGeneratedLorebook(request.groupName);
+        throw new Error(`${error?.message ?? error} ${rollbackMessage}`);
+    }
+
+    const linkResponse = await sendJsonRequest('/api/characters/merge-attributes', {
+        avatar,
+        data: {
+            extensions: {
+                world: request.groupName,
+            },
+        },
+    });
+
+    if (!linkResponse.ok) {
+        const responseText = await linkResponse.text();
+        const characterRollbackMessage = await rollbackGeneratedCharacter(request.groupName, avatar);
+        const lorebookRollbackMessage = await rollbackGeneratedLorebook(request.groupName);
+        throw new Error(`Failed to link lorebook "${request.groupName}" to character "${request.groupName}" (avatar "${avatar}"). ${responseText || 'No response body.'} ${characterRollbackMessage} ${lorebookRollbackMessage}`);
+    }
+
+    return { avatar, world: request.groupName };
+}
+
+/**
+ * Validates group card creation request before generation.
+ *
+ * @param {string} groupName Requested group card and lorebook name.
+ * @param {Array<number|object>} selectedCharacters Selected character ids or objects.
+ * @param {object} [options] Validation dependencies.
+ * @param {Array<object>} [options.characterList] Loaded character list.
+ * @param {Array<string>} [options.worldNames] Loaded lorebook names.
+ * @param {object} [options.toaster] Toastr-compatible notifier.
+ * @returns {{ groupName: string, characters: Array<object> }|null} Valid request data, or null when blocked.
+ */
+function validateGroupCardRequest(groupName, selectedCharacters, { characterList = characters, worldNames = world_names, toaster = globalThis.toastr } = {}) {
+    const trimmedName = String(groupName ?? '').trim();
+    const normalizedName = normalizeName(trimmedName);
+
+    if (!normalizedName) {
+        toaster?.warning?.('Enter a group card name.', 'Combine into Group Card');
+        return null;
+    }
+
+    const validCharacters = getValidSelectedCharacters(selectedCharacters, characterList);
+
+    if (validCharacters.length < 2) {
+        toaster?.warning?.('Select at least two valid characters.', 'Combine into Group Card');
+        return null;
+    }
+
+    const hasCharacterNameCollision = (characterList ?? []).some(character => normalizeName(getCharacterName(character)) === normalizedName);
+
+    if (hasCharacterNameCollision) {
+        toaster?.error?.(`Character named "${trimmedName}" already exists.`, 'Combine into Group Card');
+        return null;
+    }
+
+    const hasLorebookNameCollision = (worldNames ?? []).some(name => normalizeName(name) === normalizedName);
+
+    if (hasLorebookNameCollision) {
+        toaster?.error?.(`Lorebook named "${trimmedName}" already exists.`, 'Combine into Group Card');
+        return null;
+    }
+
+    return { groupName: trimmedName, characters: validCharacters };
+}
 
 /**
  * Static object representing the actions of the
@@ -155,8 +599,9 @@ class CharacterContextMenu {
         const contextMenuItems = [
             { id: 'character_context_menu_favorite', callback: characterGroupOverlay.handleContextMenuFavorite },
             { id: 'character_context_menu_duplicate', callback: characterGroupOverlay.handleContextMenuDuplicate },
-            { id: 'character_context_menu_delete', callback: characterGroupOverlay.handleContextMenuDelete },
             { id: 'character_context_menu_persona', callback: characterGroupOverlay.handleContextMenuPersona },
+            { id: 'bulk_select_combine_group_card', callback: characterGroupOverlay.handleContextMenuCombineGroupCard },
+            { id: 'character_context_menu_delete', callback: characterGroupOverlay.handleContextMenuDelete },
             { id: 'character_context_menu_tag', callback: characterGroupOverlay.handleContextMenuTag },
         ];
 
@@ -809,6 +1254,128 @@ class BulkEditOverlay {
     };
 
     /**
+     * Starts combining selected characters into a group card.
+     */
+    handleContextMenuCombineGroupCard = async () => {
+        const characterIds = this.selectedCharacters.slice();
+
+        const methodName = 'combineIntoGroupCard';
+        const combineIntoGroupCard = /** @type {(characterIds: number[]) => Promise<void>} */ (BulkEditOverlay[methodName]);
+
+        try {
+            await combineIntoGroupCard(characterIds);
+        } finally {
+            this.browseState();
+        }
+    };
+
+    /**
+     * Gets the HTML as a string that is displayed inside the group card combine popup.
+     *
+     * @param {number} characterCount Selected valid character count.
+     * @returns {string} Popup content HTML.
+     */
+    static #getCombineGroupCardPopupContentHtml = (characterCount) => {
+        return `
+            <h3 class="marginBot5">Combine into Group Card</h3>
+            <small class="bulk_combine_group_card_desc m-b-1">Generate a group card from ${characterCount} selected characters.</small>
+            <label for="bulk_combine_group_card_name" class="text_label">
+                <span>Group name</span>
+                <input id="bulk_combine_group_card_name" class="text_pole wide100p margin0" type="text" autocomplete="off" autofocus />
+            </label>
+            <label for="bulk_combine_group_card_prompt" class="text_label marginTop10">
+                <span>Prompt</span>
+                <textarea id="bulk_combine_group_card_prompt" class="text_pole wide100p margin0" rows="12"></textarea>
+            </label>`;
+    };
+
+    /**
+     * Opens the combine modal and starts generation when confirmed.
+     *
+     * @param {Array<number|object>} selectedCharacters Selected character ids or objects.
+     * @returns {Promise<void>}
+     */
+    static combineIntoGroupCard = async (selectedCharacters) => {
+        const validCharacters = getValidSelectedCharacters(selectedCharacters, characters);
+
+        if (validCharacters.length < 2) {
+            toastr.warning('Select at least two valid characters.', 'Combine into Group Card');
+            return;
+        }
+
+        const popupContent = $(BulkEditOverlay.#getCombineGroupCardPopupContentHtml(validCharacters.length));
+        const groupNameInput = popupContent.find('#bulk_combine_group_card_name');
+        const promptInput = popupContent.find('#bulk_combine_group_card_prompt');
+        promptInput.val(power_user.group_card_combine_prompt ?? '');
+
+        await callGenericPopup(popupContent, POPUP_TYPE.CONFIRM, '', {
+            okButton: 'Generate',
+            cancelButton: 'Cancel',
+            wide: true,
+            large: true,
+            allowVerticalScrolling: true,
+            onClosing: async (popup) => {
+                if (popup.result !== POPUP_RESULT.AFFIRMATIVE) {
+                    return true;
+                }
+
+                const prompt = String(promptInput.val() ?? '').trim();
+
+                if (!prompt) {
+                    toastr.warning('Enter a prompt.', 'Combine into Group Card');
+                    return false;
+                }
+
+                const request = validateGroupCardRequest(String(groupNameInput.val() ?? ''), selectedCharacters);
+
+                if (!request) {
+                    return false;
+                }
+
+                power_user.group_card_combine_prompt = prompt;
+                saveSettingsDebounced();
+
+                try {
+                    await BulkEditOverlay.#startGroupCardCombinePipeline(request.groupName, prompt, request.characters);
+                    await getCharacters();
+                    toastr.success('Created group card and linked lorebook.');
+                    return true;
+                } catch (error) {
+                    console.error(error);
+                    toastr.error(error?.message ?? 'Failed to combine selected characters.', 'Combine into Group Card');
+                    return false;
+                }
+            },
+        });
+    };
+
+    /**
+     * Starts group card generation pipeline.
+     *
+     * @param {string} groupName Requested group card name.
+     * @param {string} prompt Saved combine prompt.
+     * @param {Array<object>} selectedCharacters Valid selected characters.
+     * @returns {Promise<unknown>} Generation result.
+     */
+    static #startGroupCardCombinePipeline = async (groupName, prompt, selectedCharacters) => {
+        const loaderHandle = loader.show({
+            slug: 'combine-group-card',
+            title: t`Combine into Group Card`,
+            message: t`Generating "${groupName}" from ${selectedCharacters.length} character(s)…`,
+            toastMode: loader.ToastMode.STATIC,
+        });
+
+        try {
+            const quiet_prompt = buildGroupCardCombineQuietPrompt(prompt, selectedCharacters);
+            const generatedDescription = await Generate('quiet', { quiet_prompt });
+            const validatedDescription = validateGeneratedGroupCardDescription(generatedDescription, selectedCharacters.length);
+            return await createGeneratedGroupCard(groupName, validatedDescription, selectedCharacters);
+        } finally {
+            loaderHandle.hide();
+        }
+    };
+
+    /**
      * Gets the HTML as a string that is displayed inside the popup for the bulk delete
      *
      * @param {Array<number>} characterIds - The characters that are shown inside the popup
@@ -887,4 +1454,15 @@ class BulkEditOverlay {
     };
 }
 
-export { BulkEditOverlayState, CharacterContextMenu, BulkEditOverlay };
+export {
+    BulkEditOverlayState,
+    CharacterContextMenu,
+    BulkEditOverlay,
+    normalizeName,
+    validateGroupCardRequest,
+    getCoreCharacterPayload,
+    validateGeneratedGroupCardDescription,
+    buildLorebookEntry,
+    buildLorebookData,
+    createGeneratedGroupCard,
+};
