@@ -1,7 +1,11 @@
-import { beforeAll, describe, expect, jest, test } from '@jest/globals';
+import { beforeAll, beforeEach, describe, expect, jest, test } from '@jest/globals';
 
 const mockCharacters = [];
 const mockWorldNames = [];
+const mockPowerUser = {};
+const mockCallGenericPopup = jest.fn();
+const mockSaveSettingsDebounced = jest.fn();
+const DEFAULT_GROUP_CARD_COMBINE_PROMPT = 'Default group card combine prompt.';
 
 jest.unstable_mockModule('../public/script.js', () => ({
     characterGroupOverlay: {},
@@ -15,18 +19,21 @@ jest.unstable_mockModule('../public/script.js', () => ({
     characterToEntity: jest.fn((item, id) => ({ item, id })),
     printCharactersDebounced: jest.fn(),
     deleteCharacter: jest.fn(),
-    saveSettingsDebounced: jest.fn(),
+    saveSettingsDebounced: mockSaveSettingsDebounced,
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ favsToHotswap: jest.fn() }));
 jest.unstable_mockModule('../public/scripts/action-loader.js', () => ({ loader: { show: jest.fn(), hide: jest.fn() } }));
 jest.unstable_mockModule('../public/scripts/personas.js', () => ({ convertCharacterToPersona: jest.fn() }));
 jest.unstable_mockModule('../public/scripts/popup.js', () => ({
-    callGenericPopup: jest.fn(),
+    callGenericPopup: mockCallGenericPopup,
     POPUP_RESULT: { AFFIRMATIVE: 'affirmative' },
-    POPUP_TYPE: { CONFIRM: 'confirm' },
+    POPUP_TYPE: { CONFIRM: 'confirm', INPUT: 'input' },
 }));
-jest.unstable_mockModule('../public/scripts/power-user.js', () => ({ power_user: {} }));
+jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
+    DEFAULT_GROUP_CARD_COMBINE_PROMPT,
+    power_user: mockPowerUser,
+}));
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     createTagInput: jest.fn(),
     getTagKeyForEntity: jest.fn(),
@@ -65,6 +72,22 @@ let mod;
 beforeAll(async () => {
     mod = await import('../public/scripts/BulkEditOverlay.js');
 });
+
+beforeEach(() => {
+    mockPowerUser.group_card_combine_prompt_presets = [];
+    mockPowerUser.group_card_combine_prompt = DEFAULT_GROUP_CARD_COMBINE_PROMPT;
+    mockCallGenericPopup.mockReset();
+    mockSaveSettingsDebounced.mockReset();
+    mockWorldNames.length = 0;
+    global.fetch = jest.fn();
+});
+
+function createResponse({ ok = true, text = '' } = {}) {
+    return {
+        ok,
+        text: jest.fn(async () => text),
+    };
+}
 
 function createToaster() {
     return {
@@ -108,6 +131,19 @@ describe('BulkEditOverlay group card helper tests', () => {
 
         expect(mod.validateGroupCardRequest('Shared Lore', [0, 1], { characterList, worldNames: [' shared lore '], toaster })).toBeNull();
         expect(toaster.error).toHaveBeenCalledWith('Lorebook named "Shared Lore" already exists.', 'Combine into Group Card');
+    });
+
+    test('allows lorebook name collision when lorebook creation is disabled', () => {
+        const toaster = createToaster();
+        const characterList = [{ name: 'Alice' }, { name: 'Bob' }];
+
+        expect(mod.validateGroupCardRequest('Shared Lore', [0, 1], {
+            characterList,
+            worldNames: [' shared lore '],
+            toaster,
+            createLorebook: false,
+        })).toEqual({ groupName: 'Shared Lore', characters: characterList });
+        expect(toaster.error).not.toHaveBeenCalled();
     });
 
     test('builds core payload with top-level fields and .data fallback, leaving missing fields empty', () => {
@@ -186,6 +222,73 @@ Trailing text
         expect(Object.keys(lorebookData.entries)).toEqual(['0', '1']);
         expect(lorebookData.entries[0].key).toEqual(['Alice']);
         expect(lorebookData.entries[1].key).toEqual(['Bob']);
+    });
+
+    test('saves, overwrites, and deletes prompt presets', async () => {
+        await expect(mod.saveGroupCardCombinePromptPreset('  My Preset  ', 'first prompt')).resolves.toEqual({
+            name: 'My Preset',
+            prompt: 'first prompt',
+        });
+        expect(mockPowerUser.group_card_combine_prompt_presets).toEqual([{ name: 'My Preset', prompt: 'first prompt' }]);
+        expect(mockSaveSettingsDebounced).toHaveBeenCalledTimes(1);
+
+        mockCallGenericPopup.mockResolvedValueOnce('affirmative');
+        await expect(mod.saveGroupCardCombinePromptPreset('my preset', 'updated prompt')).resolves.toEqual({
+            name: 'my preset',
+            prompt: 'updated prompt',
+        });
+        expect(mockCallGenericPopup).toHaveBeenCalledWith(expect.stringContaining('Overwrite prompt preset'), 'confirm', '', expect.objectContaining({ okButton: 'Overwrite' }));
+        expect(mockPowerUser.group_card_combine_prompt_presets).toEqual([{ name: 'my preset', prompt: 'updated prompt' }]);
+        expect(mockSaveSettingsDebounced).toHaveBeenCalledTimes(2);
+
+        expect(mod.deleteGroupCardCombinePromptPreset(0)).toBe(true);
+        expect(mockPowerUser.group_card_combine_prompt_presets).toEqual([]);
+        expect(mockSaveSettingsDebounced).toHaveBeenCalledTimes(3);
+    });
+
+    test('does not overwrite prompt preset when duplicate confirmation is cancelled', async () => {
+        mockPowerUser.group_card_combine_prompt_presets = [{ name: 'Existing', prompt: 'old prompt' }];
+        mockCallGenericPopup.mockResolvedValueOnce(false);
+
+        await expect(mod.saveGroupCardCombinePromptPreset('existing', 'new prompt')).resolves.toBeNull();
+        expect(mockPowerUser.group_card_combine_prompt_presets).toEqual([{ name: 'Existing', prompt: 'old prompt' }]);
+        expect(mockSaveSettingsDebounced).not.toHaveBeenCalled();
+    });
+
+    test('skips lorebook creation and link when requested', async () => {
+        global.fetch
+            .mockResolvedValueOnce(createResponse({ text: '{"avatar":"group.png"}' }));
+
+        await expect(mod.createGeneratedGroupCard('Group', '<character>Group</character>', [
+            { name: 'Alice' },
+            { name: 'Bob' },
+        ], false)).resolves.toEqual({ avatar: 'group.png', world: '' });
+
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(global.fetch).toHaveBeenCalledWith('/api/characters/create', expect.objectContaining({
+            method: 'POST',
+            body: expect.any(String),
+        }));
+        const createBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(createBody.extensions).toEqual({ world: '' });
+    });
+
+    test('creates lorebook, character, and link by default', async () => {
+        global.fetch
+            .mockResolvedValueOnce(createResponse())
+            .mockResolvedValueOnce(createResponse({ text: 'group.png' }))
+            .mockResolvedValueOnce(createResponse());
+
+        await expect(mod.createGeneratedGroupCard('Group', '<character>Group</character>', [
+            { name: 'Alice' },
+            { name: 'Bob' },
+        ])).resolves.toEqual({ avatar: 'group.png', world: 'Group' });
+
+        expect(global.fetch.mock.calls.map(call => call[0])).toEqual([
+            '/api/worldinfo/edit',
+            '/api/characters/create',
+            '/api/characters/merge-attributes',
+        ]);
     });
 
 });

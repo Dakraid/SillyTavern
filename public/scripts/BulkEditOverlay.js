@@ -19,13 +19,13 @@ import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
 import { convertCharacterToPersona } from './personas.js';
 import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
-import { power_user } from './power-user.js';
+import { DEFAULT_GROUP_CARD_COMBINE_PROMPT, power_user } from './power-user.js';
 import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, tag_map, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting } from './tags.js';
 import { t } from './i18n.js';
 import { newWorldInfoEntryTemplate, world_names } from './world-info.js';
 import { escapeHtml } from './utils.js';
 
-const CORE_CHARACTER_FIELDS = ['name', 'description', 'personality'];
+const CORE_CHARACTER_FIELDS = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
 const CHARACTER_OPEN_TAG = '<character>';
 const CHARACTER_CLOSE_TAG = '</character>';
 
@@ -90,7 +90,10 @@ function getCoreCharacterPayload(character) {
     const payload = {
         name: '',
         description: '',
-        personality: ''
+        personality: '',
+        scenario: '',
+        first_mes: '',
+        mes_example: '',
     };
 
     for (const field of CORE_CHARACTER_FIELDS) {
@@ -201,6 +204,9 @@ function buildLorebookEntryContent(character) {
         `Name: ${payload.name.trim()}`,
         formatLorebookSummaryField('Description', payload.description),
         formatLorebookSummaryField('Personality', payload.personality),
+        formatLorebookSummaryField('Scenario', payload.scenario),
+        formatLorebookSummaryField('First message', payload.first_mes),
+        formatLorebookSummaryField('Example messages', payload.mes_example),
     ].filter(Boolean);
 
     return fields.join('\n\n');
@@ -241,6 +247,112 @@ function buildLorebookData(selectedCharacters) {
     }));
 
     return { entries };
+}
+
+/**
+ * Gets persisted group-card combine prompt presets.
+ *
+ * @returns {Array<{ name: string, prompt: string }>} Prompt presets.
+ */
+function getGroupCardCombinePromptPresets() {
+    if (!Array.isArray(power_user.group_card_combine_prompt_presets)) {
+        power_user.group_card_combine_prompt_presets = [];
+    }
+
+    return power_user.group_card_combine_prompt_presets;
+}
+
+/**
+ * Finds a prompt preset by name.
+ *
+ * @param {string} name Preset name.
+ * @param {Array<{ name: string, prompt: string }>} [presets] Prompt presets.
+ * @returns {number} Preset index, or -1.
+ */
+function findGroupCardCombinePromptPresetIndex(name, presets = getGroupCardCombinePromptPresets()) {
+    const normalizedName = normalizeName(name);
+
+    if (!normalizedName) {
+        return -1;
+    }
+
+    return presets.findIndex(preset => normalizeName(preset?.name) === normalizedName);
+}
+
+/**
+ * Saves a named prompt preset, optionally overwriting an existing preset.
+ *
+ * @param {string} name Preset name.
+ * @param {string} prompt Preset prompt.
+ * @param {object} [options] Save dependencies.
+ * @param {object} [options.toaster] Toastr-compatible notifier.
+ * @returns {Promise<{ name: string, prompt: string }|null>} Saved preset, or null when cancelled.
+ */
+async function saveGroupCardCombinePromptPreset(name, prompt, { toaster = globalThis.toastr } = {}) {
+    const trimmedName = String(name ?? '').trim();
+
+    if (!trimmedName) {
+        toaster?.warning?.('Enter a preset name.', 'Combine into Group Card');
+        return null;
+    }
+
+    const presets = getGroupCardCombinePromptPresets();
+    const existingIndex = findGroupCardCombinePromptPresetIndex(trimmedName, presets);
+    const savedPreset = { name: trimmedName, prompt: String(prompt ?? '') };
+
+    if (existingIndex !== -1) {
+        const overwrite = await callGenericPopup(`Overwrite prompt preset "${escapeHtml(trimmedName)}"?`, POPUP_TYPE.CONFIRM, '', {
+            okButton: 'Overwrite',
+            cancelButton: 'Cancel',
+        });
+
+        if (overwrite !== POPUP_RESULT.AFFIRMATIVE) {
+            return null;
+        }
+
+        presets[existingIndex] = savedPreset;
+    } else {
+        presets.push(savedPreset);
+    }
+
+    saveSettingsDebounced();
+    return savedPreset;
+}
+
+/**
+ * Deletes a prompt preset by index.
+ *
+ * @param {number} presetIndex Preset index.
+ * @returns {boolean} True if deleted.
+ */
+function deleteGroupCardCombinePromptPreset(presetIndex) {
+    const presets = getGroupCardCombinePromptPresets();
+
+    if (!Number.isInteger(presetIndex) || presetIndex < 0 || presetIndex >= presets.length) {
+        return false;
+    }
+
+    presets.splice(presetIndex, 1);
+    saveSettingsDebounced();
+    return true;
+}
+
+/**
+ * Populates the combine prompt preset selector.
+ *
+ * @param {JQuery<HTMLElement>} presetSelect Preset select element.
+ * @param {number|string} [selectedIndex] Selected preset index.
+ */
+function renderGroupCardCombinePromptPresetSelect(presetSelect, selectedIndex = '') {
+    const presets = getGroupCardCombinePromptPresets();
+    presetSelect.empty();
+    presetSelect.append($('<option></option>').val('').text('— Load preset —'));
+
+    presets.forEach((preset, index) => {
+        presetSelect.append($('<option></option>').val(String(index)).text(preset.name));
+    });
+
+    presetSelect.val(selectedIndex === '' ? '' : String(selectedIndex));
 }
 
 /**
@@ -335,26 +447,30 @@ async function readCreatedCharacterAvatar(response, groupName) {
 }
 
 /**
- * Creates a generated group card lorebook, character, then links the lorebook.
+ * Creates a generated group card character, optionally creating and linking a lorebook.
  *
  * @param {string} groupName Group card and lorebook name.
  * @param {string} generatedDescription Generated character description.
  * @param {Array<object>} selectedChars Selected character objects.
+ * @param {boolean} [createLorebook] Whether to create and link a lorebook.
  * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
  */
-async function createGeneratedGroupCard(groupName, generatedDescription, selectedChars) {
-    const request = validateGroupCardRequest(groupName, selectedChars);
+async function createGeneratedGroupCard(groupName, generatedDescription, selectedChars, createLorebook = true) {
+    const request = validateGroupCardRequest(groupName, selectedChars, { createLorebook });
 
     if (!request) {
         throw new Error('Group card request is no longer valid.');
     }
 
     const sourceNames = request.characters.map(character => getCoreCharacterField(character, 'name').trim()).join(', ');
-    const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
-        name: request.groupName,
-        data: buildLorebookData(request.characters),
-    });
-    await throwIfNotOk(worldResponse, `Failed to create lorebook "${request.groupName}".`);
+
+    if (createLorebook) {
+        const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
+            name: request.groupName,
+            data: buildLorebookData(request.characters),
+        });
+        await throwIfNotOk(worldResponse, `Failed to create lorebook "${request.groupName}".`);
+    }
 
     const characterResponse = await sendJsonRequest('/api/characters/create', {
         name: request.groupName,
@@ -377,13 +493,14 @@ async function createGeneratedGroupCard(groupName, generatedDescription, selecte
         depth_prompt_role: 'system',
         fav: 'false',
         alternate_greetings: [],
-        extensions: {},
+        extensions: createLorebook ? {} : { world: '' },
     });
 
     if (!characterResponse.ok) {
         const responseText = await characterResponse.text();
-        const rollbackMessage = await rollbackGeneratedLorebook(request.groupName);
-        throw new Error(`Failed to create character "${request.groupName}" after lorebook "${request.groupName}" was created. ${responseText || 'No response body.'} ${rollbackMessage}`);
+        const rollbackMessage = createLorebook ? await rollbackGeneratedLorebook(request.groupName) : '';
+        const artifactMessage = createLorebook ? ` after lorebook "${request.groupName}" was created` : '';
+        throw new Error(`Failed to create character "${request.groupName}"${artifactMessage}. ${responseText || 'No response body.'} ${rollbackMessage}`);
     }
 
     let avatar = '';
@@ -391,8 +508,12 @@ async function createGeneratedGroupCard(groupName, generatedDescription, selecte
     try {
         avatar = await readCreatedCharacterAvatar(characterResponse, request.groupName);
     } catch (error) {
-        const rollbackMessage = await rollbackGeneratedLorebook(request.groupName);
+        const rollbackMessage = createLorebook ? await rollbackGeneratedLorebook(request.groupName) : '';
         throw new Error(`${error?.message ?? error} ${rollbackMessage}`);
+    }
+
+    if (!createLorebook) {
+        return { avatar, world: '' };
     }
 
     const linkResponse = await sendJsonRequest('/api/characters/merge-attributes', {
@@ -423,9 +544,10 @@ async function createGeneratedGroupCard(groupName, generatedDescription, selecte
  * @param {Array<object>} [options.characterList] Loaded character list.
  * @param {Array<string>} [options.worldNames] Loaded lorebook names.
  * @param {object} [options.toaster] Toastr-compatible notifier.
+ * @param {boolean} [options.createLorebook] Whether a lorebook will be created.
  * @returns {{ groupName: string, characters: Array<object> }|null} Valid request data, or null when blocked.
  */
-function validateGroupCardRequest(groupName, selectedCharacters, { characterList = characters, worldNames = world_names, toaster = globalThis.toastr } = {}) {
+function validateGroupCardRequest(groupName, selectedCharacters, { characterList = characters, worldNames = world_names, toaster = globalThis.toastr, createLorebook = true } = {}) {
     const trimmedName = String(groupName ?? '').trim();
     const normalizedName = normalizeName(trimmedName);
 
@@ -448,7 +570,7 @@ function validateGroupCardRequest(groupName, selectedCharacters, { characterList
         return null;
     }
 
-    const hasLorebookNameCollision = (worldNames ?? []).some(name => normalizeName(name) === normalizedName);
+    const hasLorebookNameCollision = createLorebook && (worldNames ?? []).some(name => normalizeName(name) === normalizedName);
 
     if (hasLorebookNameCollision) {
         toaster?.error?.(`Lorebook named "${trimmedName}" already exists.`, 'Combine into Group Card');
@@ -1280,6 +1402,24 @@ class BulkEditOverlay {
             <label for="bulk_combine_group_card_prompt" class="text_label marginTop10">
                 <span>Prompt</span>
                 <textarea id="bulk_combine_group_card_prompt" class="text_pole wide100p margin0" rows="12"></textarea>
+            </label>
+            <div id="bulk_combine_group_card_preset_controls" class="m-t-1 flex-container">
+                <select id="bulk_combine_group_card_preset_select" class="text_pole flex1">
+                    <option value="">— Load preset —</option>
+                </select>
+                <div id="bulk_combine_group_card_preset_save" class="menu_button" title="Save current prompt as preset">
+                    <i class="fa-solid fa-floppy-disk"></i>
+                </div>
+                <div id="bulk_combine_group_card_preset_delete" class="menu_button" title="Delete selected preset">
+                    <i class="fa-solid fa-trash-can"></i>
+                </div>
+                <div id="bulk_combine_group_card_preset_restore" class="menu_button" title="Restore built-in default prompt">
+                    <i class="fa-solid fa-rotate-left"></i>
+                </div>
+            </div>
+            <label for="bulk_combine_group_card_lorebook_toggle" class="checkbox_label marginTop10">
+                <input type="checkbox" id="bulk_combine_group_card_lorebook_toggle" />
+                <span>Create lorebook with original character data</span>
             </label>`;
     };
 
@@ -1300,7 +1440,57 @@ class BulkEditOverlay {
         const popupContent = $(BulkEditOverlay.#getCombineGroupCardPopupContentHtml(validCharacters.length));
         const groupNameInput = popupContent.find('#bulk_combine_group_card_name');
         const promptInput = popupContent.find('#bulk_combine_group_card_prompt');
-        promptInput.val(power_user.group_card_combine_prompt ?? '');
+        const presetSelect = popupContent.find('#bulk_combine_group_card_preset_select');
+        const savePresetButton = popupContent.find('#bulk_combine_group_card_preset_save');
+        const deletePresetButton = popupContent.find('#bulk_combine_group_card_preset_delete');
+        const restorePresetButton = popupContent.find('#bulk_combine_group_card_preset_restore');
+        const lorebookToggle = popupContent.find('#bulk_combine_group_card_lorebook_toggle');
+        promptInput.val(power_user.group_card_combine_prompt ?? DEFAULT_GROUP_CARD_COMBINE_PROMPT);
+        lorebookToggle.prop('checked', false);
+        renderGroupCardCombinePromptPresetSelect(presetSelect);
+
+        presetSelect.on('change', () => {
+            const presetIndex = Number(presetSelect.val());
+            const preset = getGroupCardCombinePromptPresets()[presetIndex];
+
+            if (preset) {
+                promptInput.val(preset.prompt);
+            }
+        });
+
+        savePresetButton.on('click', async () => {
+            const currentIndex = Number(presetSelect.val());
+            const currentPreset = getGroupCardCombinePromptPresets()[currentIndex];
+            const presetName = await callGenericPopup('Enter a prompt preset name:', POPUP_TYPE.INPUT, currentPreset?.name ?? '', {
+                okButton: 'Save',
+                cancelButton: 'Cancel',
+            });
+
+            if (!presetName) {
+                return;
+            }
+
+            const savedPreset = await saveGroupCardCombinePromptPreset(String(presetName), String(promptInput.val() ?? ''));
+
+            if (!savedPreset) {
+                return;
+            }
+
+            const savedIndex = findGroupCardCombinePromptPresetIndex(savedPreset.name);
+            renderGroupCardCombinePromptPresetSelect(presetSelect, savedIndex);
+        });
+
+        deletePresetButton.on('click', () => {
+            const presetIndex = Number(presetSelect.val());
+
+            if (deleteGroupCardCombinePromptPreset(presetIndex)) {
+                renderGroupCardCombinePromptPresetSelect(presetSelect);
+            }
+        });
+
+        restorePresetButton.on('click', () => {
+            promptInput.val(DEFAULT_GROUP_CARD_COMBINE_PROMPT);
+        });
 
         await callGenericPopup(popupContent, POPUP_TYPE.CONFIRM, '', {
             okButton: 'Generate',
@@ -1320,7 +1510,8 @@ class BulkEditOverlay {
                     return false;
                 }
 
-                const request = validateGroupCardRequest(String(groupNameInput.val() ?? ''), selectedCharacters);
+                const createLorebook = Boolean(lorebookToggle.prop('checked'));
+                const request = validateGroupCardRequest(String(groupNameInput.val() ?? ''), selectedCharacters, { createLorebook });
 
                 if (!request) {
                     return false;
@@ -1330,9 +1521,9 @@ class BulkEditOverlay {
                 saveSettingsDebounced();
 
                 try {
-                    await BulkEditOverlay.#startGroupCardCombinePipeline(request.groupName, prompt, request.characters);
+                    await BulkEditOverlay.#startGroupCardCombinePipeline(request.groupName, prompt, request.characters, createLorebook);
                     await getCharacters();
-                    toastr.success('Created group card and linked lorebook.');
+                    toastr.success(createLorebook ? 'Created group card and linked lorebook.' : 'Created group card.');
                     return true;
                 } catch (error) {
                     console.error(error);
@@ -1349,9 +1540,10 @@ class BulkEditOverlay {
      * @param {string} groupName Requested group card name.
      * @param {string} prompt Saved combine prompt.
      * @param {Array<object>} selectedCharacters Valid selected characters.
+     * @param {boolean} [createLorebook] Whether to create and link a lorebook.
      * @returns {Promise<unknown>} Generation result.
      */
-    static #startGroupCardCombinePipeline = async (groupName, prompt, selectedCharacters) => {
+    static #startGroupCardCombinePipeline = async (groupName, prompt, selectedCharacters, createLorebook = true) => {
         const loaderHandle = loader.show({
             slug: 'combine-group-card',
             title: t`Combine into Group Card`,
@@ -1363,7 +1555,7 @@ class BulkEditOverlay {
             const quiet_prompt = buildGroupCardCombineQuietPrompt(prompt, selectedCharacters);
             const generatedDescription = await Generate('quiet', { quiet_prompt });
             const validatedDescription = validateGeneratedGroupCardDescription(generatedDescription, selectedCharacters.length);
-            return await createGeneratedGroupCard(groupName, validatedDescription, selectedCharacters);
+            return await createGeneratedGroupCard(groupName, validatedDescription, selectedCharacters, createLorebook);
         } finally {
             loaderHandle.hide();
         }
@@ -1458,5 +1650,9 @@ export {
     validateGeneratedGroupCardDescription,
     buildLorebookEntry,
     buildLorebookData,
+    getGroupCardCombinePromptPresets,
+    findGroupCardCombinePromptPresetIndex,
+    saveGroupCardCombinePromptPreset,
+    deleteGroupCardCombinePromptPreset,
     createGeneratedGroupCard,
 };
