@@ -25,7 +25,7 @@ import { t } from './i18n.js';
 import { newWorldInfoEntryTemplate, world_names } from './world-info.js';
 import { escapeHtml } from './utils.js';
 
-const CORE_CHARACTER_FIELDS = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
+const CORE_CHARACTER_FIELDS = ['name', 'description', 'personality'];
 const CHARACTER_OPEN_TAG = '<character>';
 const CHARACTER_CLOSE_TAG = '</character>';
 
@@ -90,10 +90,7 @@ function getCoreCharacterPayload(character) {
     const payload = {
         name: '',
         description: '',
-        personality: '',
-        scenario: '',
-        first_mes: '',
-        mes_example: '',
+        personality: ''
     };
 
     for (const field of CORE_CHARACTER_FIELDS) {
@@ -204,9 +201,6 @@ function buildLorebookEntryContent(character) {
         `Name: ${payload.name.trim()}`,
         formatLorebookSummaryField('Description', payload.description),
         formatLorebookSummaryField('Personality', payload.personality),
-        formatLorebookSummaryField('Scenario', payload.scenario),
-        formatLorebookSummaryField('First message', payload.first_mes),
-        formatLorebookSummaryField('Example messages', payload.mes_example),
     ].filter(Boolean);
 
     return fields.join('\n\n');

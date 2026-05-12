@@ -93,13 +93,222 @@ const defaultChatStart = '***';
 const defaultToastPosition = 'toast-top-center';
 
 export const DEFAULT_GROUP_CARD_COMBINE_PROMPT = `Create a final character description for a generated group card from the provided input characters.
-Use only core character fields from the input: name, description, personality, scenario, first_mes, mes_example.
-Output one <character>...</character> block for each input character.
+Use only core character fields from the input: name, description, and personality.
+
+Output one <character>...</character> block for each input character in this canonical form:
+<character>
+	<identity>
+		<!-- Full birth name; use <alias> for nicknames, codenames, titles -->
+		<name />
+		<!-- Any alternate names, nicknames, aliases, or titles -->
+		<alias />
+		<!-- Chronological or apparent age; can be a range or "immortal" -->
+		<age />
+		<!-- Biological sex (male/female/intersex/hermaphrodite/none/etc.) -->
+		<sex />
+		<!-- Gender identity; separate from sex -->
+		<gender />
+		<!-- Pronouns the character uses -->
+		<pronouns />
+		<!-- Species, race, or creature type (human, hellhound, elf, AI, etc.) -->
+		<species />
+		<!-- Any sub-species, ethnicity, or breed variant -->
+		<subspecies />
+		<!-- Height in cm (or other unit; specify) -->
+		<height />
+		<!-- Weight / build -->
+		<weight />
+		<!-- Nationality, realm of origin, or home world -->
+		<origin />
+		<!-- Current occupation(s) or role(s) -->
+		<occupation />
+		<!-- Affiliation(s): organizations, factions, teams, guilds -->
+		<affiliation />
+		<!-- Date of birth (in-universe calendar if applicable) -->
+		<birthdate />
+		<!-- Living status: alive, deceased, undead, resurrected, unknown -->
+		<status />
+	</identity>
+	<appearance>
+		<!-- One-paragraph prose summary of the overall look -->
+		<summary />
+		<!-- Head -->
+		<head>
+			<!-- Face -->
+			<face />
+			<!-- Eyes -->
+			<eyes />
+			<!-- Ears (if distinct from head) -->
+			<ears />
+			<!-- Horns / Antlers / Crest (optional) -->
+			<horns />
+			<!-- Makeup / Cosmetic markings (optional) -->
+			<makeup />
+		</head>
+		<!-- Hair / Fur / Feathers / Scales (whichever applies) -->
+		<covering>
+			<!-- type: hair, fur, feathers, scales, none -->
+			<type />
+			<!-- predominant color(s) -->
+			<color />
+			<!-- markings, patterns, countershading, stripes, spots -->
+			<markings />
+			<!-- length, texture, style (for hair: swept to the side, voluminous, etc.) -->
+			<style />
+		</covering>
+		<!-- Body type and build -->
+		<body>
+			<!-- slender, muscular, curvy, stocky, etc. -->
+			<build />
+			<!-- digitigrade, plantigrade, quadrupedal, etc. -->
+			<stance />
+			<!-- color, retractable, length (optional) -->
+			<claws />
+			<!-- type, span, color, feathered/membranous -->
+			<wings />
+			<!-- tail (optional) -->
+			<tail />
+			<!-- additional arms, tentacles, etc. (optional) -->
+			<extra_limbs />
+			<!-- Piercings -->
+			<piercings />
+			<!-- Scars, tattoos, birthmarks, other distinguishing marks -->
+			<marks />
+		</body>
+	</appearance>
+	<outfit>
+		<!-- Label: "default", "casual", "combat", "formal", "disguise", etc. -->
+		<label>
+			<!-- prose summary of the whole look -->
+			<description />
+			<!-- Headwear -->
+			<headwear />
+			<!-- Top -->
+			<top />
+			<!-- Bottom -->
+			<bottom />
+			<!-- Footwear -->
+			<footwear />
+			<!-- Outerwear (jacket, cloak, cape, coat) -->
+			<outerwear />
+			<!-- Gloves / handwear -->
+			<gloves />
+			<!-- choker, necklace, ring, bracelet, watch, belt -->
+			<accessories />
+			<!-- Repeat <Label> for alternate outfits -->
+		</label>
+	</outfit>
+	<biology>
+		<!-- Senses beyond human baseline -->
+		<senses />
+		<!-- Enhanced physical traits -->
+		<traits />
+		<!-- Genital configuration -->
+		<genitalia />
+		<!-- Reproduction / breeding notes -->
+		<reproduction />
+		<!-- Any biological weaknesses or vulnerabilities -->
+		<weaknesses />
+	</biology>
+	<personality>
+		<!-- One-paragraph summary of disposition -->
+		<summary />
+		<!-- Core temperament (choleric, sanguine, melancholic, phlegmatic) -->
+		<temperament />
+		<!-- Defining personality traits (list of adjectives / short phrases) -->
+		<traits></traits>
+		<!-- Social behavior -->
+		<social>
+			<introvert_extrovert />
+			<!-- awkward, charming, aloof, manipulative -->
+			<description />
+		</social>
+		<!-- Habits / quirks / mannerisms -->
+		<quirks />
+		<!-- Includes: activities, foods, people, hobbies, media genres -->
+		<likes />
+		<dislikes />
+		<hobbies />
+		<voice>
+			<!-- deep, high, raspy, smooth -->
+			<pitch />
+			<accent />
+			<pace />
+			<!-- fast, slow, measured, erratic -->
+			<signature_phrases />
+			<!-- cackle, giggle, snort, never laughs -->
+			<laughter />
+		</voice>
+		<sexuality>
+			<!-- Sexual orientation -->
+			<orientation />
+			<!-- bisexual, heterosexual, homosexual, pansexual, asexual -->
+			<!-- Sexual role / dynamic preference -->
+			<role />
+			<!-- dominant, submissive, switch, predatory, none -->
+			<!-- Sexual confidence / self-perception -->
+			<confidence />
+			<!-- Kinks / fetishes -->
+			<fetishes />
+			<!-- Relationship style -->
+			<!-- monogamous, poly, open, jealous, sharing -->
+			<relationship_style />
+			<!-- Sexual history notes (relevant highlights) -->
+			<history />
+			<!-- Additional notes -->
+			<notes />
+		</sexuality>
+	</personality>
+	<relationships>
+		<!-- Each <relation> captures one interpersonal link -->
+		<relation>
+			<!-- Name of the related character/entity -->
+			<name />
+			<!-- Nature: father, mother, sibling, friend, rival, boss, lover, etc. -->
+			<type />
+			<!-- One-line summary of the dynamic -->
+			<description />
+			<!-- Optional: how the character feels about this person -->
+			<sentiment />
+			<!-- Repeat <relation> for each significant relationship --></relation>
+	</relationships>
+	<background>
+		<!-- Origin story: birth, creation, adoption, awakening -->
+		<origin_story />
+		<!-- Childhood / formative years -->
+		<childhood />
+		<!-- Key life events in chronological order -->
+		<key_events>
+			<event>
+				<age />
+				<description />
+			</event>
+		</key_events>
+		<!-- Education / training -->
+		<education />
+		<!-- Turning points or traumas -->
+		<turning_points />
+		<!-- Current situation / status quo -->
+		<current_situation />
+	</background>
+	<abilities>
+		<ability>
+			<name />
+			<!-- supernatural, magical, psionic, biological, combat, technical, social, creative, practical -->
+			<type />
+			<description />
+			<limitations />
+			<!-- novice, skilled, master -->
+			<proficiency />
+		</ability>
+	</abilities>
+</character>
+
 Each <character> block must use the input character's exact name.
 Do not invent, omit, rename, or merge characters.
 Do not output markdown.
 Do not output code fences.
-Output only the final description.`;
+Output only the final description, no first message or scenario.`;
 
 const avatar_styles = {
     ROUND: 0,
