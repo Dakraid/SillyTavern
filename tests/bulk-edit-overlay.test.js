@@ -76,6 +76,7 @@ beforeAll(async () => {
 beforeEach(() => {
     mockPowerUser.group_card_combine_prompt_presets = [];
     mockPowerUser.group_card_combine_prompt = DEFAULT_GROUP_CARD_COMBINE_PROMPT;
+    mockPowerUser.group_card_combine_included_fields = ['personality'];
     mockCallGenericPopup.mockReset();
     mockSaveSettingsDebounced.mockReset();
     mockWorldNames.length = 0;
@@ -289,6 +290,102 @@ Trailing text
             '/api/characters/create',
             '/api/characters/merge-attributes',
         ]);
+    });
+
+    test('normalizes selected optional fields with always-included fields', () => {
+        expect(mod.ALWAYS_INCLUDED_CHARACTER_FIELDS).toEqual(['name', 'description']);
+        expect(mod.OPTIONAL_CHARACTER_FIELDS).toEqual(['personality', 'scenario', 'first_mes', 'mes_example']);
+        expect(mod.normalizeSelectedFields()).toEqual(['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example']);
+        expect(mod.normalizeSelectedFields(null)).toEqual(['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example']);
+        expect(mod.normalizeSelectedFields(['personality'])).toEqual(['name', 'description', 'personality']);
+        expect(mod.normalizeSelectedFields(['scenario', 'first_mes', 'mes_example'])).toEqual(['name', 'description', 'scenario', 'first_mes', 'mes_example']);
+        expect(mod.normalizeSelectedFields(['invalid_field'])).toEqual(['name', 'description']);
+        expect(mod.normalizeSelectedFields(['personality', 'personality'])).toEqual(['name', 'description', 'personality']);
+    });
+
+    test('builds prompt blocks with selected fields only', () => {
+        const character = {
+            name: 'Alice',
+            description: 'Original description',
+            data: {
+                personality: 'Curious',
+                scenario: 'Shared scene',
+                first_mes: 'Hello there.',
+                mes_example: '<START>Example chat',
+            },
+        };
+        const filteredBlock = mod.buildCoreCharacterPromptBlock(character, ['name', 'description', 'personality']);
+        const filteredPrompt = mod.buildGroupCardCombineQuietPrompt('Prompt', [character], ['name', 'description']);
+        const fullBlock = mod.buildCoreCharacterPromptBlock(character);
+
+        expect(filteredBlock).toContain('<name>Alice</name>');
+        expect(filteredBlock).toContain('<description>Original description</description>');
+        expect(filteredBlock).toContain('<personality>Curious</personality>');
+        expect(filteredBlock).not.toContain('<scenario>');
+        expect(filteredBlock).not.toContain('<first_mes>');
+        expect(filteredBlock).not.toContain('<mes_example>');
+        expect(filteredPrompt).toContain('<description>Original description</description>');
+        expect(filteredPrompt).not.toContain('<personality>');
+        expect(fullBlock).toContain('<scenario>Shared scene</scenario>');
+        expect(fullBlock).toContain('<first_mes>Hello there.</first_mes>');
+        expect(fullBlock).toContain('<mes_example>&lt;START&gt;Example chat</mes_example>');
+    });
+
+    test('builds lorebook content and data with selected fields only', () => {
+        const character = {
+            name: 'Alice',
+            description: 'Original description',
+            data: {
+                personality: 'Curious',
+                scenario: 'Shared scene',
+                first_mes: 'Hello there.',
+                mes_example: '<START>Example chat',
+            },
+        };
+        const filteredContent = mod.buildLorebookEntryContent(character, ['name', 'description', 'scenario']);
+        const fullContent = mod.buildLorebookEntryContent(character);
+        const filteredData = mod.buildLorebookData([character], ['name', 'description', 'scenario']);
+
+        expect(filteredContent).toContain('Name: Alice');
+        expect(filteredContent).toContain('Description:\nOriginal description');
+        expect(filteredContent).toContain('Scenario:\nShared scene');
+        expect(filteredContent).not.toContain('Personality:');
+        expect(filteredContent).not.toContain('First message:');
+        expect(filteredContent).not.toContain('Example messages:');
+        expect(fullContent).toContain('Personality:\nCurious');
+        expect(fullContent).toContain('First message:\nHello there.');
+        expect(fullContent).toContain('Example messages:\n<START>Example chat');
+        expect(filteredData.entries[0].content).toBe(filteredContent);
+    });
+
+    test('writes filtered lorebook entries when creating generated group card', async () => {
+        global.fetch
+            .mockResolvedValueOnce(createResponse())
+            .mockResolvedValueOnce(createResponse({ text: 'group.png' }))
+            .mockResolvedValueOnce(createResponse());
+
+        await expect(mod.createGeneratedGroupCard('Group', '<character>Group</character>', [
+            {
+                name: 'Alice',
+                description: 'Original description',
+                data: {
+                    personality: 'Curious',
+                    scenario: 'Shared scene',
+                    first_mes: 'Hello there.',
+                    mes_example: '<START>Example chat',
+                },
+            },
+            { name: 'Bob', description: 'Second description' },
+        ], true, ['name', 'description', 'scenario'])).resolves.toEqual({ avatar: 'group.png', world: 'Group' });
+
+        const worldBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+        const entryContent = worldBody.data.entries[0].content;
+        expect(entryContent).toContain('Name: Alice');
+        expect(entryContent).toContain('Description:\nOriginal description');
+        expect(entryContent).toContain('Scenario:\nShared scene');
+        expect(entryContent).not.toContain('Personality:');
+        expect(entryContent).not.toContain('First message:');
+        expect(entryContent).not.toContain('Example messages:');
     });
 
 });

@@ -26,8 +26,26 @@ import { newWorldInfoEntryTemplate, world_names } from './world-info.js';
 import { escapeHtml } from './utils.js';
 
 const CORE_CHARACTER_FIELDS = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
+const ALWAYS_INCLUDED_CHARACTER_FIELDS = ['name', 'description'];
+const OPTIONAL_CHARACTER_FIELDS = ['personality', 'scenario', 'first_mes', 'mes_example'];
 const CHARACTER_OPEN_TAG = '<character>';
 const CHARACTER_CLOSE_TAG = '</character>';
+
+/**
+ * Normalizes selected optional fields into ordered core fields.
+ *
+ * @param {Array<string>} [selected] Selected optional fields.
+ * @returns {Array<string>} Ordered included core fields.
+ */
+function normalizeSelectedFields(selected) {
+    if (!selected) {
+        return [...CORE_CHARACTER_FIELDS];
+    }
+
+    const selectedFields = new Set((Array.isArray(selected) ? selected : []).filter(field => OPTIONAL_CHARACTER_FIELDS.includes(field)));
+    const includedFields = new Set([...ALWAYS_INCLUDED_CHARACTER_FIELDS, ...selectedFields]);
+    return CORE_CHARACTER_FIELDS.filter(field => includedFields.has(field));
+}
 
 /**
  * Normalizes names for duplicate checks.
@@ -107,15 +125,16 @@ function getCoreCharacterPayload(character) {
  * Builds an XML-like block for a selected character core payload.
  *
  * @param {object} character Character object.
+ * @param {Array<string>} [fields] Included core fields.
  * @returns {string} XML-like character block.
  */
-function buildCoreCharacterPromptBlock(character) {
+function buildCoreCharacterPromptBlock(character, fields) {
     const payload = getCoreCharacterPayload(character);
-    const fields = CORE_CHARACTER_FIELDS
+    const fieldXml = normalizeSelectedFields(fields)
         .map(field => `  <${field}>${escapeHtml(payload[field])}</${field}>`)
         .join('\n');
 
-    return `${CHARACTER_OPEN_TAG}\n${fields}\n${CHARACTER_CLOSE_TAG}`;
+    return `${CHARACTER_OPEN_TAG}\n${fieldXml}\n${CHARACTER_CLOSE_TAG}`;
 }
 
 /**
@@ -123,10 +142,11 @@ function buildCoreCharacterPromptBlock(character) {
  *
  * @param {string} prompt User-configured combine instructions.
  * @param {Array<object>} selectedCharacters Valid selected characters.
+ * @param {Array<string>} [fields] Included core fields.
  * @returns {string} Quiet prompt.
  */
-function buildGroupCardCombineQuietPrompt(prompt, selectedCharacters) {
-    const payload = selectedCharacters.map(buildCoreCharacterPromptBlock).join('\n\n');
+function buildGroupCardCombineQuietPrompt(prompt, selectedCharacters, fields) {
+    const payload = selectedCharacters.map(character => buildCoreCharacterPromptBlock(character, fields)).join('\n\n');
 
     return `${String(prompt ?? '').trim()}\n\nInput characters:\n${payload}`;
 }
@@ -196,20 +216,22 @@ function formatLorebookSummaryField(label, value) {
  * Builds deterministic lorebook content from original core character fields.
  *
  * @param {object} character Character object.
+ * @param {Array<string>} [fields] Included core fields.
  * @returns {string} Lorebook entry content.
  */
-function buildLorebookEntryContent(character) {
+function buildLorebookEntryContent(character, fields) {
     const payload = getCoreCharacterPayload(character);
-    const fields = [
+    const includedFields = normalizeSelectedFields(fields);
+    const fieldSections = [
         `Name: ${payload.name.trim()}`,
         formatLorebookSummaryField('Description', payload.description),
-        formatLorebookSummaryField('Personality', payload.personality),
-        formatLorebookSummaryField('Scenario', payload.scenario),
-        formatLorebookSummaryField('First message', payload.first_mes),
-        formatLorebookSummaryField('Example messages', payload.mes_example),
+        includedFields.includes('personality') ? formatLorebookSummaryField('Personality', payload.personality) : '',
+        includedFields.includes('scenario') ? formatLorebookSummaryField('Scenario', payload.scenario) : '',
+        includedFields.includes('first_mes') ? formatLorebookSummaryField('First message', payload.first_mes) : '',
+        includedFields.includes('mes_example') ? formatLorebookSummaryField('Example messages', payload.mes_example) : '',
     ].filter(Boolean);
 
-    return fields.join('\n\n');
+    return fieldSections.join('\n\n');
 }
 
 /**
@@ -217,9 +239,10 @@ function buildLorebookEntryContent(character) {
  *
  * @param {object} character Character object.
  * @param {number} index Entry index.
+ * @param {Array<string>} [fields] Included core fields.
  * @returns {object} World info entry data.
  */
-function buildLorebookEntry(character, index) {
+function buildLorebookEntry(character, index, fields) {
     const name = getCoreCharacterField(character, 'name').trim();
     const uid = Number.isInteger(index) && index >= 0 ? index : 0;
 
@@ -228,7 +251,7 @@ function buildLorebookEntry(character, index) {
         ...structuredClone(newWorldInfoEntryTemplate),
         key: [name],
         comment: name,
-        content: buildLorebookEntryContent(character),
+        content: buildLorebookEntryContent(character, fields),
         addMemo: true,
         order: 100 - uid,
     };
@@ -238,11 +261,12 @@ function buildLorebookEntry(character, index) {
  * Builds lorebook data containing one entry per selected character.
  *
  * @param {Array<object>} selectedCharacters Valid selected characters.
+ * @param {Array<string>} [fields] Included core fields.
  * @returns {{ entries: object }} World info data.
  */
-function buildLorebookData(selectedCharacters) {
+function buildLorebookData(selectedCharacters, fields) {
     const entries = Object.fromEntries((selectedCharacters ?? []).map((character, index) => {
-        const entry = buildLorebookEntry(character, index);
+        const entry = buildLorebookEntry(character, index, fields);
         return [entry.uid, entry];
     }));
 
@@ -453,9 +477,10 @@ async function readCreatedCharacterAvatar(response, groupName) {
  * @param {string} generatedDescription Generated character description.
  * @param {Array<object>} selectedChars Selected character objects.
  * @param {boolean} [createLorebook] Whether to create and link a lorebook.
+ * @param {Array<string>} [fields] Included core fields.
  * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
  */
-async function createGeneratedGroupCard(groupName, generatedDescription, selectedChars, createLorebook = true) {
+async function createGeneratedGroupCard(groupName, generatedDescription, selectedChars, createLorebook = true, fields) {
     const request = validateGroupCardRequest(groupName, selectedChars, { createLorebook });
 
     if (!request) {
@@ -467,7 +492,7 @@ async function createGeneratedGroupCard(groupName, generatedDescription, selecte
     if (createLorebook) {
         const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
             name: request.groupName,
-            data: buildLorebookData(request.characters),
+            data: buildLorebookData(request.characters, fields),
         });
         await throwIfNotOk(worldResponse, `Failed to create lorebook "${request.groupName}".`);
     }
@@ -1417,6 +1442,15 @@ class BulkEditOverlay {
                     <i class="fa-solid fa-rotate-left"></i>
                 </div>
             </div>
+            <div class="marginTop10">
+                <small>Included fields</small>
+                <div id="bulk_combine_group_card_field_toggles">
+                    <label class="checkbox_label"><input type="checkbox" data-field="personality" /><span>Personality</span></label>
+                    <label class="checkbox_label"><input type="checkbox" data-field="scenario" /><span>Scenario</span></label>
+                    <label class="checkbox_label"><input type="checkbox" data-field="first_mes" /><span>First message</span></label>
+                    <label class="checkbox_label"><input type="checkbox" data-field="mes_example" /><span>Example messages</span></label>
+                </div>
+            </div>
             <label for="bulk_combine_group_card_lorebook_toggle" class="checkbox_label marginTop10">
                 <input type="checkbox" id="bulk_combine_group_card_lorebook_toggle" />
                 <span>Create lorebook with original character data</span>
@@ -1444,10 +1478,19 @@ class BulkEditOverlay {
         const savePresetButton = popupContent.find('#bulk_combine_group_card_preset_save');
         const deletePresetButton = popupContent.find('#bulk_combine_group_card_preset_delete');
         const restorePresetButton = popupContent.find('#bulk_combine_group_card_preset_restore');
+        const fieldToggles = popupContent.find('#bulk_combine_group_card_field_toggles input[type="checkbox"]');
         const lorebookToggle = popupContent.find('#bulk_combine_group_card_lorebook_toggle');
         promptInput.val(power_user.group_card_combine_prompt ?? DEFAULT_GROUP_CARD_COMBINE_PROMPT);
         lorebookToggle.prop('checked', false);
         renderGroupCardCombinePromptPresetSelect(presetSelect);
+
+        const persistedFields = Array.isArray(power_user.group_card_combine_included_fields)
+            ? power_user.group_card_combine_included_fields
+            : ['personality'];
+        const persistedFieldSet = new Set(persistedFields);
+        fieldToggles.each((_, element) => {
+            $(element).prop('checked', persistedFieldSet.has(String($(element).data('field') ?? '')));
+        });
 
         presetSelect.on('change', () => {
             const presetIndex = Number(presetSelect.val());
@@ -1517,11 +1560,19 @@ class BulkEditOverlay {
                     return false;
                 }
 
+                const selectedOptionalFields = fieldToggles
+                    .toArray()
+                    .filter(element => $(element).prop('checked'))
+                    .map(element => String($(element).data('field') ?? ''))
+                    .filter(field => OPTIONAL_CHARACTER_FIELDS.includes(field));
+                const selectedFields = normalizeSelectedFields(selectedOptionalFields);
+
                 power_user.group_card_combine_prompt = prompt;
+                power_user.group_card_combine_included_fields = selectedOptionalFields;
                 saveSettingsDebounced();
 
                 try {
-                    await BulkEditOverlay.#startGroupCardCombinePipeline(request.groupName, prompt, request.characters, createLorebook);
+                    await BulkEditOverlay.#startGroupCardCombinePipeline(request.groupName, prompt, request.characters, createLorebook, selectedFields);
                     await getCharacters();
                     toastr.success(createLorebook ? 'Created group card and linked lorebook.' : 'Created group card.');
                     return true;
@@ -1541,9 +1592,10 @@ class BulkEditOverlay {
      * @param {string} prompt Saved combine prompt.
      * @param {Array<object>} selectedCharacters Valid selected characters.
      * @param {boolean} [createLorebook] Whether to create and link a lorebook.
+     * @param {Array<string>} [fields] Included core fields.
      * @returns {Promise<unknown>} Generation result.
      */
-    static #startGroupCardCombinePipeline = async (groupName, prompt, selectedCharacters, createLorebook = true) => {
+    static #startGroupCardCombinePipeline = async (groupName, prompt, selectedCharacters, createLorebook = true, fields) => {
         const loaderHandle = loader.show({
             slug: 'combine-group-card',
             title: t`Combine into Group Card`,
@@ -1552,10 +1604,10 @@ class BulkEditOverlay {
         });
 
         try {
-            const quiet_prompt = buildGroupCardCombineQuietPrompt(prompt, selectedCharacters);
+            const quiet_prompt = buildGroupCardCombineQuietPrompt(prompt, selectedCharacters, fields);
             const generatedDescription = await Generate('quiet', { quiet_prompt });
             const validatedDescription = validateGeneratedGroupCardDescription(generatedDescription, selectedCharacters.length);
-            return await createGeneratedGroupCard(groupName, validatedDescription, selectedCharacters, createLorebook);
+            return await createGeneratedGroupCard(groupName, validatedDescription, selectedCharacters, createLorebook, fields);
         } finally {
             loaderHandle.hide();
         }
@@ -1644,10 +1696,16 @@ export {
     BulkEditOverlayState,
     CharacterContextMenu,
     BulkEditOverlay,
+    ALWAYS_INCLUDED_CHARACTER_FIELDS,
+    OPTIONAL_CHARACTER_FIELDS,
     normalizeName,
+    normalizeSelectedFields,
     validateGroupCardRequest,
     getCoreCharacterPayload,
+    buildCoreCharacterPromptBlock,
+    buildGroupCardCombineQuietPrompt,
     validateGeneratedGroupCardDescription,
+    buildLorebookEntryContent,
     buildLorebookEntry,
     buildLorebookData,
     getGroupCardCombinePromptPresets,

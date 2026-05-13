@@ -520,6 +520,7 @@ export const power_user = {
     custom_stopping_strings_macro: true,
     group_card_combine_prompt: DEFAULT_GROUP_CARD_COMBINE_PROMPT,
     group_card_combine_prompt_presets: [],
+    group_card_combine_included_fields: ['personality'],
     fuzzy_search: false,
     encode_tags: false,
     experimental_macro_engine: true,
