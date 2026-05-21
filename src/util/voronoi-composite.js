@@ -1,6 +1,6 @@
 import { Delaunay } from 'd3-delaunay';
-import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
+import sharp from 'sharp';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -47,19 +47,21 @@ export async function generateVoronoiComposite(
 		    ? Math.round(options.height)
 		    : DEFAULT_HEIGHT;
 
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
     if (avatarPaths.length === 1) {
-        const image = await readAvatarImage(avatarPaths[0]);
-        image.cover({ w: width, h: height });
-        await writePng(image, outputPath);
+        const buffer = await readAvatarBuffer(avatarPaths[0], width, height);
+        await sharp(buffer).png().toFile(outputPath);
         return outputPath;
     }
 
     const points = generateSeedPoints(avatarPaths.length, width, height);
     const delaunay = Delaunay.from(points);
     const voronoi = delaunay.voronoi([0, 0, width, height]);
-    const composite = new Jimp({ width, height, color: 0x000000ff });
     /** @type {Array<Array<[number, number]>>} */
     const polygons = [];
+    /** @type {Array<{ input: Buffer, blend: 'over' }>} */
+    const composites = [];
 
     for (let i = 0; i < avatarPaths.length; i++) {
         const polygon = voronoi.cellPolygon(i);
@@ -67,30 +69,94 @@ export async function generateVoronoiComposite(
             continue;
         }
 
-        polygons.push(polygon.map((point) => [point[0], point[1]]));
+        /** @type {Array<[number, number]>} */
+        const normalizedPolygon = polygon.map((point) => [point[0], point[1]]);
+        polygons.push(normalizedPolygon);
 
-        const image = await readAvatarImage(avatarPaths[i]);
-        image.cover({ w: width, h: height });
+        const imageBuffer = await readAvatarBuffer(avatarPaths[i], width, height);
+        const maskBuffer = Buffer.from(
+            createSvgPolygonMask(width, height, normalizedPolygon),
+        );
+        const maskedCell = await sharp(imageBuffer)
+            .composite([{ input: maskBuffer, blend: 'dest-in' }])
+            .png()
+            .toBuffer();
 
-        const mask = createPolygonMask(width, height, polygon);
-        image.mask({ src: mask, x: 0, y: 0 });
-        composite.blit({ src: image, x: 0, y: 0 });
+        composites.push({ input: maskedCell, blend: 'over' });
     }
 
-    drawBorders(composite, polygons);
-    await writePng(composite, outputPath);
+    if (polygons.length) {
+        composites.push({
+            input: Buffer.from(
+                createBordersSvg(
+                    width,
+                    height,
+                    polygons,
+                    BORDER_COLOR,
+                    BORDER_RADIUS * 2,
+                ),
+            ),
+            blend: 'over',
+        });
+    }
+
+    await sharp({
+        create: {
+            width,
+            height,
+            channels: 4,
+            background: { r: 0, g: 0, b: 0, alpha: 1 },
+        },
+    })
+        .composite(composites)
+        .png()
+        .toFile(outputPath);
+
     return outputPath;
 }
 
-async function readAvatarImage(avatarPath) {
+async function readAvatarBuffer(avatarPath, width, height) {
     try {
-        return await Jimp.read(avatarPath);
+        return await createAvatarBuffer(avatarPath, width, height);
     } catch {
         const fallbackPath = path.isAbsolute(DEFAULT_AVATAR_PATH)
             ? DEFAULT_AVATAR_PATH
             : path.resolve(DEFAULT_AVATAR_PATH);
-        return await Jimp.read(fallbackPath);
+        return await createAvatarBuffer(fallbackPath, width, height);
     }
+}
+
+function createAvatarBuffer(avatarPath, width, height) {
+    return sharp(avatarPath)
+        .resize(width, height, {
+            fit: 'cover',
+            position: sharp.strategy.attention,
+        })
+        .png()
+        .toBuffer();
+}
+
+function createSvgPolygonMask(width, height, polygon) {
+    const points = polygon.map(([x, y]) => `${x},${y}`).join(' ');
+
+    return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+  <polygon points="${points}" fill="white" />
+</svg>`;
+}
+
+function createBordersSvg(width, height, polygons, color, strokeWidth) {
+    const stroke = `rgb(${color.r},${color.g},${color.b})`;
+    const polylines = polygons
+        .map((polygon) => {
+            const closedPolygon = [...polygon, polygon[0]];
+            const points = closedPolygon.map(([x, y]) => `${x},${y}`).join(' ');
+            return `  <polyline points="${points}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linejoin="round" stroke-linecap="round" />`;
+        })
+        .join('\n');
+
+    return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+${polylines}
+</svg>`;
 }
 
 /**
@@ -153,120 +219,4 @@ function nearestDistance(point, points, width, height) {
     }
 
     return distance;
-}
-
-function createPolygonMask(width, height, polygon) {
-    const mask = new Jimp({ width, height, color: 0x000000ff });
-    const data = mask.bitmap.data;
-
-    for (let y = 0; y < height; y++) {
-        const intersections = [];
-        const scanY = y + 0.5;
-
-        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-            const [x1, y1] = polygon[j];
-            const [x2, y2] = polygon[i];
-
-            if (y1 > scanY === y2 > scanY) {
-                continue;
-            }
-
-            const x = x1 + ((scanY - y1) * (x2 - x1)) / (y2 - y1);
-            intersections.push(x);
-        }
-
-        intersections.sort((a, b) => a - b);
-
-        for (let i = 0; i < intersections.length; i += 2) {
-            if (intersections[i + 1] === undefined) {
-                break;
-            }
-
-            const startX = Math.max(0, Math.ceil(intersections[i]));
-            const endX = Math.min(width - 1, Math.floor(intersections[i + 1]));
-
-            for (let x = startX; x <= endX; x++) {
-                const index = (y * width + x) * 4;
-                data[index] = 255;
-                data[index + 1] = 255;
-                data[index + 2] = 255;
-                data[index + 3] = 255;
-            }
-        }
-    }
-
-    return mask;
-}
-
-function drawBorders(image, polygons) {
-    for (const polygon of polygons) {
-        for (let i = 0; i < polygon.length; i++) {
-            const [x0, y0] = polygon[i];
-            const [x1, y1] = polygon[(i + 1) % polygon.length];
-            drawLine(
-                image,
-                Math.round(x0),
-                Math.round(y0),
-                Math.round(x1),
-                Math.round(y1),
-            );
-        }
-    }
-}
-
-function drawLine(image, x0, y0, x1, y1) {
-    const dx = Math.abs(x1 - x0);
-    const dy = Math.abs(y1 - y0);
-    const sx = x0 < x1 ? 1 : -1;
-    const sy = y0 < y1 ? 1 : -1;
-    let err = dx - dy;
-
-    while (true) {
-        setPixelThick(image, x0, y0, BORDER_COLOR, BORDER_RADIUS);
-
-        if (x0 === x1 && y0 === y1) {
-            break;
-        }
-
-        const e2 = 2 * err;
-
-        if (e2 > -dy) {
-            err -= dy;
-            x0 += sx;
-        }
-
-        if (e2 < dx) {
-            err += dx;
-            y0 += sy;
-        }
-    }
-}
-
-function setPixelThick(image, centerX, centerY, color, radius) {
-    const width = image.bitmap.width;
-    const height = image.bitmap.height;
-    const data = image.bitmap.data;
-
-    for (let dy = -radius; dy <= radius; dy++) {
-        for (let dx = -radius; dx <= radius; dx++) {
-            const x = centerX + dx;
-            const y = centerY + dy;
-
-            if (x < 0 || x >= width || y < 0 || y >= height) {
-                continue;
-            }
-
-            const index = (y * width + x) * 4;
-            data[index] = color.r;
-            data[index + 1] = color.g;
-            data[index + 2] = color.b;
-            data[index + 3] = color.a;
-        }
-    }
-}
-
-async function writePng(image, outputPath) {
-    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-    const buffer = await image.getBuffer(JimpMime.png);
-    fs.writeFileSync(outputPath, buffer);
 }
