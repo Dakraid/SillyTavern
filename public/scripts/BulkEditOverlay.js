@@ -13,6 +13,8 @@ import {
     printCharactersDebounced,
     deleteCharacter,
     saveSettingsDebounced,
+    substituteParams,
+    unshallowCharacter,
 } from '../script.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
@@ -130,8 +132,12 @@ function getCoreCharacterPayload(character) {
  */
 function buildCoreCharacterPromptBlock(character, fields) {
     const payload = getCoreCharacterPayload(character);
+    const characterName = payload.name;
     const fieldXml = normalizeSelectedFields(fields)
-        .map(field => `  <${field}>${escapeHtml(payload[field])}</${field}>`)
+        .map(field => {
+            const value = field === 'name' ? payload[field] : substituteParams(payload[field], { name2Override: characterName });
+            return `  <${field}>${escapeHtml(value)}</${field}>`;
+        })
         .join('\n');
 
     return `${CHARACTER_OPEN_TAG}\n${fieldXml}\n${CHARACTER_CLOSE_TAG}`;
@@ -1464,6 +1470,10 @@ class BulkEditOverlay {
      * @returns {Promise<void>}
      */
     static combineIntoGroupCard = async (selectedCharacters) => {
+        await Promise.all((selectedCharacters ?? [])
+            .filter(id => typeof id === 'number' && characters[id]?.shallow)
+            .map(id => unshallowCharacter(id))
+        );
         const validCharacters = getValidSelectedCharacters(selectedCharacters, characters);
 
         if (validCharacters.length < 2) {
@@ -1607,7 +1617,48 @@ class BulkEditOverlay {
             const quiet_prompt = buildGroupCardCombineQuietPrompt(prompt, selectedCharacters, fields);
             const generatedDescription = await Generate('quiet', { quiet_prompt });
             const validatedDescription = validateGeneratedGroupCardDescription(generatedDescription, selectedCharacters.length);
-            return await createGeneratedGroupCard(groupName, validatedDescription, selectedCharacters, createLorebook, fields);
+            const result = await createGeneratedGroupCard(groupName, validatedDescription, selectedCharacters, createLorebook, fields);
+
+            // Generate Voronoi composite avatar from selected character images
+            try {
+                const avatarFilenames = selectedCharacters.map(c => c.avatar).filter(Boolean);
+                if (avatarFilenames.length > 0) {
+                    const compositeResponse = await fetch('/api/characters/generate-voronoi-composite', {
+                        method: 'POST',
+                        headers: { ...getRequestHeaders(), 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ avatars: avatarFilenames }),
+                    });
+
+                    if (compositeResponse.ok) {
+                        const { file } = await compositeResponse.json();
+                        if (file) {
+                            // Fetch the composite image
+                            const imageResponse = await fetch(`/api/characters/generate-voronoi-composite?file=${encodeURIComponent(file)}`);
+                            if (imageResponse.ok) {
+                                const imageBlob = await imageResponse.blob();
+
+                                // Upload as new avatar
+                                const formData = new FormData();
+                                formData.append('avatar_url', result.avatar);
+                                formData.append('avatar', imageBlob, 'avatar.png');
+
+                                const editHeaders = getRequestHeaders();
+                                delete editHeaders['Content-Type'];
+
+                                await fetch('/api/characters/edit-avatar', {
+                                    method: 'POST',
+                                    headers: editHeaders,
+                                    body: formData,
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('Failed to generate Voronoi composite avatar:', error);
+            }
+
+            return result;
         } finally {
             loaderHandle.hide();
         }
