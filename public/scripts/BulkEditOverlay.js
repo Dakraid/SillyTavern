@@ -22,14 +22,36 @@ import { loader } from './action-loader.js';
 import { convertCharacterToPersona } from './personas.js';
 import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { DEFAULT_GROUP_CARD_COMBINE_PROMPT, power_user } from './power-user.js';
-import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, tag_map, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting } from './tags.js';
+import {
+    createTagInput,
+    getTagKeyForEntity,
+    getTagsList,
+    printTagList,
+    tag_map,
+    compareTagsForSort,
+    removeTagFromMap,
+    importTags,
+    tag_import_setting,
+} from './tags.js';
 import { t } from './i18n.js';
 import { newWorldInfoEntryTemplate, world_names } from './world-info.js';
 import { escapeHtml } from './utils.js';
 
-const CORE_CHARACTER_FIELDS = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
+const CORE_CHARACTER_FIELDS = [
+    'name',
+    'description',
+    'personality',
+    'scenario',
+    'first_mes',
+    'mes_example',
+];
 const ALWAYS_INCLUDED_CHARACTER_FIELDS = ['name', 'description'];
-const OPTIONAL_CHARACTER_FIELDS = ['personality', 'scenario', 'first_mes', 'mes_example'];
+const OPTIONAL_CHARACTER_FIELDS = [
+    'personality',
+    'scenario',
+    'first_mes',
+    'mes_example',
+];
 const CHARACTER_OPEN_TAG = '<character>';
 const CHARACTER_CLOSE_TAG = '</character>';
 
@@ -44,9 +66,16 @@ function normalizeSelectedFields(selected) {
         return [...CORE_CHARACTER_FIELDS];
     }
 
-    const selectedFields = new Set((Array.isArray(selected) ? selected : []).filter(field => OPTIONAL_CHARACTER_FIELDS.includes(field)));
-    const includedFields = new Set([...ALWAYS_INCLUDED_CHARACTER_FIELDS, ...selectedFields]);
-    return CORE_CHARACTER_FIELDS.filter(field => includedFields.has(field));
+    const selectedFields = new Set(
+        (Array.isArray(selected) ? selected : []).filter((field) =>
+            OPTIONAL_CHARACTER_FIELDS.includes(field),
+        ),
+    );
+    const includedFields = new Set([
+        ...ALWAYS_INCLUDED_CHARACTER_FIELDS,
+        ...selectedFields,
+    ]);
+    return CORE_CHARACTER_FIELDS.filter((field) => includedFields.has(field));
 }
 
 /**
@@ -56,7 +85,9 @@ function normalizeSelectedFields(selected) {
  * @returns {string} Trimmed lowercase name.
  */
 function normalizeName(name) {
-    return String(name ?? '').trim().toLowerCase();
+    return String(name ?? '')
+        .trim()
+        .toLowerCase();
 }
 
 /**
@@ -66,7 +97,13 @@ function normalizeName(name) {
  * @returns {string} Character name.
  */
 function getCharacterName(character) {
-    return character?.name ?? character?.ch_name ?? character?.data?.name ?? character?.data?.ch_name ?? '';
+    return (
+        character?.name ??
+		character?.ch_name ??
+		character?.data?.name ??
+		character?.data?.ch_name ??
+		''
+    );
 }
 
 /**
@@ -80,8 +117,12 @@ function getValidSelectedCharacters(selectedCharacters, characterList) {
     const availableCharacters = characterList ?? [];
 
     return (selectedCharacters ?? [])
-        .map(character => typeof character === 'number' ? availableCharacters[character] : character)
-        .filter(character => normalizeName(getCharacterName(character)));
+        .map((character) =>
+            typeof character === 'number'
+                ? availableCharacters[character]
+                : character,
+        )
+        .filter((character) => normalizeName(getCharacterName(character)));
 }
 
 /**
@@ -134,8 +175,11 @@ function buildCoreCharacterPromptBlock(character, fields) {
     const payload = getCoreCharacterPayload(character);
     const characterName = payload.name;
     const fieldXml = normalizeSelectedFields(fields)
-        .map(field => {
-            const value = field === 'name' ? payload[field] : substituteParams(payload[field], { name2Override: characterName });
+        .map((field) => {
+            const value =
+				field === 'name'
+				    ? payload[field]
+				    : substituteParams(payload[field], { name2Override: characterName });
             return `  <${field}>${escapeHtml(value)}</${field}>`;
         })
         .join('\n');
@@ -152,7 +196,9 @@ function buildCoreCharacterPromptBlock(character, fields) {
  * @returns {string} Quiet prompt.
  */
 function buildGroupCardCombineQuietPrompt(prompt, selectedCharacters, fields) {
-    const payload = selectedCharacters.map(character => buildCoreCharacterPromptBlock(character, fields)).join('\n\n');
+    const payload = selectedCharacters
+        .map((character) => buildCoreCharacterPromptBlock(character, fields))
+        .join('\n\n');
 
     return `${String(prompt ?? '').trim()}\n\nInput characters:\n${payload}`;
 }
@@ -172,7 +218,75 @@ function stripTripleBacktickFences(output) {
 }
 
 /**
+ * Extracts top-level XML blocks from text. Each block is a tag pair whose
+ * open tag starts at the beginning of a line (or the start of the string).
+ * Nested tags of the same name are handled by counting depth.
+ *
+ * @param {string} text Input text to scan.
+ * @returns {Array<{tag: string, content: string, raw: string}>} Extracted blocks.
+ */
+function extractTopLevelXmlBlocks(text) {
+    /** @type {Array<{tag: string, content: string, raw: string}>} */
+    const blocks = [];
+    /** @type {number} End index of the last extracted block; inner tags before this are skipped. */
+    let consumedUpTo = 0;
+    // Match any opening XML tag at the start of the string or after a newline
+    const openTagRegex = /(?:^|\n)\s*<([a-zA-Z_][\w.-]*)>/g;
+    let match;
+
+    while ((match = openTagRegex.exec(text)) !== null) {
+        // Skip if this tag falls inside a block we already extracted
+        if (match.index < consumedUpTo) {
+            continue;
+        }
+
+        const tagName = match[1];
+        const closeTag = `</${tagName}>`;
+        const openTag = `<${tagName}>`;
+
+        // Walk forward from the open tag, tracking depth
+        const searchStart = match.index + match[0].length;
+        let depth = 1;
+        let pos = searchStart;
+        let closeIndex = -1;
+
+        while (depth > 0 && pos < text.length) {
+            const nextOpen = text.indexOf(openTag, pos);
+            const nextClose = text.indexOf(closeTag, pos);
+
+            if (nextClose === -1) {
+                break; // Unmatched — skip this block
+            }
+
+            if (nextOpen !== -1 && nextOpen < nextClose) {
+                depth++;
+                pos = nextOpen + openTag.length;
+            } else {
+                depth--;
+                if (depth === 0) {
+                    closeIndex = nextClose;
+                }
+                pos = nextClose + closeTag.length;
+            }
+        }
+
+        if (closeIndex !== -1) {
+            const blockStart = match.index;
+            const blockEnd = closeIndex + closeTag.length;
+            const raw = text.slice(blockStart, blockEnd);
+            const content = text.slice(searchStart, closeIndex);
+            blocks.push({ tag: tagName, content, raw });
+            consumedUpTo = blockEnd;
+        }
+    }
+
+    return blocks;
+}
+
+/**
  * Extracts and validates generated group card description XML-like output.
+ * Supports arbitrary top-level XML elements alongside <character> blocks.
+ * Each tag pair is independently verified for matching open/close tags.
  *
  * @param {string} output Raw generated output.
  * @param {number} selectedCharacterCount Count of selected source characters.
@@ -186,23 +300,22 @@ function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
         throw new Error('Generation returned empty output.');
     }
 
-    const firstCharacterTagIndex = unfencedOutput.indexOf(CHARACTER_OPEN_TAG);
-    const lastCharacterCloseTagIndex = unfencedOutput.lastIndexOf(CHARACTER_CLOSE_TAG);
+    const blocks = extractTopLevelXmlBlocks(unfencedOutput);
 
-    if (firstCharacterTagIndex === -1 || lastCharacterCloseTagIndex === -1 || lastCharacterCloseTagIndex < firstCharacterTagIndex) {
-        throw new Error('Generation did not return character XML.');
+    if (blocks.length === 0) {
+        throw new Error('Generation did not return any valid XML blocks.');
     }
 
-    const generatedDescription = unfencedOutput
-        .slice(firstCharacterTagIndex, lastCharacterCloseTagIndex + CHARACTER_CLOSE_TAG.length)
-        .trim();
-    const characterTagCount = generatedDescription.match(/<character>/g)?.length ?? 0;
+    const characterBlocks = blocks.filter((b) => b.tag === 'character');
+    const characterTagCount = characterBlocks.length;
 
     if (characterTagCount < selectedCharacterCount) {
-        throw new Error(`Generation returned ${characterTagCount} character block(s), expected at least ${selectedCharacterCount}.`);
+        throw new Error(
+            `Generation returned ${characterTagCount} character block(s), expected at least ${selectedCharacterCount}.`,
+        );
     }
 
-    return generatedDescription;
+    return blocks.map((b) => b.raw).join('\n\n');
 }
 
 /**
@@ -231,10 +344,18 @@ function buildLorebookEntryContent(character, fields) {
     const fieldSections = [
         `Name: ${payload.name.trim()}`,
         formatLorebookSummaryField('Description', payload.description),
-        includedFields.includes('personality') ? formatLorebookSummaryField('Personality', payload.personality) : '',
-        includedFields.includes('scenario') ? formatLorebookSummaryField('Scenario', payload.scenario) : '',
-        includedFields.includes('first_mes') ? formatLorebookSummaryField('First message', payload.first_mes) : '',
-        includedFields.includes('mes_example') ? formatLorebookSummaryField('Example messages', payload.mes_example) : '',
+        includedFields.includes('personality')
+            ? formatLorebookSummaryField('Personality', payload.personality)
+            : '',
+        includedFields.includes('scenario')
+            ? formatLorebookSummaryField('Scenario', payload.scenario)
+            : '',
+        includedFields.includes('first_mes')
+            ? formatLorebookSummaryField('First message', payload.first_mes)
+            : '',
+        includedFields.includes('mes_example')
+            ? formatLorebookSummaryField('Example messages', payload.mes_example)
+            : '',
     ].filter(Boolean);
 
     return fieldSections.join('\n\n');
@@ -271,10 +392,12 @@ function buildLorebookEntry(character, index, fields) {
  * @returns {{ entries: object }} World info data.
  */
 function buildLorebookData(selectedCharacters, fields) {
-    const entries = Object.fromEntries((selectedCharacters ?? []).map((character, index) => {
-        const entry = buildLorebookEntry(character, index, fields);
-        return [entry.uid, entry];
-    }));
+    const entries = Object.fromEntries(
+        (selectedCharacters ?? []).map((character, index) => {
+            const entry = buildLorebookEntry(character, index, fields);
+            return [entry.uid, entry];
+        }),
+    );
 
     return { entries };
 }
@@ -299,14 +422,19 @@ function getGroupCardCombinePromptPresets() {
  * @param {Array<{ name: string, prompt: string }>} [presets] Prompt presets.
  * @returns {number} Preset index, or -1.
  */
-function findGroupCardCombinePromptPresetIndex(name, presets = getGroupCardCombinePromptPresets()) {
+function findGroupCardCombinePromptPresetIndex(
+    name,
+    presets = getGroupCardCombinePromptPresets(),
+) {
     const normalizedName = normalizeName(name);
 
     if (!normalizedName) {
         return -1;
     }
 
-    return presets.findIndex(preset => normalizeName(preset?.name) === normalizedName);
+    return presets.findIndex(
+        (preset) => normalizeName(preset?.name) === normalizedName,
+    );
 }
 
 /**
@@ -318,7 +446,11 @@ function findGroupCardCombinePromptPresetIndex(name, presets = getGroupCardCombi
  * @param {object} [options.toaster] Toastr-compatible notifier.
  * @returns {Promise<{ name: string, prompt: string }|null>} Saved preset, or null when cancelled.
  */
-async function saveGroupCardCombinePromptPreset(name, prompt, { toaster = globalThis.toastr } = {}) {
+async function saveGroupCardCombinePromptPreset(
+    name,
+    prompt,
+    { toaster = globalThis.toastr } = {},
+) {
     const trimmedName = String(name ?? '').trim();
 
     if (!trimmedName) {
@@ -327,14 +459,22 @@ async function saveGroupCardCombinePromptPreset(name, prompt, { toaster = global
     }
 
     const presets = getGroupCardCombinePromptPresets();
-    const existingIndex = findGroupCardCombinePromptPresetIndex(trimmedName, presets);
+    const existingIndex = findGroupCardCombinePromptPresetIndex(
+        trimmedName,
+        presets,
+    );
     const savedPreset = { name: trimmedName, prompt: String(prompt ?? '') };
 
     if (existingIndex !== -1) {
-        const overwrite = await callGenericPopup(`Overwrite prompt preset "${escapeHtml(trimmedName)}"?`, POPUP_TYPE.CONFIRM, '', {
-            okButton: 'Overwrite',
-            cancelButton: 'Cancel',
-        });
+        const overwrite = await callGenericPopup(
+            `Overwrite prompt preset "${escapeHtml(trimmedName)}"?`,
+            POPUP_TYPE.CONFIRM,
+            '',
+            {
+                okButton: 'Overwrite',
+                cancelButton: 'Cancel',
+            },
+        );
 
         if (overwrite !== POPUP_RESULT.AFFIRMATIVE) {
             return null;
@@ -358,7 +498,11 @@ async function saveGroupCardCombinePromptPreset(name, prompt, { toaster = global
 function deleteGroupCardCombinePromptPreset(presetIndex) {
     const presets = getGroupCardCombinePromptPresets();
 
-    if (!Number.isInteger(presetIndex) || presetIndex < 0 || presetIndex >= presets.length) {
+    if (
+        !Number.isInteger(presetIndex) ||
+		presetIndex < 0 ||
+		presetIndex >= presets.length
+    ) {
         return false;
     }
 
@@ -373,13 +517,18 @@ function deleteGroupCardCombinePromptPreset(presetIndex) {
  * @param {JQuery<HTMLElement>} presetSelect Preset select element.
  * @param {number|string} [selectedIndex] Selected preset index.
  */
-function renderGroupCardCombinePromptPresetSelect(presetSelect, selectedIndex = '') {
+function renderGroupCardCombinePromptPresetSelect(
+    presetSelect,
+    selectedIndex = '',
+) {
     const presets = getGroupCardCombinePromptPresets();
     presetSelect.empty();
     presetSelect.append($('<option></option>').val('').text('— Load preset —'));
 
     presets.forEach((preset, index) => {
-        presetSelect.append($('<option></option>').val(String(index)).text(preset.name));
+        presetSelect.append(
+            $('<option></option>').val(String(index)).text(preset.name),
+        );
     });
 
     presetSelect.val(selectedIndex === '' ? '' : String(selectedIndex));
@@ -423,8 +572,13 @@ async function sendJsonRequest(url, body) {
  */
 async function rollbackGeneratedLorebook(groupName) {
     try {
-        const response = await sendJsonRequest('/api/worldinfo/delete', { name: groupName });
-        await throwIfNotOk(response, `Failed to roll back lorebook "${groupName}".`);
+        const response = await sendJsonRequest('/api/worldinfo/delete', {
+            name: groupName,
+        });
+        await throwIfNotOk(
+            response,
+            `Failed to roll back lorebook "${groupName}".`,
+        );
         return `Rolled back lorebook "${groupName}".`;
     } catch (error) {
         return `Failed to roll back lorebook "${groupName}": ${error?.message ?? error}.`;
@@ -440,8 +594,14 @@ async function rollbackGeneratedLorebook(groupName) {
  */
 async function rollbackGeneratedCharacter(groupName, avatar) {
     try {
-        const response = await sendJsonRequest('/api/characters/delete', { avatar_url: avatar, delete_chats: false });
-        await throwIfNotOk(response, `Failed to roll back character "${groupName}" (avatar "${avatar}").`);
+        const response = await sendJsonRequest('/api/characters/delete', {
+            avatar_url: avatar,
+            delete_chats: false,
+        });
+        await throwIfNotOk(
+            response,
+            `Failed to roll back character "${groupName}" (avatar "${avatar}").`,
+        );
         return `Rolled back character "${groupName}" (avatar "${avatar}").`;
     } catch (error) {
         return `Failed to roll back character "${groupName}" (avatar "${avatar}"): ${error?.message ?? error}.`;
@@ -459,7 +619,9 @@ async function readCreatedCharacterAvatar(response, groupName) {
     const responseText = (await response.text()).trim();
 
     if (!responseText) {
-        throw new Error(`Character "${groupName}" create response did not include avatar.`);
+        throw new Error(
+            `Character "${groupName}" create response did not include avatar.`,
+        );
     }
 
     if (responseText.startsWith('{')) {
@@ -467,7 +629,9 @@ async function readCreatedCharacterAvatar(response, groupName) {
         const avatar = String(data?.avatar ?? '').trim();
 
         if (!avatar) {
-            throw new Error(`Character "${groupName}" create response did not include avatar.`);
+            throw new Error(
+                `Character "${groupName}" create response did not include avatar.`,
+            );
         }
 
         return avatar;
@@ -486,21 +650,34 @@ async function readCreatedCharacterAvatar(response, groupName) {
  * @param {Array<string>} [fields] Included core fields.
  * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
  */
-async function createGeneratedGroupCard(groupName, generatedDescription, selectedChars, createLorebook = true, fields) {
-    const request = validateGroupCardRequest(groupName, selectedChars, { createLorebook });
+async function createGeneratedGroupCard(
+    groupName,
+    generatedDescription,
+    selectedChars,
+    createLorebook = true,
+    fields,
+) {
+    const request = validateGroupCardRequest(groupName, selectedChars, {
+        createLorebook,
+    });
 
     if (!request) {
         throw new Error('Group card request is no longer valid.');
     }
 
-    const sourceNames = request.characters.map(character => getCoreCharacterField(character, 'name').trim()).join(', ');
+    const sourceNames = request.characters
+        .map((character) => getCoreCharacterField(character, 'name').trim())
+        .join(', ');
 
     if (createLorebook) {
         const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
             name: request.groupName,
             data: buildLorebookData(request.characters, fields),
         });
-        await throwIfNotOk(worldResponse, `Failed to create lorebook "${request.groupName}".`);
+        await throwIfNotOk(
+            worldResponse,
+            `Failed to create lorebook "${request.groupName}".`,
+        );
     }
 
     const characterResponse = await sendJsonRequest('/api/characters/create', {
@@ -529,17 +706,28 @@ async function createGeneratedGroupCard(groupName, generatedDescription, selecte
 
     if (!characterResponse.ok) {
         const responseText = await characterResponse.text();
-        const rollbackMessage = createLorebook ? await rollbackGeneratedLorebook(request.groupName) : '';
-        const artifactMessage = createLorebook ? ` after lorebook "${request.groupName}" was created` : '';
-        throw new Error(`Failed to create character "${request.groupName}"${artifactMessage}. ${responseText || 'No response body.'} ${rollbackMessage}`);
+        const rollbackMessage = createLorebook
+            ? await rollbackGeneratedLorebook(request.groupName)
+            : '';
+        const artifactMessage = createLorebook
+            ? ` after lorebook "${request.groupName}" was created`
+            : '';
+        throw new Error(
+            `Failed to create character "${request.groupName}"${artifactMessage}. ${responseText || 'No response body.'} ${rollbackMessage}`,
+        );
     }
 
     let avatar = '';
 
     try {
-        avatar = await readCreatedCharacterAvatar(characterResponse, request.groupName);
+        avatar = await readCreatedCharacterAvatar(
+            characterResponse,
+            request.groupName,
+        );
     } catch (error) {
-        const rollbackMessage = createLorebook ? await rollbackGeneratedLorebook(request.groupName) : '';
+        const rollbackMessage = createLorebook
+            ? await rollbackGeneratedLorebook(request.groupName)
+            : '';
         throw new Error(`${error?.message ?? error} ${rollbackMessage}`);
     }
 
@@ -547,20 +735,30 @@ async function createGeneratedGroupCard(groupName, generatedDescription, selecte
         return { avatar, world: '' };
     }
 
-    const linkResponse = await sendJsonRequest('/api/characters/merge-attributes', {
-        avatar,
-        data: {
-            extensions: {
-                world: request.groupName,
+    const linkResponse = await sendJsonRequest(
+        '/api/characters/merge-attributes',
+        {
+            avatar,
+            data: {
+                extensions: {
+                    world: request.groupName,
+                },
             },
         },
-    });
+    );
 
     if (!linkResponse.ok) {
         const responseText = await linkResponse.text();
-        const characterRollbackMessage = await rollbackGeneratedCharacter(request.groupName, avatar);
-        const lorebookRollbackMessage = await rollbackGeneratedLorebook(request.groupName);
-        throw new Error(`Failed to link lorebook "${request.groupName}" to character "${request.groupName}" (avatar "${avatar}"). ${responseText || 'No response body.'} ${characterRollbackMessage} ${lorebookRollbackMessage}`);
+        const characterRollbackMessage = await rollbackGeneratedCharacter(
+            request.groupName,
+            avatar,
+        );
+        const lorebookRollbackMessage = await rollbackGeneratedLorebook(
+            request.groupName,
+        );
+        throw new Error(
+            `Failed to link lorebook "${request.groupName}" to character "${request.groupName}" (avatar "${avatar}"). ${responseText || 'No response body.'} ${characterRollbackMessage} ${lorebookRollbackMessage}`,
+        );
     }
 
     return { avatar, world: request.groupName };
@@ -578,7 +776,16 @@ async function createGeneratedGroupCard(groupName, generatedDescription, selecte
  * @param {boolean} [options.createLorebook] Whether a lorebook will be created.
  * @returns {{ groupName: string, characters: Array<object> }|null} Valid request data, or null when blocked.
  */
-function validateGroupCardRequest(groupName, selectedCharacters, { characterList = characters, worldNames = world_names, toaster = globalThis.toastr, createLorebook = true } = {}) {
+function validateGroupCardRequest(
+    groupName,
+    selectedCharacters,
+    {
+        characterList = characters,
+        worldNames = world_names,
+        toaster = globalThis.toastr,
+        createLorebook = true,
+    } = {},
+) {
     const trimmedName = String(groupName ?? '').trim();
     const normalizedName = normalizeName(trimmedName);
 
@@ -587,24 +794,41 @@ function validateGroupCardRequest(groupName, selectedCharacters, { characterList
         return null;
     }
 
-    const validCharacters = getValidSelectedCharacters(selectedCharacters, characterList);
+    const validCharacters = getValidSelectedCharacters(
+        selectedCharacters,
+        characterList,
+    );
 
     if (validCharacters.length < 2) {
-        toaster?.warning?.('Select at least two valid characters.', 'Combine into Group Card');
+        toaster?.warning?.(
+            'Select at least two valid characters.',
+            'Combine into Group Card',
+        );
         return null;
     }
 
-    const hasCharacterNameCollision = (characterList ?? []).some(character => normalizeName(getCharacterName(character)) === normalizedName);
+    const hasCharacterNameCollision = (characterList ?? []).some(
+        (character) =>
+            normalizeName(getCharacterName(character)) === normalizedName,
+    );
 
     if (hasCharacterNameCollision) {
-        toaster?.error?.(`Character named "${trimmedName}" already exists.`, 'Combine into Group Card');
+        toaster?.error?.(
+            `Character named "${trimmedName}" already exists.`,
+            'Combine into Group Card',
+        );
         return null;
     }
 
-    const hasLorebookNameCollision = createLorebook && (worldNames ?? []).some(name => normalizeName(name) === normalizedName);
+    const hasLorebookNameCollision =
+		createLorebook &&
+		(worldNames ?? []).some((name) => normalizeName(name) === normalizedName);
 
     if (hasLorebookNameCollision) {
-        toaster?.error?.(`Lorebook named "${trimmedName}" already exists.`, 'Combine into Group Card');
+        toaster?.error?.(
+            `Lorebook named "${trimmedName}" already exists.`,
+            'Combine into Group Card',
+        );
         return null;
     }
 
@@ -617,21 +841,21 @@ function validateGroupCardRequest(groupName, selectedCharacters, { characterList
  */
 class CharacterContextMenu {
     /**
-     * Tag one or more characters,
-     * opens a popup.
-     *
-     * @param {Array<number>} selectedCharacters
-     */
+	 * Tag one or more characters,
+	 * opens a popup.
+	 *
+	 * @param {Array<number>} selectedCharacters
+	 */
     static tag = (selectedCharacters) => {
         characterGroupOverlay.bulkTagPopupHandler.show(selectedCharacters);
     };
 
     /**
-     * Duplicate one or more characters
-     *
-     * @param {number} characterId
-     * @returns {Promise<any>}
-     */
+	 * Duplicate one or more characters
+	 *
+	 * @param {number} characterId
+	 * @returns {Promise<any>}
+	 */
     static duplicate = async (characterId) => {
         const character = CharacterContextMenu.#getCharacter(characterId);
         const body = { avatar_url: character.avatar };
@@ -647,16 +871,19 @@ class CharacterContextMenu {
         }
 
         const data = await result.json();
-        await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: body.avatar_url, newAvatar: data.path });
+        await eventSource.emit(event_types.CHARACTER_DUPLICATED, {
+            oldAvatar: body.avatar_url,
+            newAvatar: data.path,
+        });
     };
 
     /**
-     * Favorite a character
-     * and highlight it.
-     *
-     * @param {number} characterId
-     * @returns {Promise<void>}
-     */
+	 * Favorite a character
+	 * and highlight it.
+	 *
+	 * @param {number} characterId
+	 * @returns {Promise<void>}
+	 */
     static favorite = async (characterId) => {
         const character = CharacterContextMenu.#getCharacter(characterId);
         const newFavState = !character.data.extensions.fav;
@@ -679,7 +906,13 @@ class CharacterContextMenu {
         });
 
         if (!mergeResponse.ok) {
-            mergeResponse.json().then(json => toastr.error(`Character not saved. Error: ${json.message}. Field: ${json.error}`));
+            mergeResponse
+                .json()
+                .then((json) =>
+                    toastr.error(
+                        `Character not saved. Error: ${json.message}. Field: ${json.error}`,
+                    ),
+                );
         }
 
         const element = document.getElementById(`CharID${characterId}`);
@@ -687,22 +920,23 @@ class CharacterContextMenu {
     };
 
     /**
-     * Convert one or more characters to persona,
-     * may open a popup for one or more characters.
-     *
-     * @param {number} characterId
-     * @returns {Promise<void>}
-     */
-    static persona = async (characterId) => void (await convertCharacterToPersona(characterId));
+	 * Convert one or more characters to persona,
+	 * may open a popup for one or more characters.
+	 *
+	 * @param {number} characterId
+	 * @returns {Promise<void>}
+	 */
+    static persona = async (characterId) =>
+        void (await convertCharacterToPersona(characterId));
 
     /**
-     * Delete one or more characters,
-     * opens a popup.
-     *
-     * @param {string|string[]} characterKey
-     * @param {boolean} [deleteChats]
-     * @returns {Promise<void>}
-     */
+	 * Delete one or more characters,
+	 * opens a popup.
+	 *
+	 * @param {string|string[]} characterKey
+	 * @param {boolean} [deleteChats]
+	 * @returns {Promise<void>}
+	 */
     static delete = async (characterKey, deleteChats = false) => {
         await deleteCharacter(characterKey, { deleteChats: deleteChats });
     };
@@ -710,17 +944,19 @@ class CharacterContextMenu {
     static #getCharacter = (characterId) => characters[characterId] ?? null;
 
     /**
-     * Show the context menu at the given position
-     *
-     * @param positionX
-     * @param positionY
-     */
+	 * Show the context menu at the given position
+	 *
+	 * @param positionX
+	 * @param positionY
+	 */
     static show = (positionX, positionY) => {
         let contextMenu = document.getElementById(BulkEditOverlay.contextMenuId);
         contextMenu.style.left = `${positionX}px`;
         contextMenu.style.top = `${positionY}px`;
 
-        document.getElementById(BulkEditOverlay.contextMenuId).classList.remove('hidden');
+        document
+            .getElementById(BulkEditOverlay.contextMenuId)
+            .classList.remove('hidden');
 
         // Adjust position if context menu is outside of viewport
         const boundingRect = contextMenu.getBoundingClientRect();
@@ -733,26 +969,51 @@ class CharacterContextMenu {
     };
 
     /**
-     * Hide the context menu
-     */
-    static hide = () => document.getElementById(BulkEditOverlay.contextMenuId).classList.add('hidden');
+	 * Hide the context menu
+	 */
+    static hide = () =>
+        document
+            .getElementById(BulkEditOverlay.contextMenuId)
+            .classList.add('hidden');
 
     /**
-     * Sets up the context menu for the given overlay
-     *
-     * @param characterGroupOverlay
-     */
+	 * Sets up the context menu for the given overlay
+	 *
+	 * @param characterGroupOverlay
+	 */
     constructor(characterGroupOverlay) {
         const contextMenuItems = [
-            { id: 'character_context_menu_favorite', callback: characterGroupOverlay.handleContextMenuFavorite },
-            { id: 'character_context_menu_duplicate', callback: characterGroupOverlay.handleContextMenuDuplicate },
-            { id: 'character_context_menu_persona', callback: characterGroupOverlay.handleContextMenuPersona },
-            { id: 'bulk_select_combine_group_card', callback: characterGroupOverlay.handleContextMenuCombineGroupCard },
-            { id: 'character_context_menu_delete', callback: characterGroupOverlay.handleContextMenuDelete },
-            { id: 'character_context_menu_tag', callback: characterGroupOverlay.handleContextMenuTag },
+            {
+                id: 'character_context_menu_favorite',
+                callback: characterGroupOverlay.handleContextMenuFavorite,
+            },
+            {
+                id: 'character_context_menu_duplicate',
+                callback: characterGroupOverlay.handleContextMenuDuplicate,
+            },
+            {
+                id: 'character_context_menu_persona',
+                callback: characterGroupOverlay.handleContextMenuPersona,
+            },
+            {
+                id: 'bulk_select_combine_group_card',
+                callback: characterGroupOverlay.handleContextMenuCombineGroupCard,
+            },
+            {
+                id: 'character_context_menu_delete',
+                callback: characterGroupOverlay.handleContextMenuDelete,
+            },
+            {
+                id: 'character_context_menu_tag',
+                callback: characterGroupOverlay.handleContextMenuTag,
+            },
         ];
 
-        contextMenuItems.forEach(contextMenuItem => document.getElementById(contextMenuItem.id).addEventListener('click', contextMenuItem.callback));
+        contextMenuItems.forEach((contextMenuItem) =>
+            document
+                .getElementById(contextMenuItem.id)
+                .addEventListener('click', contextMenuItem.callback),
+        );
     }
 }
 
@@ -761,29 +1022,29 @@ class CharacterContextMenu {
  */
 class BulkTagPopupHandler {
     /**
-     * The characters for this popup
-     * @type {number[]}
-     */
+	 * The characters for this popup
+	 * @type {number[]}
+	 */
     characterIds;
 
     /**
-     * A storage of the current mutual tags, as calculated by getMutualTags()
-     * @type {object[]}
-     */
+	 * A storage of the current mutual tags, as calculated by getMutualTags()
+	 * @type {object[]}
+	 */
     currentMutualTags;
 
     /**
-     * Sets up the bulk popup menu handler for the given overlay.
-     *
-     * Characters can be passed in with the show() call.
-     */
-    constructor() { }
+	 * Sets up the bulk popup menu handler for the given overlay.
+	 *
+	 * Characters can be passed in with the show() call.
+	 */
+    constructor() {}
 
     /**
-     * Gets the HTML as a string that is going to be the popup for the bulk tag edit
-     *
-     * @returns String containing the html for the popup
-     */
+	 * Gets the HTML as a string that is going to be the popup for the bulk tag edit
+	 *
+	 * @returns String containing the html for the popup
+	 */
     #getHtml = () => {
         const characterData = JSON.stringify({ characterIds: this.characterIds });
         return `<div id="bulk_tag_shadow_popup">
@@ -823,10 +1084,10 @@ class BulkTagPopupHandler {
     };
 
     /**
-     * Append and show the tag control
-     *
-     * @param {number[]} characterIds - The characters that are shown inside the popup
-     */
+	 * Append and show the tag control
+	 *
+	 * @param {number[]} characterIds - The characters that are shown inside the popup
+	 */
     show(characterIds) {
         // shallow copy character ids persistently into this tooltip
         this.characterIds = characterIds.slice();
@@ -838,49 +1099,71 @@ class BulkTagPopupHandler {
 
         document.body.insertAdjacentHTML('beforeend', this.#getHtml());
 
-        const entities = this.characterIds.map(id => characterToEntity(characters[id], id)).filter(entity => entity.item !== undefined);
+        const entities = this.characterIds
+            .map((id) => characterToEntity(characters[id], id))
+            .filter((entity) => entity.item !== undefined);
         buildAvatarList($('#bulk_tags_avatars_block'), entities);
 
         // Print the tag list with all mutuable tags, marking them as removable. That is the initial fill
-        printTagList($('#bulkTagList'), { tags: () => this.getMutualTags(), tagOptions: { removable: true } });
+        printTagList($('#bulkTagList'), {
+            tags: () => this.getMutualTags(),
+            tagOptions: { removable: true },
+        });
 
         // Tag input with resolvable list for the mutual tags to get redrawn, so that newly added tags get sorted correctly
-        createTagInput('#bulkTagInput', '#bulkTagList', { tags: () => this.getMutualTags(), tagOptions: { removable: true } });
+        createTagInput('#bulkTagInput', '#bulkTagList', {
+            tags: () => this.getMutualTags(),
+            tagOptions: { removable: true },
+        });
 
-        document.querySelector('#bulk_tag_popup_reset').addEventListener('click', this.resetTags.bind(this));
-        document.querySelector('#bulk_tag_popup_remove_mutual').addEventListener('click', this.removeMutual.bind(this));
-        document.querySelector('#bulk_tag_popup_cancel').addEventListener('click', this.hide.bind(this));
-        document.querySelector('#bulk_tag_popup_import_all_tags').addEventListener('click', this.importAllTags.bind(this));
-        document.querySelector('#bulk_tag_popup_import_existing_tags').addEventListener('click', this.importExistingTags.bind(this));
+        document
+            .querySelector('#bulk_tag_popup_reset')
+            .addEventListener('click', this.resetTags.bind(this));
+        document
+            .querySelector('#bulk_tag_popup_remove_mutual')
+            .addEventListener('click', this.removeMutual.bind(this));
+        document
+            .querySelector('#bulk_tag_popup_cancel')
+            .addEventListener('click', this.hide.bind(this));
+        document
+            .querySelector('#bulk_tag_popup_import_all_tags')
+            .addEventListener('click', this.importAllTags.bind(this));
+        document
+            .querySelector('#bulk_tag_popup_import_existing_tags')
+            .addEventListener('click', this.importExistingTags.bind(this));
     }
 
     /**
-     * Import existing tags for all selected characters
-     */
+	 * Import existing tags for all selected characters
+	 */
     async importExistingTags() {
         for (const characterId of this.characterIds) {
-            await importTags(characters[characterId], { importSetting: tag_import_setting.ONLY_EXISTING });
+            await importTags(characters[characterId], {
+                importSetting: tag_import_setting.ONLY_EXISTING,
+            });
         }
 
         $('#bulkTagList').empty();
     }
 
     /**
-     * Import all tags for all selected characters
-     */
+	 * Import all tags for all selected characters
+	 */
     async importAllTags() {
         for (const characterId of this.characterIds) {
-            await importTags(characters[characterId], { importSetting: tag_import_setting.ALL });
+            await importTags(characters[characterId], {
+                importSetting: tag_import_setting.ALL,
+            });
         }
 
         $('#bulkTagList').empty();
     }
 
     /**
-     * Builds a list of all tags that the provided characters have in common.
-     *
-     * @returns {Array<object>} A list of mutual tags
-     */
+	 * Builds a list of all tags that the provided characters have in common.
+	 *
+	 * @returns {Array<object>} A list of mutual tags
+	 */
     getMutualTags() {
         if (this.characterIds.length == 0) {
             return [];
@@ -892,9 +1175,11 @@ class BulkTagPopupHandler {
         }
 
         // Find mutual tags for multiple characters
-        const allTags = this.characterIds.map(cid => getTagsList(getTagKeyForEntity(cid)));
+        const allTags = this.characterIds.map((cid) =>
+            getTagsList(getTagKeyForEntity(cid)),
+        );
         const mutualTags = allTags.reduce((mutual, characterTags) =>
-            mutual.filter(tag => characterTags.some(cTag => cTag.id === tag.id)),
+            mutual.filter((tag) => characterTags.some((cTag) => cTag.id === tag.id)),
         );
 
         this.currentMutualTags = mutualTags.sort(compareTagsForSort);
@@ -902,8 +1187,8 @@ class BulkTagPopupHandler {
     }
 
     /**
-     * Hide and remove the tag control
-     */
+	 * Hide and remove the tag control
+	 */
     hide() {
         let popupElement = document.querySelector('#bulk_tag_shadow_popup');
         if (popupElement) {
@@ -914,8 +1199,8 @@ class BulkTagPopupHandler {
     }
 
     /**
-     * Empty the tag map for the given characters
-     */
+	 * Empty the tag map for the given characters
+	 */
     resetTags() {
         for (const characterId of this.characterIds) {
             const key = getTagKeyForEntity(characterId);
@@ -928,8 +1213,8 @@ class BulkTagPopupHandler {
     }
 
     /**
-     * Remove the mutual tags for all given characters
-     */
+	 * Remove the mutual tags for all given characters
+	 */
     removeMutual() {
         const mutualTags = this.getMutualTags();
 
@@ -947,15 +1232,15 @@ class BulkTagPopupHandler {
 
 class BulkEditOverlayState {
     /**
-     *
-     * @type {number}
-     */
+	 *
+	 * @type {number}
+	 */
     static browse = 0;
 
     /**
-     *
-     * @type {number}
-     */
+	 *
+	 * @type {number}
+	 */
     static select = 1;
 }
 
@@ -987,33 +1272,33 @@ class BulkEditOverlay {
     #bulkTagPopupHandler = new BulkTagPopupHandler();
 
     /**
-     * @typedef {object} LastSelected - An object noting the last selected character and its state.
-     * @property {number} [characterId] - The character id of the last selected character.
-     * @property {boolean} [select] - The selected state of the last selected character. <c>true</c> if it was selected, <c>false</c> if it was deselected.
-     */
+	 * @typedef {object} LastSelected - An object noting the last selected character and its state.
+	 * @property {number} [characterId] - The character id of the last selected character.
+	 * @property {boolean} [select] - The selected state of the last selected character. <c>true</c> if it was selected, <c>false</c> if it was deselected.
+	 */
 
     /**
-     * @type {LastSelected} - An object noting the last selected character and its state.
-     */
+	 * @type {LastSelected} - An object noting the last selected character and its state.
+	 */
     lastSelected = { characterId: undefined, select: undefined };
 
     /**
-     * Locks other pointer actions when the context menu is open
-     *
-     * @type {boolean}
-     */
+	 * Locks other pointer actions when the context menu is open
+	 *
+	 * @type {boolean}
+	 */
     #contextMenuOpen = false;
 
     /**
-     * Whether the next character select should be skipped
-     *
-     * @type {boolean}
-     */
+	 * Whether the next character select should be skipped
+	 *
+	 * @type {boolean}
+	 */
     #cancelNextToggle = false;
 
     /**
-     * @type HTMLElement
-     */
+	 * @type HTMLElement
+	 */
     container = null;
 
     get state() {
@@ -1023,10 +1308,14 @@ class BulkEditOverlay {
     set state(newState) {
         if (this.#state === newState) return;
 
-        eventSource.emit(event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_BEFORE, newState)
+        eventSource
+            .emit(event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_BEFORE, newState)
             .then(() => {
                 this.#state = newState;
-                eventSource.emit(event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER, this.state);
+                eventSource.emit(
+                    event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER,
+                    this.state,
+                );
             });
     }
 
@@ -1043,18 +1332,18 @@ class BulkEditOverlay {
     }
 
     /**
-     *
-     * @returns {number[]}
-     */
+	 *
+	 * @returns {number[]}
+	 */
     get selectedCharacters() {
         return this.#selectedCharacters;
     }
 
     /**
-     * The instance of the bulk tag popup handler that handles tagging of all selected characters
-     *
-     * @returns {BulkTagPopupHandler}
-     */
+	 * The instance of the bulk tag popup handler that handles tagging of all selected characters
+	 *
+	 * @returns {BulkTagPopupHandler}
+	 */
     get bulkTagPopupHandler() {
         return this.#bulkTagPopupHandler;
     }
@@ -1065,35 +1354,52 @@ class BulkEditOverlay {
 
         this.container = document.getElementById(BulkEditOverlay.containerId);
 
-        eventSource.on(event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER, this.handleStateChange);
+        eventSource.on(
+            event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER,
+            this.handleStateChange,
+        );
         bulkEditOverlayInstance = Object.freeze(this);
     }
 
     /**
-     * Set the overlay to browse mode
-     */
-    browseState = () => this.state = BulkEditOverlayState.browse;
+	 * Set the overlay to browse mode
+	 */
+    browseState = () => (this.state = BulkEditOverlayState.browse);
 
     /**
-     * Set the overlay to select mode
-     */
-    selectState = () => this.state = BulkEditOverlayState.select;
+	 * Set the overlay to select mode
+	 */
+    selectState = () => (this.state = BulkEditOverlayState.select);
 
     /**
-     * Set up a Sortable grid for the loaded page
-     */
+	 * Set up a Sortable grid for the loaded page
+	 */
     onPageLoad = () => {
         this.browseState();
 
         const elements = this.#getEnabledElements();
-        elements.forEach(element => element.addEventListener('touchstart', this.handleHold));
-        elements.forEach(element => element.addEventListener('mousedown', this.handleHold));
-        elements.forEach(element => element.addEventListener('contextmenu', this.handleDefaultContextMenu));
+        elements.forEach((element) =>
+            element.addEventListener('touchstart', this.handleHold),
+        );
+        elements.forEach((element) =>
+            element.addEventListener('mousedown', this.handleHold),
+        );
+        elements.forEach((element) =>
+            element.addEventListener('contextmenu', this.handleDefaultContextMenu),
+        );
 
-        elements.forEach(element => element.addEventListener('touchend', this.handleLongPressEnd));
-        elements.forEach(element => element.addEventListener('mouseup', this.handleLongPressEnd));
-        elements.forEach(element => element.addEventListener('dragend', this.handleLongPressEnd));
-        elements.forEach(element => element.addEventListener('touchmove', this.handleLongPressEnd));
+        elements.forEach((element) =>
+            element.addEventListener('touchend', this.handleLongPressEnd),
+        );
+        elements.forEach((element) =>
+            element.addEventListener('mouseup', this.handleLongPressEnd),
+        );
+        elements.forEach((element) =>
+            element.addEventListener('dragend', this.handleLongPressEnd),
+        );
+        elements.forEach((element) =>
+            element.addEventListener('touchmove', this.handleLongPressEnd),
+        );
 
         // Cohee: It only triggers when clicking on a margin between the elements?
         // Feel free to fix or remove this, I'm not sure how to.
@@ -1101,10 +1407,10 @@ class BulkEditOverlay {
     };
 
     /**
-     * Handle state changes
-     *
-     *
-     */
+	 * Handle state changes
+	 *
+	 *
+	 */
     handleStateChange = () => {
         switch (this.state) {
             case BulkEditOverlayState.browse:
@@ -1126,24 +1432,27 @@ class BulkEditOverlay {
                 break;
         }
 
-        this.stateChangeCallbacks.forEach(callback => callback(this.state));
+        this.stateChangeCallbacks.forEach((callback) => callback(this.state));
     };
 
     /**
-     * Block the browsers native context menu and
-     * set a click event to hide the custom context menu.
-     */
+	 * Block the browsers native context menu and
+	 * set a click event to hide the custom context menu.
+	 */
     enableContextMenu = () => {
         this.container.addEventListener('contextmenu', this.handleContextMenuShow);
         document.addEventListener('click', this.handleContextMenuHide);
     };
 
     /**
-     * Remove event listeners, allowing the native browser context
-     * menu to be opened.
-     */
+	 * Remove event listeners, allowing the native browser context
+	 * menu to be opened.
+	 */
     disableContextMenu = () => {
-        this.container.removeEventListener('contextmenu', this.handleContextMenuShow);
+        this.container.removeEventListener(
+            'contextmenu',
+            this.handleContextMenuShow,
+        );
         document.removeEventListener('click', this.handleContextMenuHide);
     };
 
@@ -1156,10 +1465,10 @@ class BulkEditOverlay {
     };
 
     /**
-     * Opens menu on long-press.
-     *
-     * @param event - Pointer event
-     */
+	 * Opens menu on long-press.
+	 *
+	 * @param event - Pointer event
+	 */
     handleHold = (event) => {
         if (0 !== event.button && event.type !== 'touchstart') return;
         if (this.#contextMenuOpen) {
@@ -1171,7 +1480,7 @@ class BulkEditOverlay {
 
         let cancel = false;
 
-        const cancelHold = (event) => cancel = true;
+        const cancelHold = (event) => (cancel = true);
         this.container.addEventListener('mouseup', cancelHold);
         this.container.addEventListener('touchend', cancelHold);
 
@@ -1199,16 +1508,17 @@ class BulkEditOverlay {
     };
 
     handleCancelClick = () => {
-        if (false === this.#contextMenuOpen) this.state = BulkEditOverlayState.browse;
+        if (false === this.#contextMenuOpen)
+            this.state = BulkEditOverlayState.browse;
         this.#contextMenuOpen = false;
     };
 
     /**
-     * Returns the position of the mouse/touch location
-     *
-     * @param event
-     * @returns {(boolean|number|*)[]}
-     */
+	 * Returns the position of the mouse/touch location
+	 *
+	 * @param event
+	 * @returns {(boolean|number|*)[]}
+	 */
     #getContextMenuPosition = (event) => [
         event.clientX || event.touches[0].clientX,
         event.clientY || event.touches[0].clientY,
@@ -1221,23 +1531,46 @@ class BulkEditOverlay {
         event.stopPropagation();
     };
 
-    #enableClickEventsForGroups = () => this.#getDisabledElements().forEach((element) => element.removeEventListener('click', this.#stopEventPropagation));
+    #enableClickEventsForGroups = () =>
+        this.#getDisabledElements().forEach((element) =>
+            element.removeEventListener('click', this.#stopEventPropagation),
+        );
 
-    #disableClickEventsForGroups = () => this.#getDisabledElements().forEach((element) => element.addEventListener('click', this.#stopEventPropagation));
+    #disableClickEventsForGroups = () =>
+        this.#getDisabledElements().forEach((element) =>
+            element.addEventListener('click', this.#stopEventPropagation),
+        );
 
-    #enableClickEventsForCharacters = () => this.#getEnabledElements().forEach(element => element.removeEventListener('click', this.toggleCharacterSelected));
+    #enableClickEventsForCharacters = () =>
+        this.#getEnabledElements().forEach((element) =>
+            element.removeEventListener('click', this.toggleCharacterSelected),
+        );
 
-    #disableClickEventsForCharacters = () => this.#getEnabledElements().forEach(element => element.addEventListener('click', this.toggleCharacterSelected));
+    #disableClickEventsForCharacters = () =>
+        this.#getEnabledElements().forEach((element) =>
+            element.addEventListener('click', this.toggleCharacterSelected),
+        );
 
-    #enableBulkEditButtonHighlight = () => document.getElementById('bulkEditButton').classList.add('bulk_edit_overlay_active');
+    #enableBulkEditButtonHighlight = () =>
+        document
+            .getElementById('bulkEditButton')
+            .classList.add('bulk_edit_overlay_active');
 
-    #disableBulkEditButtonHighlight = () => document.getElementById('bulkEditButton').classList.remove('bulk_edit_overlay_active');
+    #disableBulkEditButtonHighlight = () =>
+        document
+            .getElementById('bulkEditButton')
+            .classList.remove('bulk_edit_overlay_active');
 
-    #getEnabledElements = () => [...this.container.getElementsByClassName(BulkEditOverlay.characterClass)];
+    #getEnabledElements = () => [
+        ...this.container.getElementsByClassName(BulkEditOverlay.characterClass),
+    ];
 
-    #getDisabledElements = () => [...this.container.getElementsByClassName(BulkEditOverlay.groupClass), ...this.container.getElementsByClassName(BulkEditOverlay.bogusFolderClass)];
+    #getDisabledElements = () => [
+        ...this.container.getElementsByClassName(BulkEditOverlay.groupClass),
+        ...this.container.getElementsByClassName(BulkEditOverlay.bogusFolderClass),
+    ];
 
-    toggleCharacterSelected = event => {
+    toggleCharacterSelected = (event) => {
         event.stopPropagation();
 
         const character = event.currentTarget;
@@ -1257,19 +1590,22 @@ class BulkEditOverlay {
     };
 
     /**
-     * When shift click was held down, this function handles the multi select of characters in a single click.
-     *
-     * If the last clicked character was deselected, and the current one was deselected too, it will deselect all currently selected characters between those two.
-     * If the last clicked character was selected, and the current one was selected too, it will select all currently not selected characters between those two.
-     * If the states do not match, nothing will happen.
-     *
-     * @param {HTMLElement} currentCharacter - The html element of the currently toggled character
-     */
+	 * When shift click was held down, this function handles the multi select of characters in a single click.
+	 *
+	 * If the last clicked character was deselected, and the current one was deselected too, it will deselect all currently selected characters between those two.
+	 * If the last clicked character was selected, and the current one was selected too, it will select all currently not selected characters between those two.
+	 * If the states do not match, nothing will happen.
+	 *
+	 * @param {HTMLElement} currentCharacter - The html element of the currently toggled character
+	 */
     handleShiftClick = (currentCharacter) => {
         const characterId = Number(currentCharacter.getAttribute('data-chid'));
         const select = !this.selectedCharacters.includes(characterId);
 
-        if (this.lastSelected.characterId >= 0 && this.lastSelected.select !== undefined) {
+        if (
+            this.lastSelected.characterId >= 0 &&
+			this.lastSelected.select !== undefined
+        ) {
             // Only if select state and the last select state match we execute the range select
             if (select === this.lastSelected.select) {
                 this.toggleCharactersInRange(currentCharacter, select);
@@ -1278,17 +1614,19 @@ class BulkEditOverlay {
     };
 
     /**
-     * Toggles the selection of a given characters
-     *
-     * @param {HTMLElement} character - The html element of a character
-     * @param {object} param1 - Optional params
-     * @param {boolean} [param1.markState] - Whether the toggle of this character should be remembered as the last done toggle
-     */
+	 * Toggles the selection of a given characters
+	 *
+	 * @param {HTMLElement} character - The html element of a character
+	 * @param {object} param1 - Optional params
+	 * @param {boolean} [param1.markState] - Whether the toggle of this character should be remembered as the last done toggle
+	 */
     toggleSingleCharacter = (character, { markState = true } = {}) => {
         const characterId = Number(character.getAttribute('data-chid'));
 
         const select = !this.selectedCharacters.includes(characterId);
-        const legacyBulkEditCheckbox = /** @type {HTMLInputElement} */ (character.querySelector('.' + BulkEditOverlay.legacySelectedClass));
+        const legacyBulkEditCheckbox = /** @type {HTMLInputElement} */ (
+            character.querySelector('.' + BulkEditOverlay.legacySelectedClass)
+        );
 
         if (select) {
             character.classList.add(BulkEditOverlay.selectedClass);
@@ -1297,7 +1635,9 @@ class BulkEditOverlay {
         } else {
             character.classList.remove(BulkEditOverlay.selectedClass);
             if (legacyBulkEditCheckbox) legacyBulkEditCheckbox.checked = false;
-            this.#selectedCharacters = this.#selectedCharacters.filter(item => characterId !== item);
+            this.#selectedCharacters = this.#selectedCharacters.filter(
+                (item) => characterId !== item,
+            );
         }
 
         this.updateSelectedCount();
@@ -1309,38 +1649,65 @@ class BulkEditOverlay {
     };
 
     /**
-     * Updates the selected count element with the current count
-     *
-     * @param {number} [countOverride] - optional override for a manual number to set
-     */
+	 * Updates the selected count element with the current count
+	 *
+	 * @param {number} [countOverride] - optional override for a manual number to set
+	 */
     updateSelectedCount = (countOverride = undefined) => {
         const count = countOverride ?? this.selectedCharacters.length;
-        $(`#${BulkEditOverlay.bulkSelectedCountId}`).text(count).attr('title', `${count} characters selected`);
+        $(`#${BulkEditOverlay.bulkSelectedCountId}`)
+            .text(count)
+            .attr('title', `${count} characters selected`);
     };
 
     /**
-     * Toggles the selection of characters in a given range.
-     * The range is provided by the given character and the last selected one remembered in the selection state.
-     *
-     * @param {HTMLElement} currentCharacter - The html element of the currently toggled character
-     * @param {boolean} select - <c>true</c> if the characters in the range are to be selected, <c>false</c> if deselected
-     */
+	 * Toggles the selection of characters in a given range.
+	 * The range is provided by the given character and the last selected one remembered in the selection state.
+	 *
+	 * @param {HTMLElement} currentCharacter - The html element of the currently toggled character
+	 * @param {boolean} select - <c>true</c> if the characters in the range are to be selected, <c>false</c> if deselected
+	 */
     toggleCharactersInRange = (currentCharacter, select) => {
-        const currentCharacterId = Number(currentCharacter.getAttribute('data-chid'));
-        const characters = Array.from(document.querySelectorAll('#' + BulkEditOverlay.containerId + ' .' + BulkEditOverlay.characterClass));
+        const currentCharacterId = Number(
+            currentCharacter.getAttribute('data-chid'),
+        );
+        const characters = Array.from(
+            document.querySelectorAll(
+                '#' +
+					BulkEditOverlay.containerId +
+					' .' +
+					BulkEditOverlay.characterClass,
+            ),
+        );
 
-        const startIndex = characters.findIndex(c => Number(c.getAttribute('data-chid')) === Number(this.lastSelected.characterId));
-        const endIndex = characters.findIndex(c => Number(c.getAttribute('data-chid')) === currentCharacterId);
+        const startIndex = characters.findIndex(
+            (c) =>
+                Number(c.getAttribute('data-chid')) ===
+				Number(this.lastSelected.characterId),
+        );
+        const endIndex = characters.findIndex(
+            (c) => Number(c.getAttribute('data-chid')) === currentCharacterId,
+        );
 
-        for (let i = Math.min(startIndex, endIndex); i <= Math.max(startIndex, endIndex); i++) {
+        for (
+            let i = Math.min(startIndex, endIndex);
+            i <= Math.max(startIndex, endIndex);
+            i++
+        ) {
             const character = characters[i];
             const characterId = Number(character.getAttribute('data-chid'));
             const isCharacterSelected = this.selectedCharacters.includes(characterId);
 
             // Only toggle the character if it wasn't on the state we have are toggling towards.
             // Also doing a weird type check, because typescript checker doesn't like the return of 'querySelectorAll'.
-            if ((select && !isCharacterSelected || !select && isCharacterSelected) && character instanceof HTMLElement) {
-                this.toggleSingleCharacter(character, { markState: currentCharacterId == characterId });
+            if (
+                ((select && !isCharacterSelected) ||
+					(!select && isCharacterSelected)) &&
+				character instanceof HTMLElement
+            ) {
+                this.toggleSingleCharacter(character, {
+                    markState: currentCharacterId == characterId,
+                });
             }
         }
     };
@@ -1361,10 +1728,10 @@ class BulkEditOverlay {
     };
 
     /**
-     * Concurrently handle character favorite requests.
-     *
-     * @returns {Promise<void>}
-     */
+	 * Concurrently handle character favorite requests.
+	 *
+	 * @returns {Promise<void>}
+	 */
     handleContextMenuFavorite = async () => {
         const promises = [];
 
@@ -1379,19 +1746,24 @@ class BulkEditOverlay {
     };
 
     /**
-     * Concurrently handle character duplicate requests.
-     *
-     * @returns {Promise<number>}
-     */
-    handleContextMenuDuplicate = () => Promise.all(this.selectedCharacters.map(async characterId => CharacterContextMenu.duplicate(characterId)))
-        .then(() => getCharacters())
-        .then(() => this.browseState());
+	 * Concurrently handle character duplicate requests.
+	 *
+	 * @returns {Promise<number>}
+	 */
+    handleContextMenuDuplicate = () =>
+        Promise.all(
+            this.selectedCharacters.map(async (characterId) =>
+                CharacterContextMenu.duplicate(characterId),
+            ),
+        )
+            .then(() => getCharacters())
+            .then(() => this.browseState());
 
     /**
-     * Sequentially handle all character-to-persona conversions.
-     *
-     * @returns {Promise<void>}
-     */
+	 * Sequentially handle all character-to-persona conversions.
+	 *
+	 * @returns {Promise<void>}
+	 */
     handleContextMenuPersona = async () => {
         for (const characterId of this.selectedCharacters) {
             await CharacterContextMenu.persona(characterId);
@@ -1401,13 +1773,16 @@ class BulkEditOverlay {
     };
 
     /**
-     * Starts combining selected characters into a group card.
-     */
+	 * Starts combining selected characters into a group card.
+	 */
     handleContextMenuCombineGroupCard = async () => {
         const characterIds = this.selectedCharacters.slice();
 
         const methodName = 'combineIntoGroupCard';
-        const combineIntoGroupCard = /** @type {(characterIds: number[]) => Promise<void>} */ (BulkEditOverlay[methodName]);
+        const combineIntoGroupCard =
+        /** @type {(characterIds: number[]) => Promise<void>} */ (
+                BulkEditOverlay[methodName]
+            );
 
         try {
             await combineIntoGroupCard(characterIds);
@@ -1417,11 +1792,11 @@ class BulkEditOverlay {
     };
 
     /**
-     * Gets the HTML as a string that is displayed inside the group card combine popup.
-     *
-     * @param {number} characterCount Selected valid character count.
-     * @returns {string} Popup content HTML.
-     */
+	 * Gets the HTML as a string that is displayed inside the group card combine popup.
+	 *
+	 * @param {number} characterCount Selected valid character count.
+	 * @returns {string} Popup content HTML.
+	 */
     static #getCombineGroupCardPopupContentHtml = (characterCount) => {
         return `
             <h3 class="marginBot5">Combine into Group Card</h3>
@@ -1464,42 +1839,72 @@ class BulkEditOverlay {
     };
 
     /**
-     * Opens the combine modal and starts generation when confirmed.
-     *
-     * @param {Array<number|object>} selectedCharacters Selected character ids or objects.
-     * @returns {Promise<void>}
-     */
+	 * Opens the combine modal and starts generation when confirmed.
+	 *
+	 * @param {Array<number|object>} selectedCharacters Selected character ids or objects.
+	 * @returns {Promise<void>}
+	 */
     static combineIntoGroupCard = async (selectedCharacters) => {
-        await Promise.all((selectedCharacters ?? [])
-            .filter(id => typeof id === 'number' && characters[id]?.shallow)
-            .map(id => unshallowCharacter(id))
+        await Promise.all(
+            (selectedCharacters ?? [])
+                .filter((id) => typeof id === 'number' && characters[id]?.shallow)
+                .map((id) => unshallowCharacter(id)),
         );
-        const validCharacters = getValidSelectedCharacters(selectedCharacters, characters);
+        const validCharacters = getValidSelectedCharacters(
+            selectedCharacters,
+            characters,
+        );
 
         if (validCharacters.length < 2) {
-            toastr.warning('Select at least two valid characters.', 'Combine into Group Card');
+            toastr.warning(
+                'Select at least two valid characters.',
+                'Combine into Group Card',
+            );
             return;
         }
 
-        const popupContent = $(BulkEditOverlay.#getCombineGroupCardPopupContentHtml(validCharacters.length));
+        const popupContent = $(
+            BulkEditOverlay.#getCombineGroupCardPopupContentHtml(
+                validCharacters.length,
+            ),
+        );
         const groupNameInput = popupContent.find('#bulk_combine_group_card_name');
         const promptInput = popupContent.find('#bulk_combine_group_card_prompt');
-        const presetSelect = popupContent.find('#bulk_combine_group_card_preset_select');
-        const savePresetButton = popupContent.find('#bulk_combine_group_card_preset_save');
-        const deletePresetButton = popupContent.find('#bulk_combine_group_card_preset_delete');
-        const restorePresetButton = popupContent.find('#bulk_combine_group_card_preset_restore');
-        const fieldToggles = popupContent.find('#bulk_combine_group_card_field_toggles input[type="checkbox"]');
-        const lorebookToggle = popupContent.find('#bulk_combine_group_card_lorebook_toggle');
-        promptInput.val(power_user.group_card_combine_prompt ?? DEFAULT_GROUP_CARD_COMBINE_PROMPT);
+        const presetSelect = popupContent.find(
+            '#bulk_combine_group_card_preset_select',
+        );
+        const savePresetButton = popupContent.find(
+            '#bulk_combine_group_card_preset_save',
+        );
+        const deletePresetButton = popupContent.find(
+            '#bulk_combine_group_card_preset_delete',
+        );
+        const restorePresetButton = popupContent.find(
+            '#bulk_combine_group_card_preset_restore',
+        );
+        const fieldToggles = popupContent.find(
+            '#bulk_combine_group_card_field_toggles input[type="checkbox"]',
+        );
+        const lorebookToggle = popupContent.find(
+            '#bulk_combine_group_card_lorebook_toggle',
+        );
+        promptInput.val(
+            power_user.group_card_combine_prompt ?? DEFAULT_GROUP_CARD_COMBINE_PROMPT,
+        );
         lorebookToggle.prop('checked', false);
         renderGroupCardCombinePromptPresetSelect(presetSelect);
 
-        const persistedFields = Array.isArray(power_user.group_card_combine_included_fields)
+        const persistedFields = Array.isArray(
+            power_user.group_card_combine_included_fields,
+        )
             ? power_user.group_card_combine_included_fields
             : ['personality'];
         const persistedFieldSet = new Set(persistedFields);
         fieldToggles.each((_, element) => {
-            $(element).prop('checked', persistedFieldSet.has(String($(element).data('field') ?? '')));
+            $(element).prop(
+                'checked',
+                persistedFieldSet.has(String($(element).data('field') ?? '')),
+            );
         });
 
         presetSelect.on('change', () => {
@@ -1514,22 +1919,32 @@ class BulkEditOverlay {
         savePresetButton.on('click', async () => {
             const currentIndex = Number(presetSelect.val());
             const currentPreset = getGroupCardCombinePromptPresets()[currentIndex];
-            const presetName = await callGenericPopup('Enter a prompt preset name:', POPUP_TYPE.INPUT, currentPreset?.name ?? '', {
-                okButton: 'Save',
-                cancelButton: 'Cancel',
-            });
+            const presetName = await callGenericPopup(
+                'Enter a prompt preset name:',
+                POPUP_TYPE.INPUT,
+                currentPreset?.name ?? '',
+                {
+                    okButton: 'Save',
+                    cancelButton: 'Cancel',
+                },
+            );
 
             if (!presetName) {
                 return;
             }
 
-            const savedPreset = await saveGroupCardCombinePromptPreset(String(presetName), String(promptInput.val() ?? ''));
+            const savedPreset = await saveGroupCardCombinePromptPreset(
+                String(presetName),
+                String(promptInput.val() ?? ''),
+            );
 
             if (!savedPreset) {
                 return;
             }
 
-            const savedIndex = findGroupCardCombinePromptPresetIndex(savedPreset.name);
+            const savedIndex = findGroupCardCombinePromptPresetIndex(
+                savedPreset.name,
+            );
             renderGroupCardCombinePromptPresetSelect(presetSelect, savedIndex);
         });
 
@@ -1564,7 +1979,11 @@ class BulkEditOverlay {
                 }
 
                 const createLorebook = Boolean(lorebookToggle.prop('checked'));
-                const request = validateGroupCardRequest(String(groupNameInput.val() ?? ''), selectedCharacters, { createLorebook });
+                const request = validateGroupCardRequest(
+                    String(groupNameInput.val() ?? ''),
+                    selectedCharacters,
+                    { createLorebook },
+                );
 
                 if (!request) {
                     return false;
@@ -1572,9 +1991,9 @@ class BulkEditOverlay {
 
                 const selectedOptionalFields = fieldToggles
                     .toArray()
-                    .filter(element => $(element).prop('checked'))
-                    .map(element => String($(element).data('field') ?? ''))
-                    .filter(field => OPTIONAL_CHARACTER_FIELDS.includes(field));
+                    .filter((element) => $(element).prop('checked'))
+                    .map((element) => String($(element).data('field') ?? ''))
+                    .filter((field) => OPTIONAL_CHARACTER_FIELDS.includes(field));
                 const selectedFields = normalizeSelectedFields(selectedOptionalFields);
 
                 power_user.group_card_combine_prompt = prompt;
@@ -1582,13 +2001,26 @@ class BulkEditOverlay {
                 saveSettingsDebounced();
 
                 try {
-                    await BulkEditOverlay.#startGroupCardCombinePipeline(request.groupName, prompt, request.characters, createLorebook, selectedFields);
+                    await BulkEditOverlay.#startGroupCardCombinePipeline(
+                        request.groupName,
+                        prompt,
+                        request.characters,
+                        createLorebook,
+                        selectedFields,
+                    );
                     await getCharacters();
-                    toastr.success(createLorebook ? 'Created group card and linked lorebook.' : 'Created group card.');
+                    toastr.success(
+                        createLorebook
+                            ? 'Created group card and linked lorebook.'
+                            : 'Created group card.',
+                    );
                     return true;
                 } catch (error) {
                     console.error(error);
-                    toastr.error(error?.message ?? 'Failed to combine selected characters.', 'Combine into Group Card');
+                    toastr.error(
+                        error?.message ?? 'Failed to combine selected characters.',
+                        'Combine into Group Card',
+                    );
                     return false;
                 }
             },
@@ -1596,16 +2028,22 @@ class BulkEditOverlay {
     };
 
     /**
-     * Starts group card generation pipeline.
-     *
-     * @param {string} groupName Requested group card name.
-     * @param {string} prompt Saved combine prompt.
-     * @param {Array<object>} selectedCharacters Valid selected characters.
-     * @param {boolean} [createLorebook] Whether to create and link a lorebook.
-     * @param {Array<string>} [fields] Included core fields.
-     * @returns {Promise<unknown>} Generation result.
-     */
-    static #startGroupCardCombinePipeline = async (groupName, prompt, selectedCharacters, createLorebook = true, fields) => {
+	 * Starts group card generation pipeline.
+	 *
+	 * @param {string} groupName Requested group card name.
+	 * @param {string} prompt Saved combine prompt.
+	 * @param {Array<object>} selectedCharacters Valid selected characters.
+	 * @param {boolean} [createLorebook] Whether to create and link a lorebook.
+	 * @param {Array<string>} [fields] Included core fields.
+	 * @returns {Promise<unknown>} Generation result.
+	 */
+    static #startGroupCardCombinePipeline = async (
+        groupName,
+        prompt,
+        selectedCharacters,
+        createLorebook = true,
+        fields,
+    ) => {
         const loaderHandle = loader.show({
             slug: 'combine-group-card',
             title: t`Combine into Group Card`,
@@ -1614,26 +2052,49 @@ class BulkEditOverlay {
         });
 
         try {
-            const quiet_prompt = buildGroupCardCombineQuietPrompt(prompt, selectedCharacters, fields);
+            const quiet_prompt = buildGroupCardCombineQuietPrompt(
+                prompt,
+                selectedCharacters,
+                fields,
+            );
             const generatedDescription = await Generate('quiet', { quiet_prompt });
-            const validatedDescription = validateGeneratedGroupCardDescription(generatedDescription, selectedCharacters.length);
-            const result = await createGeneratedGroupCard(groupName, validatedDescription, selectedCharacters, createLorebook, fields);
+            const validatedDescription = validateGeneratedGroupCardDescription(
+                generatedDescription,
+                selectedCharacters.length,
+            );
+            const result = await createGeneratedGroupCard(
+                groupName,
+                validatedDescription,
+                selectedCharacters,
+                createLorebook,
+                fields,
+            );
 
             // Generate Voronoi composite avatar from selected character images
             try {
-                const avatarFilenames = selectedCharacters.map(c => c.avatar).filter(Boolean);
+                const avatarFilenames = selectedCharacters
+                    .map((c) => c.avatar)
+                    .filter(Boolean);
                 if (avatarFilenames.length > 0) {
-                    const compositeResponse = await fetch('/api/characters/generate-voronoi-composite', {
-                        method: 'POST',
-                        headers: { ...getRequestHeaders(), 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ avatars: avatarFilenames }),
-                    });
+                    const compositeResponse = await fetch(
+                        '/api/characters/generate-voronoi-composite',
+                        {
+                            method: 'POST',
+                            headers: {
+                                ...getRequestHeaders(),
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ avatars: avatarFilenames }),
+                        },
+                    );
 
                     if (compositeResponse.ok) {
                         const { file } = await compositeResponse.json();
                         if (file) {
                             // Fetch the composite image
-                            const imageResponse = await fetch(`/api/characters/generate-voronoi-composite?file=${encodeURIComponent(file)}`);
+                            const imageResponse = await fetch(
+                                `/api/characters/generate-voronoi-composite?file=${encodeURIComponent(file)}`,
+                            );
                             if (imageResponse.ok) {
                                 const imageBlob = await imageResponse.blob();
 
@@ -1665,11 +2126,11 @@ class BulkEditOverlay {
     };
 
     /**
-     * Gets the HTML as a string that is displayed inside the popup for the bulk delete
-     *
-     * @param {Array<number>} characterIds - The characters that are shown inside the popup
-     * @returns String containing the html for the popup content
-     */
+	 * Gets the HTML as a string that is displayed inside the popup for the bulk delete
+	 *
+	 * @param {Array<number>} characterIds - The characters that are shown inside the popup
+	 * @returns String containing the html for the popup content
+	 */
     static #getDeletePopupContentHtml = (characterIds) => {
         return `
             <h3 class="marginBot5">Delete ${characterIds.length} characters?</h3>
@@ -1688,17 +2149,19 @@ class BulkEditOverlay {
     };
 
     /**
-     * Request user input before concurrently handle deletion
-     * requests.
-     *
-     * @returns {Promise<number>}
-     */
+	 * Request user input before concurrently handle deletion
+	 * requests.
+	 *
+	 * @returns {Promise<number>}
+	 */
     handleContextMenuDelete = () => {
         const characterIds = this.selectedCharacters;
-        const popupContent = $(BulkEditOverlay.#getDeletePopupContentHtml(characterIds));
+        const popupContent = $(
+            BulkEditOverlay.#getDeletePopupContentHtml(characterIds),
+        );
         const checkbox = popupContent.find('#del_char_checkbox');
-        const promise = callGenericPopup(popupContent, POPUP_TYPE.CONFIRM)
-            .then((accept) => {
+        const promise = callGenericPopup(popupContent, POPUP_TYPE.CONFIRM).then(
+            (accept) => {
                 if (!accept) return;
 
                 const deleteChats = checkbox.prop('checked') ?? false;
@@ -1709,36 +2172,50 @@ class BulkEditOverlay {
                     message: t`Deleting ${characterIds.length} character(s)…`,
                     toastMode: loader.ToastMode.STATIC,
                 });
-                const avatarList = characterIds.map(id => characters[id]?.avatar).filter(a => a);
+                const avatarList = characterIds
+                    .map((id) => characters[id]?.avatar)
+                    .filter((a) => a);
                 return CharacterContextMenu.delete(avatarList, deleteChats)
                     .then(() => this.browseState())
                     .finally(() => loaderHandle.hide());
-            });
+            },
+        );
 
         // At this moment the popup is already changed in the dom, but not yet closed/resolved. We build the avatar list here
-        const entities = characterIds.map(id => characterToEntity(characters[id], id)).filter(entity => entity.item !== undefined);
+        const entities = characterIds
+            .map((id) => characterToEntity(characters[id], id))
+            .filter((entity) => entity.item !== undefined);
         buildAvatarList($('#bulk_delete_avatars_block'), entities);
 
         return promise;
     };
 
     /**
-     * Attaches and opens the tag menu
-     */
+	 * Attaches and opens the tag menu
+	 */
     handleContextMenuTag = () => {
         CharacterContextMenu.tag(this.selectedCharacters);
         this.browseState();
     };
 
-    addStateChangeCallback = callback => this.stateChangeCallbacks.push(callback);
+    addStateChangeCallback = (callback) =>
+        this.stateChangeCallbacks.push(callback);
 
     /**
-     * Clears internal character storage and
-     * removes visual highlight.
-     */
+	 * Clears internal character storage and
+	 * removes visual highlight.
+	 */
     clearSelectedCharacters = () => {
-        document.querySelectorAll('#' + BulkEditOverlay.containerId + ' .' + BulkEditOverlay.selectedClass)
-            .forEach(element => element.classList.remove(BulkEditOverlay.selectedClass));
+        document
+            .querySelectorAll(
+                '#' +
+					BulkEditOverlay.containerId +
+					' .' +
+					BulkEditOverlay.selectedClass,
+            )
+            .forEach((element) =>
+                element.classList.remove(BulkEditOverlay.selectedClass),
+            );
         this.selectedCharacters.length = 0;
     };
 }
