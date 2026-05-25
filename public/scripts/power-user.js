@@ -33,10 +33,7 @@ import {
     settingsReady,
 } from '../script.js';
 import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';
-import {
-    groups,
-    resetSelectedGroup,
-} from './group-chats.js';
+import { groups, resetSelectedGroup } from './group-chats.js';
 import {
     instruct_presets,
     loadInstructMode,
@@ -45,25 +42,76 @@ import {
     updateBindModelTemplatesState,
 } from './instruct-mode.js';
 
-import { getTagsList, tag_import_setting, tag_map, tag_sort_mode, tags } from './tags.js';
-import { getCustomTokenizerStatus, invalidateTokenCache, loadCustomTokenizer, tokenizers } from './tokenizers.js';
+import {
+    getTagsList,
+    tag_import_setting,
+    tag_map,
+    tag_sort_mode,
+    tags,
+} from './tags.js';
+import {
+    getCustomTokenizerStatus,
+    invalidateTokenCache,
+    loadCustomTokenizer,
+    tokenizers,
+} from './tokenizers.js';
 import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
 
-import { countOccurrences, debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, shuffle, sortMoments, stringToRange, timestampToMoment } from './utils.js';
+import {
+    countOccurrences,
+    debounce,
+    delay,
+    download,
+    getFileText,
+    getSanitizedFilename,
+    getStringHash,
+    isOdd,
+    isTrueBoolean,
+    onlyUnique,
+    resetScrollHeight,
+    shuffle,
+    sortMoments,
+    stringToRange,
+    timestampToMoment,
+} from './utils.js';
 import { FILTER_TYPES } from './filters.js';
-import { PARSER_FLAG, SlashCommandParser } from './slash-commands/SlashCommandParser.js';
+import {
+    PARSER_FLAG,
+    SlashCommandParser,
+} from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
-import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
-import { AUTOCOMPLETE_SELECT_KEY, AUTOCOMPLETE_STATE, AUTOCOMPLETE_WIDTH } from './autocomplete/AutoComplete.js';
-import { SlashCommandEnumValue, enumTypes } from './slash-commands/SlashCommandEnumValue.js';
-import { commonEnumProviders, enumIcons } from './slash-commands/SlashCommandCommonEnumsProvider.js';
+import {
+    ARGUMENT_TYPE,
+    SlashCommandArgument,
+    SlashCommandNamedArgument,
+} from './slash-commands/SlashCommandArgument.js';
+import {
+    AUTOCOMPLETE_SELECT_KEY,
+    AUTOCOMPLETE_STATE,
+    AUTOCOMPLETE_WIDTH,
+} from './autocomplete/AutoComplete.js';
+import {
+    SlashCommandEnumValue,
+    enumTypes,
+} from './slash-commands/SlashCommandEnumValue.js';
+import {
+    commonEnumProviders,
+    enumIcons,
+} from './slash-commands/SlashCommandCommonEnumsProvider.js';
 import { POPUP_TYPE, callGenericPopup, fixToastrForDialogs } from './popup.js';
 import { loadSystemPrompts } from './sysprompt.js';
 import { fuzzySearchCategories } from './filters.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { extractDominantColor, generateThemePalette, deriveBackgroundName } from './util/ThemeGenerator.js';
-import { DEFAULT_REASONING_TEMPLATE, loadReasoningTemplates } from './reasoning.js';
+import {
+    extractDominantColor,
+    generateThemePalette,
+    deriveBackgroundName,
+} from './util/ThemeGenerator.js';
+import {
+    DEFAULT_REASONING_TEMPLATE,
+    loadReasoningTemplates,
+} from './reasoning.js';
 import { bindModelTemplates } from './chat-templates.js';
 import { IMAGE_OVERSWIPE, MEDIA_DISPLAY } from './constants.js';
 import { t } from './i18n.js';
@@ -87,10 +135,20 @@ const unlockedMaxContextStep = 512;
 const maxContextMin = 512;
 const maxContextStep = 64;
 
-const defaultStoryString = '{{#if system}}{{system}}\n{{/if}}{{#if description}}{{description}}\n{{/if}}{{#if personality}}{{char}}\'s personality: {{personality}}\n{{/if}}{{#if scenario}}Scenario: {{scenario}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}';
+const defaultStoryString =
+	'{{#if system}}{{system}}\n{{/if}}{{#if description}}{{description}}\n{{/if}}{{#if personality}}{{char}}\'s personality: {{personality}}\n{{/if}}{{#if scenario}}Scenario: {{scenario}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}';
 const defaultExampleSeparator = '***';
 const defaultChatStart = '***';
 const defaultToastPosition = 'toast-top-center';
+
+export const DEFAULT_POST_MERGE_PROMPT = `Apply universal changes across the group.
+
+You receive the merged character definitions for a group card. Apply the following universal instructions across ALL character blocks. You may add new XML tags, modify existing content, or add entirely new sections — whatever is needed to apply the requested changes consistently.
+
+Changes to apply:
+[Describe your universal changes here]
+
+Output the complete modified character definitions.`;
 
 export const DEFAULT_GROUP_CARD_COMBINE_PROMPT = `Create a final character description for a generated group card from the provided input characters.
 Use only core character fields from the input: name, description, and personality.
@@ -488,7 +546,8 @@ export const power_user = {
     sysprompt: {
         enabled: true,
         name: 'Neutral - Chat',
-        content: 'Write {{char}}\'s next reply in a fictional chat between {{char}} and {{user}}.',
+        content:
+			'Write {{char}}\'s next reply in a fictional chat between {{char}} and {{user}}.',
         post_history: '',
     },
 
@@ -521,6 +580,13 @@ export const power_user = {
     group_card_combine_prompt: DEFAULT_GROUP_CARD_COMBINE_PROMPT,
     group_card_combine_prompt_presets: [],
     group_card_combine_included_fields: ['personality'],
+    group_card_processing_mode: 'parallel',
+    group_card_parallel_concurrency: 10,
+    group_card_post_merge_enabled: true,
+    group_card_post_merge_prompt: DEFAULT_POST_MERGE_PROMPT,
+    group_card_post_merge_prompt_presets: [],
+    group_card_crop_strategy: 'attention',
+    group_card_crop_padding: 15,
     fuzzy_search: false,
     encode_tags: false,
     experimental_macro_engine: true,
@@ -577,19 +643,83 @@ const storage_keys = {
 
 const contextControls = [
     // Power user context scoped settings
-    { id: 'context_story_string', property: 'story_string', isCheckbox: false, isGlobalSetting: false },
-    { id: 'context_example_separator', property: 'example_separator', isCheckbox: false, isGlobalSetting: false },
-    { id: 'context_chat_start', property: 'chat_start', isCheckbox: false, isGlobalSetting: false },
-    { id: 'context_use_stop_strings', property: 'use_stop_strings', isCheckbox: true, isGlobalSetting: false, defaultValue: false },
-    { id: 'context_names_as_stop_strings', property: 'names_as_stop_strings', isCheckbox: true, isGlobalSetting: false, defaultValue: true },
-    { id: 'context_story_string_position', property: 'story_string_position', isCheckbox: false, isGlobalSetting: false, defaultValue: extension_prompt_types.IN_PROMPT, trigger: true },
-    { id: 'context_story_string_depth', property: 'story_string_depth', isCheckbox: false, isGlobalSetting: false, defaultValue: 1 },
-    { id: 'context_story_string_role', property: 'story_string_role', isCheckbox: false, isGlobalSetting: false, defaultValue: extension_prompt_roles.SYSTEM },
+    {
+        id: 'context_story_string',
+        property: 'story_string',
+        isCheckbox: false,
+        isGlobalSetting: false,
+    },
+    {
+        id: 'context_example_separator',
+        property: 'example_separator',
+        isCheckbox: false,
+        isGlobalSetting: false,
+    },
+    {
+        id: 'context_chat_start',
+        property: 'chat_start',
+        isCheckbox: false,
+        isGlobalSetting: false,
+    },
+    {
+        id: 'context_use_stop_strings',
+        property: 'use_stop_strings',
+        isCheckbox: true,
+        isGlobalSetting: false,
+        defaultValue: false,
+    },
+    {
+        id: 'context_names_as_stop_strings',
+        property: 'names_as_stop_strings',
+        isCheckbox: true,
+        isGlobalSetting: false,
+        defaultValue: true,
+    },
+    {
+        id: 'context_story_string_position',
+        property: 'story_string_position',
+        isCheckbox: false,
+        isGlobalSetting: false,
+        defaultValue: extension_prompt_types.IN_PROMPT,
+        trigger: true,
+    },
+    {
+        id: 'context_story_string_depth',
+        property: 'story_string_depth',
+        isCheckbox: false,
+        isGlobalSetting: false,
+        defaultValue: 1,
+    },
+    {
+        id: 'context_story_string_role',
+        property: 'story_string_role',
+        isCheckbox: false,
+        isGlobalSetting: false,
+        defaultValue: extension_prompt_roles.SYSTEM,
+    },
 
     // Existing power user settings
-    { id: 'always-force-name2-checkbox', property: 'always_force_name2', isCheckbox: true, isGlobalSetting: true, defaultValue: true },
-    { id: 'trim_sentences_checkbox', property: 'trim_sentences', isCheckbox: true, isGlobalSetting: true, defaultValue: false },
-    { id: 'single_line', property: 'single_line', isCheckbox: true, isGlobalSetting: true, defaultValue: false },
+    {
+        id: 'always-force-name2-checkbox',
+        property: 'always_force_name2',
+        isCheckbox: true,
+        isGlobalSetting: true,
+        defaultValue: true,
+    },
+    {
+        id: 'trim_sentences_checkbox',
+        property: 'trim_sentences',
+        isCheckbox: true,
+        isGlobalSetting: true,
+        defaultValue: false,
+    },
+    {
+        id: 'single_line',
+        property: 'single_line',
+        isCheckbox: true,
+        isGlobalSetting: true,
+        defaultValue: false,
+    },
 ];
 
 let browser_has_focus = true;
@@ -663,8 +793,14 @@ export function fixMarkdown(text, forDisplay) {
     let newText = text;
     for (let i = matches.length - 1; i >= 0; i--) {
         let matchText = matches[i][0];
-        let replacementText = matchText.replace(/(\*|_)([\t \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]+)|([\t \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]+)(\*|_)/g, '$1$4');
-        newText = newText.slice(0, matches[i].index) + replacementText + newText.slice(matches[i].index + matchText.length);
+        let replacementText = matchText.replace(
+            /(\*|_)([\t \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]+)|([\t \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]+)(\*|_)/g,
+            '$1$4',
+        );
+        newText =
+			newText.slice(0, matches[i].index) +
+			replacementText +
+			newText.slice(matches[i].index + matchText.length);
     }
 
     // Don't auto-fix asterisks if this is a message clean-up procedure.
@@ -708,12 +844,21 @@ function switchTimestamps() {
 
 function switchIcons() {
     $('body').toggleClass('no-modelIcons', !power_user.timestamp_model_icon);
-    $('#messageModelIconEnabled').prop('checked', power_user.timestamp_model_icon);
+    $('#messageModelIconEnabled').prop(
+        'checked',
+        power_user.timestamp_model_icon,
+    );
 }
 
 function switchTokenCount() {
-    $('body').toggleClass('no-tokenCount', !power_user.message_token_count_enabled);
-    $('#messageTokensEnabled').prop('checked', power_user.message_token_count_enabled);
+    $('body').toggleClass(
+        'no-tokenCount',
+        !power_user.message_token_count_enabled,
+    );
+    $('#messageTokensEnabled').prop(
+        'checked',
+        power_user.message_token_count_enabled,
+    );
 }
 
 function switchMesIDDisplay() {
@@ -723,30 +868,43 @@ function switchMesIDDisplay() {
 
 function switchHideChatAvatars() {
     $('body').toggleClass('hideChatAvatars', power_user.hideChatAvatars_enabled);
-    $('#hideChatAvatarsEnabled').prop('checked', power_user.hideChatAvatars_enabled);
+    $('#hideChatAvatarsEnabled').prop(
+        'checked',
+        power_user.hideChatAvatars_enabled,
+    );
 }
 
 function switchMessageActions() {
-    $('body').toggleClass('expandMessageActions', power_user.expand_message_actions);
+    $('body').toggleClass(
+        'expandMessageActions',
+        power_user.expand_message_actions,
+    );
     $('#expandMessageActions').prop('checked', power_user.expand_message_actions);
     $('.extraMesButtons, .extraMesButtonsHint').removeAttr('style');
 }
 
 function switchReducedMotion() {
-    const osReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const osReduced = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+    ).matches;
     if (osReduced) {
         power_user.reduced_motion = true;
     }
     jQuery.fx.off = power_user.reduced_motion;
-    const overrideDuration = power_user.reduced_motion ? 0 : ANIMATION_DURATION_DEFAULT;
+    const overrideDuration = power_user.reduced_motion
+        ? 0
+        : ANIMATION_DURATION_DEFAULT;
     setAnimationDuration(overrideDuration);
     $('#reduced_motion').prop('checked', power_user.reduced_motion);
     $('#reduced_motion').prop('disabled', osReduced);
-    $('#reduced_motion').closest('label').attr('title',
-        osReduced
-            ? t`Controlled by your operating system's reduced motion setting`
-            : t`Disable animations and transitions`,
-    );
+    $('#reduced_motion')
+        .closest('label')
+        .attr(
+            'title',
+            osReduced
+                ? t`Controlled by your operating system's reduced motion setting`
+                : t`Disable animations and transitions`,
+        );
     $('body').toggleClass('reduced-motion', power_user.reduced_motion);
 }
 
@@ -756,8 +914,14 @@ function switchCompactInputArea() {
 }
 
 function switchSwipeNumAllMessages() {
-    $('#show_swipe_num_all_messages').prop('checked', power_user.show_swipe_num_all_messages);
-    $('body').toggleClass('swipeAllMessages', !!power_user.show_swipe_num_all_messages);
+    $('#show_swipe_num_all_messages').prop(
+        'checked',
+        power_user.show_swipe_num_all_messages,
+    );
+    $('body').toggleClass(
+        'swipeAllMessages',
+        !!power_user.show_swipe_num_all_messages,
+    );
 }
 
 var originalSliderValues = [];
@@ -791,12 +955,11 @@ async function switchLabMode({ noReset = false } = {}) {
         $('#labModeWarning').removeClass('displayNone');
         //$("#advanced-ai-config-block input[type='range']").hide()
 
-        $('#amount_gen_counter').attr('min', '1')
+        $('#amount_gen_counter')
+            .attr('min', '1')
             .attr('max', '99999')
             .attr('step', '1');
-        $('#amount_gen').attr('min', '1')
-            .attr('max', '99999')
-            .attr('step', '1');
+        $('#amount_gen').attr('min', '1').attr('max', '99999').attr('step', '1');
     } else if (!noReset) {
         //re apply the original sliders values to each input
         originalSliderValues.forEach(function (slider) {
@@ -873,11 +1036,16 @@ async function CreateZenSliders(elmnt) {
         stepScale = 1;
         numSteps = 10;
         sliderValue = steps.indexOf(Number(sliderValue));
-        if (sliderValue === -1) { sliderValue = 4; } // default to '200' if origSlider has value we can't use
+        if (sliderValue === -1) {
+            sliderValue = 4;
+        } // default to '200' if origSlider has value we can't use
     }
     if (sliderID == 'rep_pen_range_textgenerationwebui') {
         if (power_user.max_context_unlocked) {
-            steps = [0, 256, 512, 768, 1024, 2048, 4096, 8192, 16355, 24576, 32768, 49152, 65536, -1];
+            steps = [
+                0, 256, 512, 768, 1024, 2048, 4096, 8192, 16355, 24576, 32768, 49152,
+                65536, -1,
+            ];
             numSteps = 13;
             allVal = 13;
         } else {
@@ -891,35 +1059,43 @@ async function CreateZenSliders(elmnt) {
         sliderMax = steps.length - 1;
         stepScale = 1;
         sliderValue = steps.indexOf(Number(sliderValue));
-        if (sliderValue === -1) { sliderValue = allVal; } // default to allValue if origSlider has value we can't use
+        if (sliderValue === -1) {
+            sliderValue = allVal;
+        } // default to allValue if origSlider has value we can't use
     }
     //customize decimals
-    if (sliderID == 'max_context' ||
-        sliderID == 'mirostat_mode_textgenerationwebui' ||
-        sliderID == 'mirostat_tau_textgenerationwebui' ||
-        sliderID == 'top_k_textgenerationwebui' ||
-        sliderID == 'num_beams_textgenerationwebui' ||
-        sliderID == 'no_repeat_ngram_size_textgenerationwebui' ||
-        sliderID == 'min_length_textgenerationwebui' ||
-        sliderID == 'top_k' ||
-        sliderID == 'mirostat_mode_kobold' ||
-        sliderID == 'rep_pen_range' ||
-        sliderID == 'dry_allowed_length_textgenerationwebui' ||
-        sliderID == 'rep_pen_decay_textgenerationwebui' ||
-        sliderID == 'dry_penalty_last_n_textgenerationwebui' ||
-        sliderID == 'max_tokens_second_textgenerationwebui') {
+    if (
+        sliderID == 'max_context' ||
+		sliderID == 'mirostat_mode_textgenerationwebui' ||
+		sliderID == 'mirostat_tau_textgenerationwebui' ||
+		sliderID == 'top_k_textgenerationwebui' ||
+		sliderID == 'num_beams_textgenerationwebui' ||
+		sliderID == 'no_repeat_ngram_size_textgenerationwebui' ||
+		sliderID == 'min_length_textgenerationwebui' ||
+		sliderID == 'top_k' ||
+		sliderID == 'mirostat_mode_kobold' ||
+		sliderID == 'rep_pen_range' ||
+		sliderID == 'dry_allowed_length_textgenerationwebui' ||
+		sliderID == 'rep_pen_decay_textgenerationwebui' ||
+		sliderID == 'dry_penalty_last_n_textgenerationwebui' ||
+		sliderID == 'max_tokens_second_textgenerationwebui'
+    ) {
         decimals = 0;
     }
-    if (sliderID == 'min_temp_textgenerationwebui' ||
-        sliderID == 'max_temp_textgenerationwebui' ||
-        sliderID == 'smoothing_curve_textgenerationwebui' ||
-        sliderID == 'smoothing_factor_textgenerationwebui' ||
-        sliderID == 'dry_multiplier_textgenerationwebui' ||
-        sliderID == 'dry_base_textgenerationwebui') {
+    if (
+        sliderID == 'min_temp_textgenerationwebui' ||
+		sliderID == 'max_temp_textgenerationwebui' ||
+		sliderID == 'smoothing_curve_textgenerationwebui' ||
+		sliderID == 'smoothing_factor_textgenerationwebui' ||
+		sliderID == 'dry_multiplier_textgenerationwebui' ||
+		sliderID == 'dry_base_textgenerationwebui'
+    ) {
         decimals = 2;
     }
-    if (sliderID == 'eta_cutoff_textgenerationwebui' ||
-        sliderID == 'epsilon_cutoff_textgenerationwebui') {
+    if (
+        sliderID == 'eta_cutoff_textgenerationwebui' ||
+		sliderID == 'epsilon_cutoff_textgenerationwebui'
+    ) {
         numSteps = 50;
         decimals = 1;
     }
@@ -928,8 +1104,10 @@ async function CreateZenSliders(elmnt) {
         decimals = 1;
     }
     //customize steps
-    if (sliderID == 'mirostat_mode_textgenerationwebui' ||
-        sliderID == 'mirostat_mode_kobold') {
+    if (
+        sliderID == 'mirostat_mode_textgenerationwebui' ||
+		sliderID == 'mirostat_mode_kobold'
+    ) {
         numSteps = 2;
     }
     if (sliderID == 'encoder_rep_pen_textgenerationwebui') {
@@ -938,71 +1116,79 @@ async function CreateZenSliders(elmnt) {
     if (sliderID == 'max_context') {
         numSteps = 15;
     }
-    if (sliderID == 'mirostat_tau_textgenerationwebui' ||
-        sliderID == 'top_k_textgenerationwebui' ||
-        sliderID == 'num_beams_textgenerationwebui' ||
-        sliderID == 'no_repeat_ngram_size_textgenerationwebui' ||
-        sliderID == 'epsilon_cutoff_textgenerationwebui' ||
-        sliderID == 'tfs_textgenerationwebui' ||
-        sliderID == 'min_p_textgenerationwebui' ||
-        sliderID == 'temp_textgenerationwebui' ||
-        sliderID == 'temp') {
+    if (
+        sliderID == 'mirostat_tau_textgenerationwebui' ||
+		sliderID == 'top_k_textgenerationwebui' ||
+		sliderID == 'num_beams_textgenerationwebui' ||
+		sliderID == 'no_repeat_ngram_size_textgenerationwebui' ||
+		sliderID == 'epsilon_cutoff_textgenerationwebui' ||
+		sliderID == 'tfs_textgenerationwebui' ||
+		sliderID == 'min_p_textgenerationwebui' ||
+		sliderID == 'temp_textgenerationwebui' ||
+		sliderID == 'temp'
+    ) {
         numSteps = 20;
     }
-    if (sliderID == 'mirostat_eta_textgenerationwebui' ||
-        sliderID == 'penalty_alpha_textgenerationwebui' ||
-        sliderID == 'length_penalty_textgenerationwebui' ||
-        sliderID == 'min_temp_textgenerationwebui' ||
-        sliderID == 'max_temp_textgenerationwebui') {
+    if (
+        sliderID == 'mirostat_eta_textgenerationwebui' ||
+		sliderID == 'penalty_alpha_textgenerationwebui' ||
+		sliderID == 'length_penalty_textgenerationwebui' ||
+		sliderID == 'min_temp_textgenerationwebui' ||
+		sliderID == 'max_temp_textgenerationwebui'
+    ) {
         numSteps = 50;
     }
     //customize off values
-    if (sliderID == 'presence_pen_textgenerationwebui' ||
-        sliderID == 'freq_pen_textgenerationwebui' ||
-        sliderID == 'mirostat_mode_textgenerationwebui' ||
-        sliderID == 'mirostat_mode_kobold' ||
-        sliderID == 'mirostat_tau_textgenerationwebui' ||
-        sliderID == 'mirostat_tau_kobold' ||
-        sliderID == 'mirostat_eta_textgenerationwebui' ||
-        sliderID == 'mirostat_eta_kobold' ||
-        sliderID == 'min_p_textgenerationwebui' ||
-        sliderID == 'min_p' ||
-        sliderID == 'no_repeat_ngram_size_textgenerationwebui' ||
-        sliderID == 'penalty_alpha_textgenerationwebui' ||
-        sliderID == 'length_penalty_textgenerationwebui' ||
-        sliderID == 'epsilon_cutoff_textgenerationwebui' ||
-        sliderID == 'nsigma' ||
-        sliderID == 'rep_pen_range' ||
-        sliderID == 'eta_cutoff_textgenerationwebui' ||
-        sliderID == 'top_a_textgenerationwebui' ||
-        sliderID == 'top_a' ||
-        sliderID == 'top_k_textgenerationwebui' ||
-        sliderID == 'top_k' ||
-        sliderID == 'rep_pen_slope' ||
-        sliderID == 'smoothing_factor_textgenerationwebui' ||
-        sliderID == 'smoothing_curve_textgenerationwebui' ||
-        sliderID == 'skew_textgenerationwebui' ||
-        sliderID == 'dry_multiplier_textgenerationwebui' ||
-        sliderID == 'min_length_textgenerationwebui') {
+    if (
+        sliderID == 'presence_pen_textgenerationwebui' ||
+		sliderID == 'freq_pen_textgenerationwebui' ||
+		sliderID == 'mirostat_mode_textgenerationwebui' ||
+		sliderID == 'mirostat_mode_kobold' ||
+		sliderID == 'mirostat_tau_textgenerationwebui' ||
+		sliderID == 'mirostat_tau_kobold' ||
+		sliderID == 'mirostat_eta_textgenerationwebui' ||
+		sliderID == 'mirostat_eta_kobold' ||
+		sliderID == 'min_p_textgenerationwebui' ||
+		sliderID == 'min_p' ||
+		sliderID == 'no_repeat_ngram_size_textgenerationwebui' ||
+		sliderID == 'penalty_alpha_textgenerationwebui' ||
+		sliderID == 'length_penalty_textgenerationwebui' ||
+		sliderID == 'epsilon_cutoff_textgenerationwebui' ||
+		sliderID == 'nsigma' ||
+		sliderID == 'rep_pen_range' ||
+		sliderID == 'eta_cutoff_textgenerationwebui' ||
+		sliderID == 'top_a_textgenerationwebui' ||
+		sliderID == 'top_a' ||
+		sliderID == 'top_k_textgenerationwebui' ||
+		sliderID == 'top_k' ||
+		sliderID == 'rep_pen_slope' ||
+		sliderID == 'smoothing_factor_textgenerationwebui' ||
+		sliderID == 'smoothing_curve_textgenerationwebui' ||
+		sliderID == 'skew_textgenerationwebui' ||
+		sliderID == 'dry_multiplier_textgenerationwebui' ||
+		sliderID == 'min_length_textgenerationwebui'
+    ) {
         offVal = 0;
     }
-    if (sliderID == 'rep_pen_textgenerationwebui' ||
-        sliderID == 'rep_pen' ||
-        sliderID == 'tfs_textgenerationwebui' ||
-        sliderID == 'tfs' ||
-        sliderID == 'top_p_textgenerationwebui' ||
-        sliderID == 'top_p' ||
-        sliderID == 'typical_p_textgenerationwebui' ||
-        sliderID == 'typical_p' ||
-        sliderID == 'encoder_rep_pen_textgenerationwebui' ||
-        sliderID == 'temp_textgenerationwebui' ||
-        sliderID == 'temp' ||
-        sliderID == 'min_temp_textgenerationwebui' ||
-        sliderID == 'max_temp_textgenerationwebui' ||
-        sliderID == 'dynatemp_exponent_textgenerationwebui' ||
-        sliderID == 'guidance_scale_textgenerationwebui' ||
-        sliderID == 'rep_pen_slope_textgenerationwebui' ||
-        sliderID == 'guidance_scale') {
+    if (
+        sliderID == 'rep_pen_textgenerationwebui' ||
+		sliderID == 'rep_pen' ||
+		sliderID == 'tfs_textgenerationwebui' ||
+		sliderID == 'tfs' ||
+		sliderID == 'top_p_textgenerationwebui' ||
+		sliderID == 'top_p' ||
+		sliderID == 'typical_p_textgenerationwebui' ||
+		sliderID == 'typical_p' ||
+		sliderID == 'encoder_rep_pen_textgenerationwebui' ||
+		sliderID == 'temp_textgenerationwebui' ||
+		sliderID == 'temp' ||
+		sliderID == 'min_temp_textgenerationwebui' ||
+		sliderID == 'max_temp_textgenerationwebui' ||
+		sliderID == 'dynatemp_exponent_textgenerationwebui' ||
+		sliderID == 'guidance_scale_textgenerationwebui' ||
+		sliderID == 'rep_pen_slope_textgenerationwebui' ||
+		sliderID == 'guidance_scale'
+    ) {
         offVal = 1;
     }
     if (sliderID == 'guidance_scale_textgenerationwebui') {
@@ -1012,7 +1198,10 @@ async function CreateZenSliders(elmnt) {
         sliderMin = 0;
     }
     //customize amt gen steps
-    if (sliderID !== 'amount_gen' && sliderID !== 'rep_pen_range_textgenerationwebui') {
+    if (
+        sliderID !== 'amount_gen' &&
+		sliderID !== 'rep_pen_range_textgenerationwebui'
+    ) {
         stepScale = sliderRange / numSteps;
     }
     var newSlider = $('<div>')
@@ -1033,24 +1222,28 @@ async function CreateZenSliders(elmnt) {
             if (newSlider.attr('id') == 'amount_gen_zenslider') {
                 handleText = steps[sliderValue];
                 stepNumber = sliderValue;
-                leftMargin = ((stepNumber) / numSteps) * 50 * -1;
-                handle.text(handleText)
-                    .css('margin-left', `${leftMargin}px`);
+                leftMargin = (stepNumber / numSteps) * 50 * -1;
+                handle.text(handleText).css('margin-left', `${leftMargin}px`);
                 //console.log(`${newSlider.attr('id')} initial value:${handleText}, stepNum:${stepNumber}, numSteps:${numSteps}, left-margin:${leftMargin}`)
-            } else if (newSlider.attr('id') == 'rep_pen_range_textgenerationwebui_zenslider') {
+            } else if (
+                newSlider.attr('id') == 'rep_pen_range_textgenerationwebui_zenslider'
+            ) {
                 //handling creation of rep_pen_range for ooba
                 if ($('#rep_pen_range_textgenerationwebui_zensliders').length !== 0) {
                     $('#rep_pen_range_textgenerationwebui_zensliders').remove();
                 }
                 handleText = steps[sliderValue];
                 stepNumber = sliderValue;
-                leftMargin = ((stepNumber) / numSteps) * 50 * -1;
+                leftMargin = (stepNumber / numSteps) * 50 * -1;
                 if (sliderValue === offVal) {
                     handleText = 'Off';
                     handle.css('color', 'rgba(128,128,128,0.5)');
-                } else if (sliderValue === allVal) { handleText = 'All'; } else { handle.css('color', ''); }
-                handle.text(handleText)
-                    .css('margin-left', `${leftMargin}px`);
+                } else if (sliderValue === allVal) {
+                    handleText = 'All';
+                } else {
+                    handle.css('color', '');
+                }
+                handle.text(handleText).css('margin-left', `${leftMargin}px`);
                 //console.log(sliderValue, handleText, offVal, allVal)
                 //console.log(`${newSlider.attr('id')} sliderValue = ${sliderValue}, handleText:${handleText}, stepNum:${stepNumber}, numSteps:${numSteps}, left-margin:${leftMargin}`)
                 originalSlider.val(steps[sliderValue]);
@@ -1063,17 +1256,17 @@ async function CreateZenSliders(elmnt) {
                 } else {
                     handle.text(numVal).css('color', '');
                 }
-                stepNumber = ((sliderValue - sliderMin) / stepScale);
+                stepNumber = (sliderValue - sliderMin) / stepScale;
                 leftMargin = (stepNumber / numSteps) * 50 * -1;
-                originalSlider.val(numVal)
-                    .data('newSlider', newSlider);
+                originalSlider.val(numVal).data('newSlider', newSlider);
                 //console.log(`${newSlider.attr('id')} sliderValue = ${sliderValue}, handleText:${handleText, numVal}, stepNum:${stepNumber}, numSteps:${numSteps}, left-margin:${leftMargin}`)
                 var isManualInput = false;
                 var valueBeforeManualInput;
-                handle.css('margin-left', `${leftMargin}px`)
+                handle
+                    .css('margin-left', `${leftMargin}px`)
 
                     .attr('contenteditable', 'true')
-                    //these sliders need listeners for manual inputs
+                //these sliders need listeners for manual inputs
                     .on('click', function () {
                         //this just selects all the text in the handle so user can overwrite easily
                         //needed because JQUery UI uses left/right arrow keys as well as home/end to move the slider..
@@ -1096,23 +1289,37 @@ async function CreateZenSliders(elmnt) {
                             handle.trigger('blur');
                         }
                     })
-                    //trigger slider changes when user clicks away
+                //trigger slider changes when user clicks away
                     .on('mouseup blur', function () {
-                        let manualInput = parseFloat(parseFloat(handle.text()).toFixed(decimals));
+                        let manualInput = parseFloat(
+                            parseFloat(handle.text()).toFixed(decimals),
+                        );
                         if (isManualInput) {
                             //disallow manual inputs outside acceptable range
                             if (manualInput >= sliderMin && manualInput <= sliderMax) {
                                 //if value is ok, assign to slider and update handle text and position
                                 newSlider.val(manualInput);
-                                handleSlideEvent.call(newSlider, null, { value: manualInput }, 'manual');
+                                handleSlideEvent.call(
+                                    newSlider,
+                                    null,
+                                    { value: manualInput },
+                                    'manual',
+                                );
                                 valueBeforeManualInput = manualInput;
                             } else {
                                 //if value not ok, warn and reset to last known valid value
-                                toastr.warning(`Invalid value. Must be between ${sliderMin} and ${sliderMax}`);
+                                toastr.warning(
+                                    `Invalid value. Must be between ${sliderMin} and ${sliderMax}`,
+                                );
                                 console.log(valueBeforeManualInput);
                                 newSlider.val(valueBeforeManualInput);
                                 handle.text(valueBeforeManualInput);
-                                handleSlideEvent.call(newSlider, null, { value: parseFloat(valueBeforeManualInput) }, 'manual');
+                                handleSlideEvent.call(
+                                    newSlider,
+                                    null,
+                                    { value: parseFloat(valueBeforeManualInput) },
+                                    'manual',
+                                );
                             }
                         }
                         isManualInput = false;
@@ -1129,11 +1336,23 @@ async function CreateZenSliders(elmnt) {
         var numVal = parseFloat(Number(ui.value).toFixed(decimals));
         offVal = parseFloat(Number(offVal).toFixed(decimals));
         allVal = parseFloat(Number(allVal).toFixed(decimals));
-        console.log(numVal, sliderMin, sliderMax, numVal > sliderMax, numVal < sliderMin);
-        if (numVal > sliderMax) { numVal = sliderMax; }
-        if (numVal < sliderMin) { numVal = sliderMin; }
-        var stepNumber = parseFloat(((ui.value - sliderMin) / stepScale).toFixed(0));
-        var handleText = (ui.value);
+        console.log(
+            numVal,
+            sliderMin,
+            sliderMax,
+            numVal > sliderMax,
+            numVal < sliderMin,
+        );
+        if (numVal > sliderMax) {
+            numVal = sliderMax;
+        }
+        if (numVal < sliderMin) {
+            numVal = sliderMin;
+        }
+        var stepNumber = parseFloat(
+            ((ui.value - sliderMin) / stepScale).toFixed(0),
+        );
+        var handleText = ui.value;
         var leftMargin = (stepNumber / numSteps) * 50 * -1;
         var perStepPercent = 1 / numSteps; //how far in % each step should be on the slider
         var leftPos = newSlider.width() * (stepNumber * perStepPercent); //how big of a left margin to give the slider for manual inputs
@@ -1157,18 +1376,30 @@ async function CreateZenSliders(elmnt) {
             handle.text(handleText);
             newSlider.val(stepNumber);
             numVal = steps[stepNumber];
-        } else if (newSlider.attr('id') == 'rep_pen_range_textgenerationwebui_zenslider') {
+        } else if (
+            newSlider.attr('id') == 'rep_pen_range_textgenerationwebui_zenslider'
+        ) {
             //special handling for TextCompletion rep pen range slider, pulls text aliases for step values from an array
             handleText = steps[stepNumber];
             handle.text(handleText);
             newSlider.val(stepNumber);
-            if (numVal === offVal) { handle.text('Off').css('color', 'rgba(128,128,128,0.5)'); } else if (numVal === allVal) { handle.text('All'); } else { handle.css('color', ''); }
+            if (numVal === offVal) {
+                handle.text('Off').css('color', 'rgba(128,128,128,0.5)');
+            } else if (numVal === allVal) {
+                handle.text('All');
+            } else {
+                handle.css('color', '');
+            }
             numVal = steps[stepNumber];
         } else {
             //everything else uses the flat slider value
             //also note: the above sliders are not custom inputtable due to the array aliasing
             //show 'off' if disabled value is set
-            if (numVal === offVal) { handle.text('Off').css('color', 'rgba(128,128,128,0.5)'); } else { handle.text(ui.value.toFixed(decimals)).css('color', ''); }
+            if (numVal === offVal) {
+                handle.text('Off').css('color', 'rgba(128,128,128,0.5)');
+            } else {
+                handle.text(ui.value.toFixed(decimals)).css('color', '');
+            }
             newSlider.val(handleText);
         }
         //for manually typed-in values we must adjust left position because JQUI doesn't do it for us
@@ -1257,9 +1488,18 @@ function applyNoShadows() {
 }
 
 function applyAvatarStyle() {
-    $('body').toggleClass('big-avatars', power_user.avatar_style === avatar_styles.RECTANGULAR);
-    $('body').toggleClass('square-avatars', power_user.avatar_style === avatar_styles.SQUARE);
-    $('body').toggleClass('rounded-avatars', power_user.avatar_style === avatar_styles.ROUNDED);
+    $('body').toggleClass(
+        'big-avatars',
+        power_user.avatar_style === avatar_styles.RECTANGULAR,
+    );
+    $('body').toggleClass(
+        'square-avatars',
+        power_user.avatar_style === avatar_styles.SQUARE,
+    );
+    $('body').toggleClass(
+        'rounded-avatars',
+        power_user.avatar_style === avatar_styles.ROUNDED,
+    );
     $('#avatar_style').val(power_user.avatar_style).prop('selected', true);
 }
 
@@ -1296,13 +1536,18 @@ function applyChatDisplay() {
 function applyToastrPosition() {
     if (!toastPositionClasses.includes(power_user.toastr_position)) {
         power_user.toastr_position = defaultToastPosition;
-        console.warn(`applyToastrPosition: invalid toastr position, defaulting to ${defaultToastPosition}`);
+        console.warn(
+            `applyToastrPosition: invalid toastr position, defaulting to ${defaultToastPosition}`,
+        );
     }
 
     toastr.options.positionClass = power_user.toastr_position;
     fixToastrForDialogs();
     $('#toastr_position').val(power_user.toastr_position);
-    $(`#toastr_position option[value="${power_user.toastr_position}"]`).prop('selected', true);
+    $(`#toastr_position option[value="${power_user.toastr_position}"]`).prop(
+        'selected',
+        true,
+    );
 }
 
 function applyChatWidth(type) {
@@ -1313,13 +1558,18 @@ function applyChatWidth(type) {
         //document.documentElement.style.setProperty('--sheldWidth', power_user.chat_width);
     } else {
         //this is to prevent the slider from updating page in real time
-        $('#chat_width_slider').off('mouseup touchend').on('mouseup touchend', async () => {
-            // This is a hack for Firefox to let it render before applying the block width.
-            // Otherwise it takes the incorrect slider position with the new value AFTER the resizing.
-            await delay(1);
-            document.documentElement.style.setProperty('--sheldWidth', `${power_user.chat_width}vw`);
-            await delay(1);
-        });
+        $('#chat_width_slider')
+            .off('mouseup touchend')
+            .on('mouseup touchend', async () => {
+                // This is a hack for Firefox to let it render before applying the block width.
+                // Otherwise it takes the incorrect slider position with the new value AFTER the resizing.
+                await delay(1);
+                document.documentElement.style.setProperty(
+                    '--sheldWidth',
+                    `${power_user.chat_width}vw`,
+                );
+                await delay(1);
+            });
     }
 
     $('#chat_width_slider_counter').val(power_user.chat_width);
@@ -1327,44 +1577,89 @@ function applyChatWidth(type) {
 
 function applyThemeColor(type) {
     if (type === 'main') {
-        document.documentElement.style.setProperty('--SmartThemeBodyColor', power_user.main_text_color);
-        const color = power_user.main_text_color.split('(')[1].split(')')[0].split(',');
-        document.documentElement.style.setProperty('--SmartThemeCheckboxBgColorR', color[0]);
-        document.documentElement.style.setProperty('--SmartThemeCheckboxBgColorG', color[1]);
-        document.documentElement.style.setProperty('--SmartThemeCheckboxBgColorB', color[2]);
-        document.documentElement.style.setProperty('--SmartThemeCheckboxBgColorA', color[3]);
+        document.documentElement.style.setProperty(
+            '--SmartThemeBodyColor',
+            power_user.main_text_color,
+        );
+        const color = power_user.main_text_color
+            .split('(')[1]
+            .split(')')[0]
+            .split(',');
+        document.documentElement.style.setProperty(
+            '--SmartThemeCheckboxBgColorR',
+            color[0],
+        );
+        document.documentElement.style.setProperty(
+            '--SmartThemeCheckboxBgColorG',
+            color[1],
+        );
+        document.documentElement.style.setProperty(
+            '--SmartThemeCheckboxBgColorB',
+            color[2],
+        );
+        document.documentElement.style.setProperty(
+            '--SmartThemeCheckboxBgColorA',
+            color[3],
+        );
     }
     if (type === 'italics') {
-        document.documentElement.style.setProperty('--SmartThemeEmColor', power_user.italics_text_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeEmColor',
+            power_user.italics_text_color,
+        );
     }
     if (type === 'underline') {
-        document.documentElement.style.setProperty('--SmartThemeUnderlineColor', power_user.underline_text_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeUnderlineColor',
+            power_user.underline_text_color,
+        );
     }
     if (type === 'quote') {
-        document.documentElement.style.setProperty('--SmartThemeQuoteColor', power_user.quote_text_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeQuoteColor',
+            power_user.quote_text_color,
+        );
     }
     /*     if (type === 'fastUIBG') {
             document.documentElement.style.setProperty('--SmartThemeFastUIBGColor', power_user.fastui_bg_color);
         } */
     if (type === 'blurTint') {
         let metaThemeColor = document.querySelector('meta[name=theme-color]');
-        document.documentElement.style.setProperty('--SmartThemeBlurTintColor', power_user.blur_tint_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeBlurTintColor',
+            power_user.blur_tint_color,
+        );
         metaThemeColor.setAttribute('content', power_user.blur_tint_color);
     }
     if (type === 'chatTint') {
-        document.documentElement.style.setProperty('--SmartThemeChatTintColor', power_user.chat_tint_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeChatTintColor',
+            power_user.chat_tint_color,
+        );
     }
     if (type === 'userMesBlurTint') {
-        document.documentElement.style.setProperty('--SmartThemeUserMesBlurTintColor', power_user.user_mes_blur_tint_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeUserMesBlurTintColor',
+            power_user.user_mes_blur_tint_color,
+        );
     }
     if (type === 'botMesBlurTint') {
-        document.documentElement.style.setProperty('--SmartThemeBotMesBlurTintColor', power_user.bot_mes_blur_tint_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeBotMesBlurTintColor',
+            power_user.bot_mes_blur_tint_color,
+        );
     }
     if (type === 'shadow') {
-        document.documentElement.style.setProperty('--SmartThemeShadowColor', power_user.shadow_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeShadowColor',
+            power_user.shadow_color,
+        );
     }
     if (type === 'border') {
-        document.documentElement.style.setProperty('--SmartThemeBorderColor', power_user.border_color);
+        document.documentElement.style.setProperty(
+            '--SmartThemeBorderColor',
+            power_user.border_color,
+        );
     }
 }
 
@@ -1382,13 +1677,19 @@ function applyCustomCSS() {
 }
 
 function applyBlurStrength() {
-    document.documentElement.style.setProperty('--blurStrength', String(power_user.blur_strength));
+    document.documentElement.style.setProperty(
+        '--blurStrength',
+        String(power_user.blur_strength),
+    );
     $('#blur_strength_counter').val(power_user.blur_strength);
     $('#blur_strength').val(power_user.blur_strength);
 }
 
 function applyShadowWidth() {
-    document.documentElement.style.setProperty('--shadowWidth', String(power_user.shadow_width));
+    document.documentElement.style.setProperty(
+        '--shadowWidth',
+        String(power_user.shadow_width),
+    );
     $('#shadow_width_counter').val(power_user.shadow_width);
     $('#shadow_width').val(power_user.shadow_width);
 }
@@ -1396,12 +1697,20 @@ function applyShadowWidth() {
 function applyFontScale(type) {
     //this is to allow forced setting on page load, theme swap, etc
     if (type === 'forced') {
-        document.documentElement.style.setProperty('--fontScale', String(power_user.font_scale));
+        document.documentElement.style.setProperty(
+            '--fontScale',
+            String(power_user.font_scale),
+        );
     } else {
         //this is to prevent the slider from updating page in real time
-        $('#font_scale').off('mouseup touchend').on('mouseup touchend', () => {
-            document.documentElement.style.setProperty('--fontScale', String(power_user.font_scale));
-        });
+        $('#font_scale')
+            .off('mouseup touchend')
+            .on('mouseup touchend', () => {
+                document.documentElement.style.setProperty(
+                    '--fontScale',
+                    String(power_user.font_scale),
+                );
+            });
     }
 
     $('#font_scale_counter').val(power_user.font_scale);
@@ -1425,7 +1734,8 @@ function isMediaDisplayReloadNeeded() {
         if (index < firstDisplayedIndex) {
             return false;
         }
-        const hasMediaAttachments = Array.isArray(message?.extra?.media) && message.extra.media.length > 0;
+        const hasMediaAttachments =
+			Array.isArray(message?.extra?.media) && message.extra.media.length > 0;
         const lacksMediaDisplay = !message?.extra?.media_display;
         return hasMediaAttachments && lacksMediaDisplay;
     });
@@ -1449,21 +1759,49 @@ function showMediaDisplayReloadPrompt() {
 }
 
 function applyTheme(name) {
-    const theme = themes.find(x => x.name == name);
+    const theme = themes.find((x) => x.name == name);
 
     if (!theme) {
         return;
     }
 
     const themeProperties = [
-        { key: 'main_text_color', selector: '#main-text-color-picker', type: 'main' },
-        { key: 'italics_text_color', selector: '#italics-color-picker', type: 'italics' },
-        { key: 'underline_text_color', selector: '#underline-color-picker', type: 'underline' },
+        {
+            key: 'main_text_color',
+            selector: '#main-text-color-picker',
+            type: 'main',
+        },
+        {
+            key: 'italics_text_color',
+            selector: '#italics-color-picker',
+            type: 'italics',
+        },
+        {
+            key: 'underline_text_color',
+            selector: '#underline-color-picker',
+            type: 'underline',
+        },
         { key: 'quote_text_color', selector: '#quote-color-picker', type: 'quote' },
-        { key: 'blur_tint_color', selector: '#blur-tint-color-picker', type: 'blurTint' },
-        { key: 'chat_tint_color', selector: '#chat-tint-color-picker', type: 'chatTint' },
-        { key: 'user_mes_blur_tint_color', selector: '#user-mes-blur-tint-color-picker', type: 'userMesBlurTint' },
-        { key: 'bot_mes_blur_tint_color', selector: '#bot-mes-blur-tint-color-picker', type: 'botMesBlurTint' },
+        {
+            key: 'blur_tint_color',
+            selector: '#blur-tint-color-picker',
+            type: 'blurTint',
+        },
+        {
+            key: 'chat_tint_color',
+            selector: '#chat-tint-color-picker',
+            type: 'chatTint',
+        },
+        {
+            key: 'user_mes_blur_tint_color',
+            selector: '#user-mes-blur-tint-color-picker',
+            type: 'userMesBlurTint',
+        },
+        {
+            key: 'bot_mes_blur_tint_color',
+            selector: '#bot-mes-blur-tint-color-picker',
+            type: 'botMesBlurTint',
+        },
         { key: 'shadow_color', selector: '#shadow-color-picker', type: 'shadow' },
         { key: 'border_color', selector: '#border-color-picker', type: 'border' },
         {
@@ -1606,7 +1944,10 @@ function applyTheme(name) {
         {
             key: 'zoomed_avatar_magnification',
             action: () => {
-                $('#zoomed_avatar_magnification').prop('checked', power_user.zoomed_avatar_magnification);
+                $('#zoomed_avatar_magnification').prop(
+                    'checked',
+                    power_user.zoomed_avatar_magnification,
+                );
                 printCharactersDebounced();
             },
         },
@@ -1627,7 +1968,10 @@ function applyTheme(name) {
         {
             key: 'show_swipe_num_all_messages',
             action: () => {
-                $('#show_swipe_num_all_messages').prop('checked', power_user.show_swipe_num_all_messages);
+                $('#show_swipe_num_all_messages').prop(
+                    'checked',
+                    power_user.show_swipe_num_all_messages,
+                );
                 switchSwipeNumAllMessages();
             },
         },
@@ -1666,14 +2010,13 @@ function applyTheme(name) {
 
 async function applyMovingUIPreset(name) {
     await resetMovablePanels('quiet');
-    const movingUIPreset = movingUIPresets.find(x => x.name == name);
+    const movingUIPreset = movingUIPresets.find((x) => x.name == name);
 
     if (!movingUIPreset) {
         return;
     }
 
     power_user.movingUIState = movingUIPreset.movingUIState;
-
 
     console.log('MovingUI Preset applied: ' + name);
     loadMovingUIState();
@@ -1692,8 +2035,14 @@ export function registerDebugFunction(functionId, name, description, func) {
 }
 
 async function showDebugMenu() {
-    const template = await renderTemplateAsync('debug', { functions: debug_functions });
-    callGenericPopup(template, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
+    const template = await renderTemplateAsync('debug', {
+        functions: debug_functions,
+    });
+    callGenericPopup(template, POPUP_TYPE.TEXT, '', {
+        wide: true,
+        large: true,
+        allowVerticalScrolling: true,
+    });
 }
 
 export function applyPowerUserSettings() {
@@ -1744,7 +2093,15 @@ export function applyStylePins() {
             return;
         }
 
-        const formattedMessage = messageFormatting(firstMessage.mes, firstMessage.name, firstMessage.is_system, firstMessage.is_user, 0, {}, false);
+        const formattedMessage = messageFormatting(
+            firstMessage.mes,
+            firstMessage.name,
+            firstMessage.is_system,
+            firstMessage.is_user,
+            0,
+            {},
+            false,
+        );
         const htmlElement = document.createElement('div');
         htmlElement.innerHTML = formattedMessage;
 
@@ -1779,8 +2136,13 @@ function setCustomTokenizerConfigVisibility(isVisible) {
 }
 
 function updateTokenizerOverrideVisibility() {
-    const isActive = Number($('#tokenizer').find(':selected').val()) === 20 && power_user.custom_tokenizer_override_cc === true;
-    $('[name="tokenizerSettingsBlock"]').toggleClass('tokenizer-override-active', isActive);
+    const isActive =
+		Number($('#tokenizer').find(':selected').val()) === 20 &&
+		power_user.custom_tokenizer_override_cc === true;
+    $('[name="tokenizerSettingsBlock"]').toggleClass(
+        'tokenizer-override-active',
+        isActive,
+    );
 }
 
 function setCustomTokenizerSourceVisibility(source) {
@@ -1796,7 +2158,11 @@ function setCustomTokenizerStatusText(text) {
 async function refreshCustomTokenizerStatus() {
     try {
         const status = await getCustomTokenizerStatus();
-        setCustomTokenizerStatusText(status.loaded ? `Loaded: ${status.name || 'Custom tokenizer'}` : 'Not loaded');
+        setCustomTokenizerStatusText(
+            status.loaded
+                ? `Loaded: ${status.name || 'Custom tokenizer'}`
+                : 'Not loaded',
+        );
         return status;
     } catch {
         setCustomTokenizerStatusText('Status unavailable');
@@ -1810,11 +2176,19 @@ export async function loadPowerUserSettings(settings, data) {
     // Load from settings.json
     if (settings.power_user !== undefined) {
         // Migrate old preference to a new setting
-        if (settings.power_user.click_to_edit === undefined && settings.power_user.chat_display === chat_styles.DOCUMENT) {
+        if (
+            settings.power_user.click_to_edit === undefined &&
+			settings.power_user.chat_display === chat_styles.DOCUMENT
+        ) {
             settings.power_user.click_to_edit = true;
         }
-        if (Object.hasOwn(settings.power_user, 'auto_sort_tags') && !Object.hasOwn(settings.power_user, 'tag_sort_mode')) {
-            settings.power_user.tag_sort_mode = settings.power_user.auto_sort_tags ? tag_sort_mode.ALPHABETICAL : tag_sort_mode.MANUAL;
+        if (
+            Object.hasOwn(settings.power_user, 'auto_sort_tags') &&
+			!Object.hasOwn(settings.power_user, 'tag_sort_mode')
+        ) {
+            settings.power_user.tag_sort_mode = settings.power_user.auto_sort_tags
+                ? tag_sort_mode.ALPHABETICAL
+                : tag_sort_mode.MANUAL;
             delete settings.power_user.auto_sort_tags;
         }
         Object.assign(power_user, settings.power_user);
@@ -1827,22 +2201,29 @@ export async function loadPowerUserSettings(settings, data) {
             power_user.stscript.autocomplete = defaultStscript.autocomplete;
         } else {
             if (power_user.stscript.autocomplete.state === undefined) {
-                power_user.stscript.autocomplete.state = defaultStscript.autocomplete.state;
+                power_user.stscript.autocomplete.state =
+					defaultStscript.autocomplete.state;
             }
             if (power_user.stscript.autocomplete.width === undefined) {
-                power_user.stscript.autocomplete.width = defaultStscript.autocomplete.width;
+                power_user.stscript.autocomplete.width =
+					defaultStscript.autocomplete.width;
             }
             if (power_user.stscript.autocomplete.font === undefined) {
-                power_user.stscript.autocomplete.font = defaultStscript.autocomplete.font;
+                power_user.stscript.autocomplete.font =
+					defaultStscript.autocomplete.font;
             }
             if (power_user.stscript.autocomplete.style === undefined) {
-                power_user.stscript.autocomplete.style = power_user.stscript.autocomplete_style || defaultStscript.autocomplete.style;
+                power_user.stscript.autocomplete.style =
+					power_user.stscript.autocomplete_style ||
+					defaultStscript.autocomplete.style;
             }
             if (power_user.stscript.autocomplete.select === undefined) {
-                power_user.stscript.autocomplete.select = defaultStscript.autocomplete.select;
+                power_user.stscript.autocomplete.select =
+					defaultStscript.autocomplete.select;
             }
             if (power_user.stscript.autocomplete.showInAllMacroFields === undefined) {
-                power_user.stscript.autocomplete.showInAllMacroFields = defaultStscript.autocomplete.showInAllMacroFields;
+                power_user.stscript.autocomplete.showInAllMacroFields =
+					defaultStscript.autocomplete.showInAllMacroFields;
             }
         }
         if (power_user.stscript.parser === undefined) {
@@ -1862,7 +2243,6 @@ export async function loadPowerUserSettings(settings, data) {
     if (data.movingUIPresets !== undefined) {
         movingUIPresets = data.movingUIPresets;
     }
-
 
     if (data.context !== undefined) {
         context_presets = data.context;
@@ -1886,7 +2266,9 @@ export async function loadPowerUserSettings(settings, data) {
 
     // Clean up old/legacy settings
     if (power_user.import_card_tags !== undefined) {
-        power_user.tag_import_setting = power_user.import_card_tags ? tag_import_setting.ASK : tag_import_setting.NONE;
+        power_user.tag_import_setting = power_user.import_card_tags
+            ? tag_import_setting.ASK
+            : tag_import_setting.NONE;
         delete power_user.import_card_tags;
     }
 
@@ -1901,64 +2283,137 @@ export async function loadPowerUserSettings(settings, data) {
     $('#single_line').prop('checked', power_user.single_line);
     $('#relaxed_api_urls').prop('checked', power_user.relaxed_api_urls);
     $('#world_import_dialog').prop('checked', power_user.world_import_dialog);
-    $('#enable_auto_select_input').prop('checked', power_user.enable_auto_select_input);
+    $('#enable_auto_select_input').prop(
+        'checked',
+        power_user.enable_auto_select_input,
+    );
     $('#enable_md_hotkeys').prop('checked', power_user.enable_md_hotkeys);
     $('#trim_spaces').prop('checked', power_user.trim_spaces);
     $('#continue_on_send').prop('checked', power_user.continue_on_send);
     $('#quick_continue').prop('checked', power_user.quick_continue);
     $('#quick_impersonate').prop('checked', power_user.quick_continue);
     $('#mes_continue').css('display', power_user.quick_continue ? '' : 'none');
-    $('#mes_impersonate').css('display', power_user.quick_impersonate ? '' : 'none');
+    $('#mes_impersonate').css(
+        'display',
+        power_user.quick_impersonate ? '' : 'none',
+    );
     $('#gestures-checkbox').prop('checked', power_user.gestures);
     $('#auto_swipe').prop('checked', power_user.auto_swipe);
     $('#auto_swipe_minimum_length').val(power_user.auto_swipe_minimum_length);
     $('#auto_swipe_blacklist').val(power_user.auto_swipe_blacklist.join(', '));
-    $('#auto_swipe_blacklist_threshold').val(power_user.auto_swipe_blacklist_threshold);
+    $('#auto_swipe_blacklist_threshold').val(
+        power_user.auto_swipe_blacklist_threshold,
+    );
     $('#custom_stopping_strings').text(power_user.custom_stopping_strings);
-    $('#custom_stopping_strings_macro').prop('checked', power_user.custom_stopping_strings_macro);
+    $('#custom_stopping_strings_macro').prop(
+        'checked',
+        power_user.custom_stopping_strings_macro,
+    );
     $('#fuzzy_search_checkbox').prop('checked', power_user.fuzzy_search);
-    $('#persona_show_notifications').prop('checked', power_user.persona_show_notifications);
-    $('#persona_allow_multi_connections').prop('checked', power_user.persona_allow_multi_connections);
+    $('#persona_show_notifications').prop(
+        'checked',
+        power_user.persona_show_notifications,
+    );
+    $('#persona_allow_multi_connections').prop(
+        'checked',
+        power_user.persona_allow_multi_connections,
+    );
     $('#persona_auto_lock').prop('checked', power_user.persona_auto_lock);
     $('#encode_tags').prop('checked', power_user.encode_tags);
-    $('#experimental_macro_engine').prop('checked', power_user.experimental_macro_engine);
+    $('#experimental_macro_engine').prop(
+        'checked',
+        power_user.experimental_macro_engine,
+    );
     $('#example_messages_behavior').val(getExampleMessagesBehavior());
-    $(`#example_messages_behavior option[value="${getExampleMessagesBehavior()}"]`).prop('selected', true);
-    $('#instruct_derived').parent().find('i').toggleClass('toggleEnabled', !!power_user.instruct_derived);
-    $('#context_derived').parent().find('i').toggleClass('toggleEnabled', !!power_user.context_derived);
+    $(
+        `#example_messages_behavior option[value="${getExampleMessagesBehavior()}"]`,
+    ).prop('selected', true);
+    $('#instruct_derived')
+        .parent()
+        .find('i')
+        .toggleClass('toggleEnabled', !!power_user.instruct_derived);
+    $('#context_derived')
+        .parent()
+        .find('i')
+        .toggleClass('toggleEnabled', !!power_user.context_derived);
     $('#context_size_derived').prop('checked', !!power_user.context_size_derived);
 
     $('#console_log_prompts').prop('checked', power_user.console_log_prompts);
-    $('#request_token_probabilities').prop('checked', power_user.request_token_probabilities);
+    $('#request_token_probabilities').prop(
+        'checked',
+        power_user.request_token_probabilities,
+    );
     $('#show_group_chat_queue').prop('checked', power_user.show_group_chat_queue);
-    $('#auto_fix_generated_markdown').prop('checked', power_user.auto_fix_generated_markdown);
-    $('#auto_scroll_chat_to_bottom').prop('checked', power_user.auto_scroll_chat_to_bottom);
+    $('#auto_fix_generated_markdown').prop(
+        'checked',
+        power_user.auto_fix_generated_markdown,
+    );
+    $('#auto_scroll_chat_to_bottom').prop(
+        'checked',
+        power_user.auto_scroll_chat_to_bottom,
+    );
     $('#bogus_folders').prop('checked', power_user.bogus_folders);
-    $('#zoomed_avatar_magnification').prop('checked', power_user.zoomed_avatar_magnification);
-    $(`#tokenizer option[value="${power_user.tokenizer}"]`).prop('selected', true);
-    $(`input[name="custom_tokenizer_source"][value="${power_user.custom_tokenizer_source}"]`).prop('checked', true);
+    $('#zoomed_avatar_magnification').prop(
+        'checked',
+        power_user.zoomed_avatar_magnification,
+    );
+    $(`#tokenizer option[value="${power_user.tokenizer}"]`).prop(
+        'selected',
+        true,
+    );
+    $(
+        `input[name="custom_tokenizer_source"][value="${power_user.custom_tokenizer_source}"]`,
+    ).prop('checked', true);
     $('#custom_tokenizer_url').val(power_user.custom_tokenizer_url);
-    $('#custom_tokenizer_override_cc').prop('checked', power_user.custom_tokenizer_override_cc ?? false);
+    $('#custom_tokenizer_override_cc').prop(
+        'checked',
+        power_user.custom_tokenizer_override_cc ?? false,
+    );
     setCustomTokenizerSourceVisibility(power_user.custom_tokenizer_source);
-    setCustomTokenizerConfigVisibility(power_user.tokenizer === tokenizers.CUSTOM);
+    setCustomTokenizerConfigVisibility(
+        power_user.tokenizer === tokenizers.CUSTOM,
+    );
     updateTokenizerOverrideVisibility();
     await refreshCustomTokenizerStatus();
-    $(`#send_on_enter option[value=${power_user.send_on_enter}]`).prop('selected', true);
-    $('#confirm_message_delete').prop('checked', power_user.confirm_message_delete !== undefined ? !!power_user.confirm_message_delete : true);
+    $(`#send_on_enter option[value=${power_user.send_on_enter}]`).prop(
+        'selected',
+        true,
+    );
+    $('#confirm_message_delete').prop(
+        'checked',
+        power_user.confirm_message_delete !== undefined
+            ? !!power_user.confirm_message_delete
+            : true,
+    );
     $('#spoiler_free_mode').prop('checked', power_user.spoiler_free_mode);
-    $('#collapse-newlines-checkbox').prop('checked', power_user.collapse_newlines);
-    $('#always-force-name2-checkbox').prop('checked', power_user.always_force_name2);
+    $('#collapse-newlines-checkbox').prop(
+        'checked',
+        power_user.collapse_newlines,
+    );
+    $('#always-force-name2-checkbox').prop(
+        'checked',
+        power_user.always_force_name2,
+    );
     $('#trim_sentences_checkbox').prop('checked', power_user.trim_sentences);
-    $('#disable_group_trimming').prop('checked', power_user.disable_group_trimming);
+    $('#disable_group_trimming').prop(
+        'checked',
+        power_user.disable_group_trimming,
+    );
     $('#markdown_escape_strings').val(power_user.markdown_escape_strings);
     $('#fast_ui_mode').prop('checked', power_user.fast_ui_mode);
     $('#waifuMode').prop('checked', power_user.waifuMode);
     $('#movingUImode').prop('checked', power_user.movingUI);
     $('#noShadowsmode').prop('checked', power_user.noShadows);
     $('#start_reply_with').text(power_user.user_prompt_bias);
-    $('#chat-show-reply-prefix-checkbox').prop('checked', power_user.show_user_prompt_bias);
+    $('#chat-show-reply-prefix-checkbox').prop(
+        'checked',
+        power_user.show_user_prompt_bias,
+    );
     $('#auto_continue_enabled').prop('checked', power_user.auto_continue.enabled);
-    $('#auto_continue_allow_chat_completions').prop('checked', power_user.auto_continue.allow_chat_completions);
+    $('#auto_continue_allow_chat_completions').prop(
+        'checked',
+        power_user.auto_continue.allow_chat_completions,
+    );
     $('#auto_continue_target_length').val(power_user.auto_continue.target_length);
     $('#play_message_sound').prop('checked', power_user.play_message_sound);
     $('#play_sound_unfocused').prop('checked', power_user.play_sound_unfocused);
@@ -1971,37 +2426,101 @@ export async function loadPowerUserSettings(settings, data) {
     $('#hotswapEnabled').prop('checked', power_user.hotswap_enabled);
     $('#messageTimerEnabled').prop('checked', power_user.timer_enabled);
     $('#messageTimestampsEnabled').prop('checked', power_user.timestamps_enabled);
-    $('#messageModelIconEnabled').prop('checked', power_user.timestamp_model_icon);
+    $('#messageModelIconEnabled').prop(
+        'checked',
+        power_user.timestamp_model_icon,
+    );
     $('#mesIDDisplayEnabled').prop('checked', power_user.mesIDDisplay_enabled);
-    $('#hideChatAvatarsEnabled').prop('checked', power_user.hideChatAvatars_enabled);
-    $('#prefer_character_prompt').prop('checked', power_user.prefer_character_prompt);
-    $('#prefer_character_jailbreak').prop('checked', power_user.prefer_character_jailbreak);
-    $('#enableZenSliders').prop('checked', power_user.enableZenSliders).trigger('input');
-    $('#enableLabMode').prop('checked', power_user.enableLabMode).trigger('input', { fromInit: true });
-    $(`input[name="avatar_style"][value="${power_user.avatar_style}"]`).prop('checked', true);
-    $(`#chat_display option[value=${power_user.chat_display}]`).prop('selected', true).trigger('change');
-    $(`#toastr_position option[value=${power_user.toastr_position}]`).prop('selected', true).trigger('change');
+    $('#hideChatAvatarsEnabled').prop(
+        'checked',
+        power_user.hideChatAvatars_enabled,
+    );
+    $('#prefer_character_prompt').prop(
+        'checked',
+        power_user.prefer_character_prompt,
+    );
+    $('#prefer_character_jailbreak').prop(
+        'checked',
+        power_user.prefer_character_jailbreak,
+    );
+    $('#enableZenSliders')
+        .prop('checked', power_user.enableZenSliders)
+        .trigger('input');
+    $('#enableLabMode')
+        .prop('checked', power_user.enableLabMode)
+        .trigger('input', { fromInit: true });
+    $(`input[name="avatar_style"][value="${power_user.avatar_style}"]`).prop(
+        'checked',
+        true,
+    );
+    $(`#chat_display option[value=${power_user.chat_display}]`)
+        .prop('selected', true)
+        .trigger('change');
+    $(`#toastr_position option[value=${power_user.toastr_position}]`)
+        .prop('selected', true)
+        .trigger('change');
     $('#chat_width_slider').val(power_user.chat_width);
     $('#token_padding').val(power_user.token_padding);
     $('#aux_field').val(power_user.aux_field);
     $('#tag_import_setting').val(power_user.tag_import_setting);
 
-    $('#stscript_autocomplete_state').val(power_user.stscript.autocomplete.state).trigger('input');
-    $('#stscript_autocomplete_autoHide').prop('checked', power_user.stscript.autocomplete.autoHide ?? false).trigger('input');
-    $('#stscript_autocomplete_showInAllMacroFields').prop('checked', power_user.stscript.autocomplete.showInAllMacroFields ?? false).trigger('input');
+    $('#stscript_autocomplete_state')
+        .val(power_user.stscript.autocomplete.state)
+        .trigger('input');
+    $('#stscript_autocomplete_autoHide')
+        .prop('checked', power_user.stscript.autocomplete.autoHide ?? false)
+        .trigger('input');
+    $('#stscript_autocomplete_showInAllMacroFields')
+        .prop(
+            'checked',
+            power_user.stscript.autocomplete.showInAllMacroFields ?? false,
+        )
+        .trigger('input');
     $('#stscript_matching').val(power_user.stscript.matching ?? 'fuzzy');
-    $('#stscript_autocomplete_style').val(power_user.stscript.autocomplete.style ?? 'theme');
-    document.body.setAttribute('data-stscript-style', power_user.stscript.autocomplete.style);
-    $('#stscript_autocomplete_select').val(power_user.stscript.autocomplete.select ?? (AUTOCOMPLETE_SELECT_KEY.TAB + AUTOCOMPLETE_SELECT_KEY.ENTER));
-    $('#stscript_parser_flag_strict_escaping').prop('checked', power_user.stscript.parser.flags[PARSER_FLAG.STRICT_ESCAPING] ?? false);
-    $('#stscript_parser_flag_replace_getvar').prop('checked', power_user.stscript.parser.flags[PARSER_FLAG.REPLACE_GETVAR] ?? false);
-    $('#stscript_autocomplete_font_scale').val(power_user.stscript.autocomplete.font.scale ?? defaultStscript.autocomplete.font.scale);
-    $('#stscript_autocomplete_font_scale_counter').val(power_user.stscript.autocomplete.font.scale ?? defaultStscript.autocomplete.font.scale);
-    document.body.style.setProperty('--ac-font-scale', power_user.stscript.autocomplete.font.scale ?? defaultStscript.autocomplete.font.scale.toString());
-    $('#stscript_autocomplete_width_left').val(power_user.stscript.autocomplete.width.left ?? AUTOCOMPLETE_WIDTH.CHAT);
-    document.querySelector('#stscript_autocomplete_width_left')?.dispatchEvent(new Event('input', { bubbles: true }));
-    $('#stscript_autocomplete_width_right').val(power_user.stscript.autocomplete.width.right ?? AUTOCOMPLETE_WIDTH.CHAT);
-    document.querySelector('#stscript_autocomplete_width_right')?.dispatchEvent(new Event('input', { bubbles: true }));
+    $('#stscript_autocomplete_style').val(
+        power_user.stscript.autocomplete.style ?? 'theme',
+    );
+    document.body.setAttribute(
+        'data-stscript-style',
+        power_user.stscript.autocomplete.style,
+    );
+    $('#stscript_autocomplete_select').val(
+        power_user.stscript.autocomplete.select ??
+			AUTOCOMPLETE_SELECT_KEY.TAB + AUTOCOMPLETE_SELECT_KEY.ENTER,
+    );
+    $('#stscript_parser_flag_strict_escaping').prop(
+        'checked',
+        power_user.stscript.parser.flags[PARSER_FLAG.STRICT_ESCAPING] ?? false,
+    );
+    $('#stscript_parser_flag_replace_getvar').prop(
+        'checked',
+        power_user.stscript.parser.flags[PARSER_FLAG.REPLACE_GETVAR] ?? false,
+    );
+    $('#stscript_autocomplete_font_scale').val(
+        power_user.stscript.autocomplete.font.scale ??
+			defaultStscript.autocomplete.font.scale,
+    );
+    $('#stscript_autocomplete_font_scale_counter').val(
+        power_user.stscript.autocomplete.font.scale ??
+			defaultStscript.autocomplete.font.scale,
+    );
+    document.body.style.setProperty(
+        '--ac-font-scale',
+        power_user.stscript.autocomplete.font.scale ??
+			defaultStscript.autocomplete.font.scale.toString(),
+    );
+    $('#stscript_autocomplete_width_left').val(
+        power_user.stscript.autocomplete.width.left ?? AUTOCOMPLETE_WIDTH.CHAT,
+    );
+    document
+        .querySelector('#stscript_autocomplete_width_left')
+        ?.dispatchEvent(new Event('input', { bubbles: true }));
+    $('#stscript_autocomplete_width_right').val(
+        power_user.stscript.autocomplete.width.right ?? AUTOCOMPLETE_WIDTH.CHAT,
+    );
+    document
+        .querySelector('#stscript_autocomplete_width_right')
+        ?.dispatchEvent(new Event('input', { bubbles: true }));
 
     $('#restore_user_input').prop('checked', power_user.restore_user_input);
 
@@ -2012,7 +2531,10 @@ export async function loadPowerUserSettings(settings, data) {
     $('#streaming_fps_counter').val(power_user.streaming_fps);
 
     $('#smooth_streaming').prop('checked', power_user.smooth_streaming);
-    $('#smooth_streaming_no_think').prop('checked', power_user.smooth_streaming_no_think);
+    $('#smooth_streaming_no_think').prop(
+        'checked',
+        power_user.smooth_streaming_no_think,
+    );
     $('#smooth_streaming_speed').val(power_user.smooth_streaming_speed);
 
     $('#stream_fade_in').prop('checked', power_user.stream_fade_in);
@@ -2032,8 +2554,14 @@ export async function loadPowerUserSettings(settings, data) {
     $('#quote-color-picker').attr('color', power_user.quote_text_color);
     $('#blur-tint-color-picker').attr('color', power_user.blur_tint_color);
     $('#chat-tint-color-picker').attr('color', power_user.chat_tint_color);
-    $('#user-mes-blur-tint-color-picker').attr('color', power_user.user_mes_blur_tint_color);
-    $('#bot-mes-blur-tint-color-picker').attr('color', power_user.bot_mes_blur_tint_color);
+    $('#user-mes-blur-tint-color-picker').attr(
+        'color',
+        power_user.user_mes_blur_tint_color,
+    );
+    $('#bot-mes-blur-tint-color-picker').attr(
+        'color',
+        power_user.bot_mes_blur_tint_color,
+    );
     $('#shadow-color-picker').attr('color', power_user.shadow_color);
     $('#border-color-picker').attr('color', power_user.border_color);
     $('#reduced_motion').prop('checked', power_user.reduced_motion);
@@ -2061,8 +2589,9 @@ export async function loadPowerUserSettings(settings, data) {
         $('#movingUIPresets').append(option);
     }
 
-
-    $(`#character_sort_order option[data-order="${power_user.sort_order}"][data-field="${power_user.sort_field}"]`).prop('selected', true);
+    $(
+        `#character_sort_order option[data-order="${power_user.sort_order}"][data-field="${power_user.sort_field}"]`,
+    ).prop('selected', true);
     switchReducedMotion();
     switchCompactInputArea();
     reloadMarkdownProcessor();
@@ -2082,7 +2611,9 @@ export async function loadPowerUserSettings(settings, data) {
 function toggleMDHotkeyIconDisplay() {
     if (power_user.enable_md_hotkeys) {
         $('.mdhotkey_location').each(function () {
-            $(this).parent().append('<i class="fa-brands fa-markdown mdhotkey_icon"></i>');
+            $(this)
+                .parent()
+                .append('<i class="fa-brands fa-markdown mdhotkey_icon"></i>');
         });
     } else {
         $('.mdhotkey_icon').remove();
@@ -2094,9 +2625,7 @@ function loadCharListState() {
 }
 
 export function loadMovingUIState() {
-    if (!isMobile()
-        && power_user.movingUIState
-        && power_user.movingUI === true) {
+    if (!isMobile() && power_user.movingUIState && power_user.movingUI === true) {
         console.debug('loading movingUI state');
         for (var elmntName of Object.keys(power_user.movingUIState)) {
             var elmntState = power_user.movingUIState[elmntName];
@@ -2106,7 +2635,9 @@ export function loadMovingUIState() {
                     console.debug(`loading state for ${elmntName}`);
                     elmnt.css(elmntState);
                 } else {
-                    console.debug(`skipping ${elmntName} because it doesn't exist in the DOM`);
+                    console.debug(
+                        `skipping ${elmntName} because it doesn't exist in the DOM`,
+                    );
                 }
             } catch (err) {
                 console.debug(`error occurred while processing ${elmntName}: ${err}`);
@@ -2141,9 +2672,15 @@ function switchMaxContextSize() {
         $('#rep_pen_decay_textgenerationwebui'),
         $('#rep_pen_decay_counter_textgenerationwebui'),
     ];
-    const maxValue = power_user.max_context_unlocked ? MAX_CONTEXT_UNLOCKED : MAX_CONTEXT_DEFAULT;
-    const minValue = power_user.max_context_unlocked ? maxContextMin : maxContextMin;
-    const steps = power_user.max_context_unlocked ? unlockedMaxContextStep : maxContextStep;
+    const maxValue = power_user.max_context_unlocked
+        ? MAX_CONTEXT_UNLOCKED
+        : MAX_CONTEXT_DEFAULT;
+    const minValue = power_user.max_context_unlocked
+        ? maxContextMin
+        : maxContextMin;
+    const steps = power_user.max_context_unlocked
+        ? unlockedMaxContextStep
+        : maxContextStep;
     $('#rep_pen_range_textgenerationwebui_zenslider').remove(); //unsure why, but this is necessary.
     $('#dry_penalty_last_n_textgenerationwebui_zenslider').remove();
     $('#rep_pen_decay_textgenerationwebui_zenslider').remove();
@@ -2162,7 +2699,9 @@ function switchMaxContextSize() {
         }
     }
 
-    const maxAmountGen = power_user.max_context_unlocked ? MAX_RESPONSE_UNLOCKED : MAX_RESPONSE_DEFAULT;
+    const maxAmountGen = power_user.max_context_unlocked
+        ? MAX_RESPONSE_UNLOCKED
+        : MAX_RESPONSE_DEFAULT;
     $('#amount_gen').attr('max', maxAmountGen);
     $('#amount_gen_counter').attr('max', maxAmountGen);
 
@@ -2187,7 +2726,9 @@ export function getContextSettings() {
     let compiledSettings = {};
 
     contextControls.forEach((control) => {
-        let value = control.isGlobalSetting ? power_user[control.property] : power_user.context[control.property];
+        let value = control.isGlobalSetting
+            ? power_user[control.property]
+            : power_user.context[control.property];
 
         // Force to a boolean if the setting is a checkbox
         if (control.isCheckbox) {
@@ -2204,35 +2745,51 @@ export function getContextSettings() {
 // TODO: Add "global state" if a preset doesn't set the power_user checkboxes
 async function loadContextSettings() {
     /**
-     * Auto-fix missing fields in the story string
-     * @param {ContextSettings} contextSettings Context settings instance
-     */
+	 * Auto-fix missing fields in the story string
+	 * @param {ContextSettings} contextSettings Context settings instance
+	 */
     function autoFixStoryString(contextSettings) {
         // Already migrated, no need to fix
-        if (!contextSettings || Object.hasOwn(contextSettings, 'story_string_position')) {
+        if (
+            !contextSettings ||
+			Object.hasOwn(contextSettings, 'story_string_position')
+        ) {
             return;
         }
 
         let storyString = contextSettings.story_string || '';
 
         /**
-         * @param {string} field Missing field name
-         * @param {'start'|'end'} position Position of auto-fix
-         */
+		 * @param {string} field Missing field name
+		 * @param {'start'|'end'} position Position of auto-fix
+		 */
         function autoFixMissingField(field, position) {
             if (storyString.includes(`{{${field}}}`)) {
                 return;
             }
 
-            console.warn(`[Story String Validation] Story String is missing a field: ${field}. Adding it at the ${position}.`);
+            console.warn(
+                `[Story String Validation] Story String is missing a field: ${field}. Adding it at the ${position}.`,
+            );
             const fieldTemplate = `{{#if ${field}}}{{${field}}}\n{{/if}}`;
-            const firstCurlyPosition = storyString.includes('{{') ? storyString.indexOf('{{') : 0;
-            const lastCurlyPosition = storyString.includes('}}') ? storyString.lastIndexOf('}}') + '}}'.length : storyString.length;
-            const lastTrimPosition = storyString.includes('{{trim}}') ? storyString.lastIndexOf('{{trim}}') : storyString.length;
+            const firstCurlyPosition = storyString.includes('{{')
+                ? storyString.indexOf('{{')
+                : 0;
+            const lastCurlyPosition = storyString.includes('}}')
+                ? storyString.lastIndexOf('}}') + '}}'.length
+                : storyString.length;
+            const lastTrimPosition = storyString.includes('{{trim}}')
+                ? storyString.lastIndexOf('{{trim}}')
+                : storyString.length;
             const endPosition = Math.min(lastTrimPosition, lastCurlyPosition);
-            storyString = position === 'start'
-                ? storyString.substring(0, firstCurlyPosition) + fieldTemplate + storyString.substring(firstCurlyPosition)
-                : storyString.substring(0, endPosition) + fieldTemplate + storyString.substring(endPosition);
+            storyString =
+                position === 'start'
+                    ? storyString.substring(0, firstCurlyPosition) +
+                        fieldTemplate +
+                        storyString.substring(firstCurlyPosition)
+                    : storyString.substring(0, endPosition) +
+                        fieldTemplate +
+                        storyString.substring(endPosition);
         }
 
         autoFixMissingField('anchorBefore', 'start');
@@ -2244,14 +2801,17 @@ async function loadContextSettings() {
     // Migrate story string to add missing fields
     autoFixStoryString(power_user.context);
 
-    contextControls.forEach(control => {
+    contextControls.forEach((control) => {
         const $element = $(`#${control.id}`);
 
         if (control.isGlobalSetting) {
             return;
         }
 
-        if (control.defaultValue !== undefined && power_user.context[control.property] === undefined) {
+        if (
+            control.defaultValue !== undefined &&
+			power_user.context[control.property] === undefined
+        ) {
             power_user.context[control.property] = control.defaultValue;
         }
 
@@ -2260,12 +2820,16 @@ async function loadContextSettings() {
         } else {
             $element.val(power_user.context[control.property]);
         }
-        console.debug(`Setting ${$element.prop('id')} to ${power_user.context[control.property]}`);
+        console.debug(
+            `Setting ${$element.prop('id')} to ${power_user.context[control.property]}`,
+        );
 
         // If the setting already exists, no need to duplicate it
         // TODO: Maybe check the power_user object for the setting instead of a flag?
         $element.on('input', async function () {
-            let value = control.isCheckbox ? !!$(this).prop('checked') : $(this).val();
+            let value = control.isCheckbox
+                ? !!$(this).prop('checked')
+                : $(this).val();
             if (typeof control.defaultValue === 'number') {
                 value = Number(value);
             }
@@ -2297,7 +2861,7 @@ async function loadContextSettings() {
 
     $('#context_presets').on('change', function () {
         const name = String($(this).find(':selected').text());
-        const preset = context_presets.find(x => x.name === name);
+        const preset = context_presets.find((x) => x.name === name);
 
         if (!preset) {
             return;
@@ -2308,7 +2872,7 @@ async function loadContextSettings() {
 
         power_user.context.preset = name;
 
-        contextControls.forEach(control => {
+        contextControls.forEach((control) => {
             const presetValue = preset[control.property] ?? control.defaultValue;
 
             if (presetValue !== undefined) {
@@ -2322,10 +2886,19 @@ async function loadContextSettings() {
 
                 if (control.isCheckbox) {
                     $element
-                        .prop('checked', control.isGlobalSetting ? power_user[control.property] : power_user.context[control.property])
+                        .prop(
+                            'checked',
+                            control.isGlobalSetting
+                                ? power_user[control.property]
+                                : power_user.context[control.property],
+                        )
                         .trigger('input');
                 } else {
-                    $element.val(control.isGlobalSetting ? power_user[control.property] : power_user.context[control.property]);
+                    $element.val(
+                        control.isGlobalSetting
+                            ? power_user[control.property]
+                            : power_user.context[control.property],
+                    );
                     $element.trigger('input');
                 }
             }
@@ -2348,7 +2921,6 @@ async function loadContextSettings() {
     });
 }
 
-
 /**
  * Common function to perform fuzzy search with optional caching
  * @template T
@@ -2359,7 +2931,13 @@ async function loadContextSettings() {
  * @param {Object.<string, { resultMap: Map<string, any> }>} [fuzzySearchCaches=null] - Optional fuzzy search caches
  * @returns {import('fuse.js').FuseResult<T>[]} Results as items with their score
  */
-export function performFuzzySearch(type, data, keys, searchValue, fuzzySearchCaches = null) {
+export function performFuzzySearch(
+    type,
+    data,
+    keys,
+    searchValue,
+    fuzzySearchCaches = null,
+) {
     // Check cache if provided
     if (fuzzySearchCaches) {
         const cache = fuzzySearchCaches[type];
@@ -2394,7 +2972,14 @@ export function performFuzzySearch(type, data, keys, searchValue, fuzzySearchCac
 export function fuzzySearchCharacters(searchValue, fuzzySearchCaches = null) {
     const keys = [
         { name: 'data.name', weight: 20 },
-        { name: '#tags', weight: 10, getFn: (character) => getTagsList(character.avatar).map(x => x.name).join('||') },
+        {
+            name: '#tags',
+            weight: 10,
+            getFn: (character) =>
+                getTagsList(character.avatar)
+                    .map((x) => x.name)
+                    .join('||'),
+        },
         { name: 'data.description', weight: 3 },
         { name: 'data.mes_example', weight: 3 },
         { name: 'data.scenario', weight: 2 },
@@ -2406,7 +2991,13 @@ export function fuzzySearchCharacters(searchValue, fuzzySearchCaches = null) {
         { name: 'data.alternate_greetings', weight: 1 },
     ];
 
-    return performFuzzySearch(fuzzySearchCategories.characters, characters, keys, searchValue, fuzzySearchCaches);
+    return performFuzzySearch(
+        fuzzySearchCategories.characters,
+        characters,
+        keys,
+        searchValue,
+        fuzzySearchCaches,
+    );
 }
 
 /**
@@ -2416,7 +3007,11 @@ export function fuzzySearchCharacters(searchValue, fuzzySearchCaches = null) {
  * @param {Object.<string, { resultMap: Map<string, any> }>} [fuzzySearchCaches=null] - Optional fuzzy search caches
  * @returns {import('fuse.js').FuseResult<any>[]} Results as items with their score
  */
-export function fuzzySearchWorldInfo(data, searchValue, fuzzySearchCaches = null) {
+export function fuzzySearchWorldInfo(
+    data,
+    searchValue,
+    fuzzySearchCaches = null,
+) {
     const keys = [
         { name: 'key', weight: 20 },
         { name: 'group', weight: 15 },
@@ -2427,7 +3022,13 @@ export function fuzzySearchWorldInfo(data, searchValue, fuzzySearchCaches = null
         { name: 'automationId', weight: 1 },
     ];
 
-    return performFuzzySearch(fuzzySearchCategories.worldInfo, data, keys, searchValue, fuzzySearchCaches);
+    return performFuzzySearch(
+        fuzzySearchCategories.worldInfo,
+        data,
+        keys,
+        searchValue,
+        fuzzySearchCaches,
+    );
 }
 
 /**
@@ -2437,8 +3038,12 @@ export function fuzzySearchWorldInfo(data, searchValue, fuzzySearchCaches = null
  * @param {Object.<string, { resultMap: Map<string, any> }>} [fuzzySearchCaches=null] - Optional fuzzy search caches
  * @returns {import('fuse.js').FuseResult<any>[]} Results as items with their score
  */
-export function fuzzySearchPersonas(data, searchValue, fuzzySearchCaches = null) {
-    const mappedData = data.map(x => ({
+export function fuzzySearchPersonas(
+    data,
+    searchValue,
+    fuzzySearchCaches = null,
+) {
+    const mappedData = data.map((x) => ({
         key: x,
         name: power_user.personas[x] ?? '',
         description: power_user.persona_descriptions[x]?.description ?? '',
@@ -2449,7 +3054,13 @@ export function fuzzySearchPersonas(data, searchValue, fuzzySearchCaches = null)
         { name: 'description', weight: 3 },
     ];
 
-    return performFuzzySearch(fuzzySearchCategories.personas, mappedData, keys, searchValue, fuzzySearchCaches);
+    return performFuzzySearch(
+        fuzzySearchCategories.personas,
+        mappedData,
+        keys,
+        searchValue,
+        fuzzySearchCaches,
+    );
 }
 
 /**
@@ -2459,11 +3070,15 @@ export function fuzzySearchPersonas(data, searchValue, fuzzySearchCaches = null)
  * @returns {import('fuse.js').FuseResult<any>[]} Results as items with their score
  */
 export function fuzzySearchTags(searchValue, fuzzySearchCaches = null) {
-    const keys = [
-        { name: 'name', weight: 1 },
-    ];
+    const keys = [{ name: 'name', weight: 1 }];
 
-    return performFuzzySearch(fuzzySearchCategories.tags, tags, keys, searchValue, fuzzySearchCaches);
+    return performFuzzySearch(
+        fuzzySearchCategories.tags,
+        tags,
+        keys,
+        searchValue,
+        fuzzySearchCaches,
+    );
 }
 
 /**
@@ -2476,11 +3091,24 @@ export function fuzzySearchGroups(searchValue, fuzzySearchCaches = null) {
     const keys = [
         { name: 'name', weight: 20 },
         { name: 'members', weight: 15 },
-        { name: '#tags', weight: 10, getFn: (group) => getTagsList(group.id).map(x => x.name).join('||') },
+        {
+            name: '#tags',
+            weight: 10,
+            getFn: (group) =>
+                getTagsList(group.id)
+                    .map((x) => x.name)
+                    .join('||'),
+        },
         { name: 'id', weight: 1 },
     ];
 
-    return performFuzzySearch(fuzzySearchCategories.groups, groups, keys, searchValue, fuzzySearchCaches);
+    return performFuzzySearch(
+        fuzzySearchCategories.groups,
+        groups,
+        keys,
+        searchValue,
+        fuzzySearchCaches,
+    );
 }
 
 /**
@@ -2492,18 +3120,32 @@ export function fuzzySearchGroups(searchValue, fuzzySearchCaches = null) {
  * @param {ContextSettings} [options.customContextSettings] Custom context settings.
  * @returns {string} The rendered story string.
  */
-export function renderStoryString(params, { customStoryString = null, customInstructSettings = null, customContextSettings = null } = {}) {
+export function renderStoryString(
+    params,
+    {
+        customStoryString = null,
+        customInstructSettings = null,
+        customContextSettings = null,
+    } = {},
+) {
     try {
-        const instructSettings = structuredClone(customInstructSettings ?? power_user.instruct);
-        const contextSettings = structuredClone(customContextSettings ?? power_user.context);
+        const instructSettings = structuredClone(
+            customInstructSettings ?? power_user.instruct,
+        );
+        const contextSettings = structuredClone(
+            customContextSettings ?? power_user.context,
+        );
         const storyString = customStoryString ?? contextSettings.story_string;
-        const storyStringPosition = contextSettings.story_string_position ?? extension_prompt_types.IN_PROMPT;
+        const storyStringPosition =
+			contextSettings.story_string_position ?? extension_prompt_types.IN_PROMPT;
 
         // Validate and log possible warnings/errors
         validateStoryString(storyString, params);
 
         // compile the story string template into a function, with no HTML escaping
-        const compiledTemplate = Handlebars.compile(storyString, { noEscape: true });
+        const compiledTemplate = Handlebars.compile(storyString, {
+            noEscape: true,
+        });
 
         // render the story string template with the given params
         let output = compiledTemplate(params);
@@ -2515,15 +3157,25 @@ export function renderStoryString(params, { customStoryString = null, customInst
         output = output.replace(/^\n+/, '');
 
         // add a newline to the end of the story string if it doesn't have one
-        if (output.length > 0 && !output.endsWith('\n') && storyStringPosition !== extension_prompt_types.IN_CHAT) {
-            if (!instructSettings.enabled || (instructSettings.wrap && !instructSettings.story_string_suffix)) {
+        if (
+            output.length > 0 &&
+			!output.endsWith('\n') &&
+			storyStringPosition !== extension_prompt_types.IN_CHAT
+        ) {
+            if (
+                !instructSettings.enabled ||
+				(instructSettings.wrap && !instructSettings.story_string_suffix)
+            ) {
                 output += '\n';
             }
         }
 
         return output;
     } catch (e) {
-        toastr.error('Check the story string template for validity', 'Error rendering story string');
+        toastr.error(
+            'Check the story string template for validity',
+            'Error rendering story string',
+        );
         console.error('Error rendering story string', e);
         throw e; // rethrow the error
     }
@@ -2537,7 +3189,9 @@ export function renderStoryString(params, { customStoryString = null, customInst
  */
 function validateStoryString(storyString, params) {
     /** @type {{hashCache: {[hash: string]: {fieldsWarned: {[key: string]: boolean}}}}} */
-    const cache = JSON.parse(accountStorage.getItem(storage_keys.storyStringValidationCache)) ?? { hashCache: {} };
+    const cache = JSON.parse(
+        accountStorage.getItem(storage_keys.storyStringValidationCache),
+    ) ?? { hashCache: {} };
 
     const hash = getStringHash(storyString);
 
@@ -2550,14 +3204,20 @@ function validateStoryString(storyString, params) {
     const fieldsToWarn = [];
 
     function validateMissingField(field, fallbackLegacyField = null) {
-        const contains = storyString.includes(`{{${field}}}`) || (!!fallbackLegacyField && storyString.includes(`{{${fallbackLegacyField}}}`));
+        const contains =
+			storyString.includes(`{{${field}}}`) ||
+			(!!fallbackLegacyField &&
+				storyString.includes(`{{${fallbackLegacyField}}}`));
         if (!contains && params[field]) {
             const wasLogged = currentCache.fieldsWarned[field];
             if (!wasLogged) {
                 fieldsToWarn.push(field);
                 currentCache.fieldsWarned[field] = true;
             }
-            console.warn(`The story string does not contain {{${field}}}, but it would contain content:\n`, params[field]);
+            console.warn(
+                `The story string does not contain {{${field}}}, but it would contain content:\n`,
+                params[field],
+            );
         }
     }
 
@@ -2570,15 +3230,21 @@ function validateStoryString(storyString, params) {
     validateMissingField('wiAfter', 'loreAfter');
 
     if (fieldsToWarn.length > 0) {
-        const fieldsList = fieldsToWarn.map(field => `{{${field}}}`).join(', ');
-        toastr.warning(`The story string does not contain the following fields, but they would contain content: ${fieldsList}`, 'Story String Validation');
+        const fieldsList = fieldsToWarn.map((field) => `{{${field}}}`).join(', ');
+        toastr.warning(
+            `The story string does not contain the following fields, but they would contain content: ${fieldsList}`,
+            'Story String Validation',
+        );
     }
 
-    accountStorage.setItem(storage_keys.storyStringValidationCache, JSON.stringify(cache));
+    accountStorage.setItem(
+        storage_keys.storyStringValidationCache,
+        JSON.stringify(cache),
+    );
 }
 
-
-const sortFunc = (a, b) => power_user.sort_order == 'asc' ? compareFunc(a, b) : compareFunc(b, a);
+const sortFunc = (a, b) =>
+    power_user.sort_order == 'asc' ? compareFunc(a, b) : compareFunc(b, a);
 const compareFunc = (first, second) => {
     const a = first[power_user.sort_field];
     const b = second[power_user.sort_field];
@@ -2589,16 +3255,14 @@ const compareFunc = (first, second) => {
 
     switch (power_user.sort_rule) {
         case 'boolean':
-            if (a === true || a === 'true') return 1;  // Prioritize 'true' or true
+            if (a === true || a === 'true') return 1; // Prioritize 'true' or true
             if (b === true || b === 'true') return -1; // Prioritize 'true' or true
-            if (a && !b) return -1;        // Move truthy values to the end
-            if (!a && b) return 1;         // Move falsy values to the beginning
-            if (a === b) return 0;         // Sort equal values normally
-            return a < b ? -1 : 1;         // Sort non-boolean values normally
+            if (a && !b) return -1; // Move truthy values to the end
+            if (!a && b) return 1; // Move falsy values to the beginning
+            if (a === b) return 0; // Sort equal values normally
+            return a < b ? -1 : 1; // Sort non-boolean values normally
         default:
-            return typeof a == 'string'
-                ? a.localeCompare(b)
-                : a - b;
+            return typeof a == 'string' ? a.localeCompare(b) : a - b;
     }
 };
 
@@ -2614,7 +3278,9 @@ export function sortEntitiesList(entities, forceSearch, filterHelper = null) {
         return;
     }
 
-    const isSearch = forceSearch || $('#character_sort_order option[data-field="search"]').is(':selected');
+    const isSearch =
+		forceSearch ||
+		$('#character_sort_order option[data-field="search"]').is(':selected');
 
     if (!isSearch && power_user.sort_order === 'random') {
         shuffle(entities);
@@ -2630,9 +3296,15 @@ export function sortEntitiesList(entities, forceSearch, filterHelper = null) {
 
         // If we have search sorting, we take scores and use those
         if (isSearch) {
-            const aScore = filterHelper.getScore(FILTER_TYPES.SEARCH, `${a.type}.${a.id}`);
-            const bScore = filterHelper.getScore(FILTER_TYPES.SEARCH, `${b.type}.${b.id}`);
-            return (aScore - bScore);
+            const aScore = filterHelper.getScore(
+                FILTER_TYPES.SEARCH,
+                `${a.type}.${a.id}`,
+            );
+            const bScore = filterHelper.getScore(
+                FILTER_TYPES.SEARCH,
+                `${b.type}.${b.id}`,
+            );
+            return aScore - bScore;
         }
 
         return sortFunc(a.item, b.item);
@@ -2669,11 +3341,13 @@ async function deleteTheme() {
     });
 
     if (!response.ok) {
-        toastr.error('Failed to delete theme. Check the console for more information.');
+        toastr.error(
+            'Failed to delete theme. Check the console for more information.',
+        );
         return;
     }
 
-    const themeIndex = themes.findIndex(x => x.name == themeName);
+    const themeIndex = themes.findIndex((x) => x.name == themeName);
 
     if (themeIndex !== -1) {
         themes.splice(themeIndex, 1);
@@ -2713,11 +3387,14 @@ async function importTheme(file) {
         throw new Error('Missing name');
     }
 
-    if (themes.some(t => t.name === parsed.name)) {
+    if (themes.some((t) => t.name === parsed.name)) {
         throw new Error('Theme with that name already exists');
     }
 
-    if (typeof parsed.custom_css === 'string' && parsed.custom_css.includes('@import')) {
+    if (
+        typeof parsed.custom_css === 'string' &&
+		parsed.custom_css.includes('@import')
+    ) {
         const template = $(await renderTemplateAsync('themeImportWarning'));
         const confirm = await callGenericPopup(template, POPUP_TYPE.CONFIRM);
         if (!confirm) {
@@ -2744,7 +3421,11 @@ async function importTheme(file) {
  */
 async function saveTheme(name = undefined, theme = undefined) {
     if (typeof name !== 'string') {
-        const newName = await callGenericPopup('Enter a theme preset name:', POPUP_TYPE.INPUT, power_user.theme);
+        const newName = await callGenericPopup(
+            'Enter a theme preset name:',
+            POPUP_TYPE.INPUT,
+            power_user.theme,
+        );
 
         if (!newName) {
             return;
@@ -2764,12 +3445,15 @@ async function saveTheme(name = undefined, theme = undefined) {
     });
 
     if (!response.ok) {
-        toastr.error('Check the server connection and reload the page to prevent data loss.', 'Theme could not be saved');
+        toastr.error(
+            'Check the server connection and reload the page to prevent data loss.',
+            'Theme could not be saved',
+        );
         console.error('Theme could not be saved', response);
         throw new Error('Theme could not be saved');
     }
 
-    const themeIndex = themes.findIndex(x => x.name == name);
+    const themeIndex = themes.findIndex((x) => x.name == name);
 
     if (themeIndex == -1) {
         themes.push(theme);
@@ -2854,7 +3538,10 @@ function getNewTheme(parsed) {
 }
 
 async function saveMovingUI() {
-    const popupResult = await callGenericPopup('Enter a name for the MovingUI Preset:', POPUP_TYPE.INPUT);
+    const popupResult = await callGenericPopup(
+        'Enter a name for the MovingUI Preset:',
+        POPUP_TYPE.INPUT,
+    );
 
     if (!popupResult) {
         return;
@@ -2875,7 +3562,9 @@ async function saveMovingUI() {
     });
 
     if (response.ok) {
-        const movingUIPresetIndex = movingUIPresets.findIndex(x => x.name == name);
+        const movingUIPresetIndex = movingUIPresets.findIndex(
+            (x) => x.name == name,
+        );
 
         if (movingUIPresetIndex == -1) {
             movingUIPresets.push(movingUIPreset);
@@ -2902,7 +3591,15 @@ async function saveMovingUI() {
  * @param {string} id Element ID
  */
 export function resetMovableStyles(id) {
-    const panelStyles = ['top', 'left', 'right', 'bottom', 'height', 'width', 'margin'];
+    const panelStyles = [
+        'top',
+        'left',
+        'right',
+        'bottom',
+        'height',
+        'width',
+        'margin',
+    ];
 
     const panel = document.getElementById(id);
 
@@ -2929,12 +3626,25 @@ async function resetMovablePanels(type) {
     ];
 
     /**
-     * @type {HTMLElement[]} Generic panels that don't have a known ID
-     */
-    const draggedElements = Array.from(document.querySelectorAll('[data-dragged]'));
-    const allDraggable = panelIds.map(id => document.getElementById(id)).concat(draggedElements).filter(onlyUnique);
+	 * @type {HTMLElement[]} Generic panels that don't have a known ID
+	 */
+    const draggedElements = Array.from(
+        document.querySelectorAll('[data-dragged]'),
+    );
+    const allDraggable = panelIds
+        .map((id) => document.getElementById(id))
+        .concat(draggedElements)
+        .filter(onlyUnique);
 
-    const panelStyles = ['top', 'left', 'right', 'bottom', 'height', 'width', 'margin'];
+    const panelStyles = [
+        'top',
+        'left',
+        'right',
+        'bottom',
+        'height',
+        'width',
+        'margin',
+    ];
     allDraggable.forEach((panel) => {
         if (panel) {
             $(panel).addClass('resizing');
@@ -2945,8 +3655,8 @@ async function resetMovablePanels(type) {
     });
 
     /**
-     * @type {HTMLElement[]} Zoomed avatars that are currently being resized
-     */
+	 * @type {HTMLElement[]} Zoomed avatars that are currently being resized
+	 */
     const zoomedAvatars = Array.from(document.querySelectorAll('.zoomed_avatar'));
     if (zoomedAvatars.length > 0) {
         zoomedAvatars.forEach((avatar) => {
@@ -3000,16 +3710,20 @@ function findTagIdByName(name) {
 
     // Only get tags that contain at least one record in the tag_map
     const liveTagIds = new Set(Object.values(tag_map).flat());
-    const liveTags = tags.filter(x => liveTagIds.has(x.id));
+    const liveTags = tags.filter((x) => liveTagIds.has(x.id));
 
-    const exactNameMatchIndex = liveTags.map(x => x.name.toLowerCase()).indexOf(name.toLowerCase());
+    const exactNameMatchIndex = liveTags
+        .map((x) => x.name.toLowerCase())
+        .indexOf(name.toLowerCase());
 
     if (exactNameMatchIndex !== -1) {
         return liveTags[exactNameMatchIndex].id;
     }
 
     for (const matchType of matchTypes) {
-        const index = liveTags.findIndex(x => matchType(x.name.toLowerCase(), name.toLowerCase()));
+        const index = liveTags.findIndex((x) =>
+            matchType(x.name.toLowerCase(), name.toLowerCase()),
+        );
         if (index !== -1) {
             return liveTags[index].id;
         }
@@ -3018,9 +3732,9 @@ function findTagIdByName(name) {
 
 async function doRandomChat(_, tagName) {
     /**
-     * Gets the ID of a random character.
-     * @returns {string} The order index of the randomly selected character.
-     */
+	 * Gets the ID of a random character.
+	 * @returns {string} The order index of the randomly selected character.
+	 */
     function getRandomCharacterId() {
         if (!tagName) {
             return Math.floor(Math.random() * characters.length).toString();
@@ -3028,11 +3742,14 @@ async function doRandomChat(_, tagName) {
 
         const tagId = findTagIdByName(tagName);
         const taggedCharacters = Object.entries(tag_map)
-            .filter(x => x[1].includes(tagId)) // Get only records that include the tag
-            .map(x => x[0]) // Map the character avatar
-            .filter(x => characters.find(y => y.avatar === x)); // Filter out characters that don't exist
-        const randomCharacter = taggedCharacters[Math.floor(Math.random() * taggedCharacters.length)];
-        const randomIndex = characters.findIndex(x => x.avatar === randomCharacter);
+            .filter((x) => x[1].includes(tagId)) // Get only records that include the tag
+            .map((x) => x[0]) // Map the character avatar
+            .filter((x) => characters.find((y) => y.avatar === x)); // Filter out characters that don't exist
+        const randomCharacter =
+			taggedCharacters[Math.floor(Math.random() * taggedCharacters.length)];
+        const randomIndex = characters.findIndex(
+            (x) => x.avatar === randomCharacter,
+        );
         if (randomIndex === -1) {
             return;
         }
@@ -3061,7 +3778,10 @@ async function doRandomChat(_, tagName) {
 async function loadUntilMesId(mesId) {
     let target;
 
-    while (getFirstDisplayedMessageId() > mesId && getFirstDisplayedMessageId() !== 0) {
+    while (
+        getFirstDisplayedMessageId() > mesId &&
+		getFirstDisplayedMessageId() !== 0
+    ) {
         await showMoreMessages();
         await delay(1);
         target = $('#chat').find(`.mes[mesid="${mesId}"]`);
@@ -3089,7 +3809,7 @@ async function doMesCut(_, text) {
         return;
     }
 
-    let totalMesToCut = (range.end - range.start) + 1;
+    let totalMesToCut = range.end - range.start + 1;
     let mesIDToCut = range.start;
     let cutText = '';
 
@@ -3177,8 +3897,11 @@ async function setAvgBG(args) {
     const themeName = nameOverride || `bgcol - ${bgName}`;
 
     // Check if a theme with the same name already exists
-    if (themes.some(t => t.name === themeName) && !force) {
-        toastr.warning('Pass "force=true" to overwrite.', `A theme named "${themeName}" already exists.`);
+    if (themes.some((t) => t.name === themeName) && !force) {
+        toastr.warning(
+            'Pass "force=true" to overwrite.',
+            `A theme named "${themeName}" already exists.`,
+        );
         return '';
     }
 
@@ -3218,9 +3941,7 @@ async function setThemeCallback(_, themeName) {
 
     // @ts-ignore
     const fuse = new Fuse(themes, {
-        keys: [
-            { name: 'name', weight: 1 },
-        ],
+        keys: [{ name: 'name', weight: 1 }],
     });
 
     const results = fuse.search(themeName);
@@ -3242,9 +3963,7 @@ async function setThemeCallback(_, themeName) {
 async function setmovingUIPreset(_, text) {
     // @ts-ignore
     const fuse = new Fuse(movingUIPresets, {
-        keys: [
-            { name: 'name', weight: 1 },
-        ],
+        keys: [{ name: 'name', weight: 1 }],
     });
 
     const results = fuse.search(text);
@@ -3281,7 +4000,10 @@ export function flushEphemeralStoppingStrings() {
         return;
     }
 
-    console.debug('Flushing ephemeral stopping strings:', EPHEMERAL_STOPPING_STRINGS);
+    console.debug(
+        'Flushing ephemeral stopping strings:',
+        EPHEMERAL_STOPPING_STRINGS,
+    );
     EPHEMERAL_STOPPING_STRINGS.splice(0, EPHEMERAL_STOPPING_STRINGS.length);
 }
 
@@ -3292,12 +4014,12 @@ export function flushEphemeralStoppingStrings() {
  */
 export function generatedTextFiltered(text) {
     /**
-     * Checks if the given text contains any of the blacklisted words.
-     * @param {string} text The text to check
-     * @param {string[]} blacklist The list of blacklisted words
-     * @param {number} threshold The number of blacklisted words that need to be present to trigger the check
-     * @returns {boolean} Whether the text contains blacklisted words
-     */
+	 * Checks if the given text contains any of the blacklisted words.
+	 * @param {string} text The text to check
+	 * @param {string[]} blacklist The list of blacklisted words
+	 * @param {number} threshold The number of blacklisted words that need to be present to trigger the check
+	 * @returns {boolean} Whether the text contains blacklisted words
+	 */
     function containsBlacklistedWords(text, blacklist, threshold) {
         const regex = new RegExp(`\\b(${blacklist.join('|')})\\b`, 'gi');
         const matches = text.match(regex) || [];
@@ -3314,8 +4036,17 @@ export function generatedTextFiltered(text) {
                 return true;
             }
         }
-        if (power_user.auto_swipe_blacklist.length && power_user.auto_swipe_blacklist_threshold) {
-            if (containsBlacklistedWords(text, power_user.auto_swipe_blacklist, power_user.auto_swipe_blacklist_threshold)) {
+        if (
+            power_user.auto_swipe_blacklist.length &&
+			power_user.auto_swipe_blacklist_threshold
+        ) {
+            if (
+                containsBlacklistedWords(
+                    text,
+                    power_user.auto_swipe_blacklist,
+                    power_user.auto_swipe_blacklist_threshold,
+                )
+            ) {
                 console.log('Generated text has blacklisted words');
                 return true;
             }
@@ -3347,11 +4078,11 @@ export function getCustomStoppingStrings(limit = undefined) {
             }
 
             // Make sure all the elements are strings and non-empty.
-            strings = strings.filter(s => typeof s === 'string' && s.length > 0);
+            strings = strings.filter((s) => typeof s === 'string' && s.length > 0);
 
             // Substitute params if necessary
             if (power_user.custom_stopping_strings_macro) {
-                strings = strings.map(x => substituteParams(x));
+                strings = strings.map((x) => substituteParams(x));
             }
 
             return strings;
@@ -3376,7 +4107,10 @@ export function getCustomStoppingStrings(limit = undefined) {
 
 export function forceCharacterEditorTokenize() {
     $('[data-token-counter]').each(function () {
-        $(document.getElementById($(this).data('token-counter'))).data('last-value-hash', '');
+        $(document.getElementById($(this).data('token-counter'))).data(
+            'last-value-hash',
+            '',
+        );
     });
     $('#rm_ch_create_block').trigger('input');
     $('#character_popup').trigger('input');
@@ -3393,13 +4127,18 @@ jQuery(() => {
     });
 
     const reportZoomLevelDebounced = debounce(() => {
-        const zoomLevel = parseFloat(Number(window.devicePixelRatio).toFixed(2)) || 1;
+        const zoomLevel =
+			parseFloat(Number(window.devicePixelRatio).toFixed(2)) || 1;
         const winWidth = window.innerWidth;
         const winHeight = window.innerHeight;
         const originalWidth = winWidth * zoomLevel;
         const originalHeight = winHeight * zoomLevel;
-        console.debug(`Window resize: ${coreTruthWinWidth}x${coreTruthWinHeight} -> ${window.innerWidth}x${window.innerHeight}`);
-        console.debug(`Zoom: ${zoomLevel}, X:${winWidth}, Y:${winHeight}, original: ${originalWidth}x${originalHeight} `);
+        console.debug(
+            `Window resize: ${coreTruthWinWidth}x${coreTruthWinHeight} -> ${window.innerWidth}x${window.innerHeight}`,
+        );
+        console.debug(
+            `Zoom: ${zoomLevel}, X:${winWidth}, Y:${winHeight}, original: ${originalWidth}x${originalHeight} `,
+        );
         return zoomLevel;
     });
 
@@ -3418,8 +4157,12 @@ jQuery(() => {
 
         //attempt to scale movingUI elements naturally across window resizing/zooms
         //this will still break if the zoom level causes mobile styles to come into play.
-        const scaleY = parseFloat(Number(window.innerHeight / coreTruthWinHeight).toFixed(4));
-        const scaleX = parseFloat(Number(window.innerWidth / coreTruthWinWidth).toFixed(4));
+        const scaleY = parseFloat(
+            Number(window.innerHeight / coreTruthWinHeight).toFixed(4),
+        );
+        const scaleX = parseFloat(
+            Number(window.innerWidth / coreTruthWinWidth).toFixed(4),
+        );
 
         if (Object.keys(power_user.movingUIState).length > 0) {
             for (var elmntName of Object.keys(power_user.movingUIState)) {
@@ -3441,10 +4184,15 @@ jQuery(() => {
                 try {
                     var elmnt = $('#' + $.escapeSelector(elmntName));
                     if (elmnt.length) {
-                        console.log(`scaling ${elmntName} by ${scaleX}x${scaleY} to ${newWidth}x${newHeight}`);
+                        console.log(
+                            `scaling ${elmntName} by ${scaleX}x${scaleY} to ${newWidth}x${newHeight}`,
+                        );
                         elmnt.css('height', newHeight);
                         elmnt.css('width', newWidth);
-                        elmnt.css('inset', `${newTop}px ${newRight}px ${newBottom}px ${newLeft}px`);
+                        elmnt.css(
+                            'inset',
+                            `${newTop}px ${newRight}px ${newBottom}px ${newLeft}px`,
+                        );
                         power_user.movingUIState[elmntName].height = newHeight;
                         power_user.movingUIState[elmntName].width = newWidth;
                         power_user.movingUIState[elmntName].top = newTop;
@@ -3452,14 +4200,19 @@ jQuery(() => {
                         power_user.movingUIState[elmntName].left = newLeft;
                         power_user.movingUIState[elmntName].right = newRight;
                     } else {
-                        console.log(`skipping ${elmntName} because it doesn't exist in the DOM`);
+                        console.log(
+                            `skipping ${elmntName} because it doesn't exist in the DOM`,
+                        );
                     }
                 } catch (err) {
                     console.log(`error occurred while processing ${elmntName}: ${err}`);
                 }
             }
         } else {
-            console.debug('aborting MUI reset', Object.keys(power_user.movingUIState).length);
+            console.debug(
+                'aborting MUI reset',
+                Object.keys(power_user.movingUIState).length,
+            );
         }
         saveSettingsDebounced();
         coreTruthWinWidth = window.innerWidth;
@@ -3493,7 +4246,10 @@ jQuery(() => {
     });
 
     $('#context_derived').on('change', function () {
-        $('#context_derived').parent().find('i').toggleClass('toggleEnabled', !!power_user.context_derived);
+        $('#context_derived')
+            .parent()
+            .find('i')
+            .toggleClass('toggleEnabled', !!power_user.context_derived);
     });
 
     $('#instruct_derived').on('input', function () {
@@ -3503,7 +4259,10 @@ jQuery(() => {
     });
 
     $('#instruct_derived').on('change', function () {
-        $('#instruct_derived').parent().find('i').toggleClass('toggleEnabled', !!power_user.instruct_derived);
+        $('#instruct_derived')
+            .parent()
+            .find('i')
+            .toggleClass('toggleEnabled', !!power_user.instruct_derived);
     });
 
     $('#context_size_derived').on('input', function () {
@@ -3513,12 +4272,17 @@ jQuery(() => {
     });
 
     $('#context_size_derived').on('change', function () {
-        $('#context_size_derived').prop('checked', !!power_user.context_size_derived);
+        $('#context_size_derived').prop(
+            'checked',
+            !!power_user.context_size_derived,
+        );
     });
 
     $('#context_story_string_position').on('input', function () {
         const value = Number($(this).val());
-        $('#context_story_string_inject_settings').toggle(value === extension_prompt_types.IN_CHAT);
+        $('#context_story_string_inject_settings').toggle(
+            value === extension_prompt_types.IN_CHAT,
+        );
     });
 
     $('#bind_model_templates').on('input', function () {
@@ -3675,7 +4439,9 @@ jQuery(() => {
     });
 
     $('#smooth_streaming_speed').on('input', function () {
-        power_user.smooth_streaming_speed = Number($('#smooth_streaming_speed').val());
+        power_user.smooth_streaming_speed = Number(
+            $('#smooth_streaming_speed').val(),
+        );
         saveSettingsDebounced();
     });
 
@@ -3706,65 +4472,95 @@ jQuery(() => {
         saveSettingsDebounced();
     });
 
-    $('#main-text-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.main_text_color = evt.detail.rgba;
-        applyThemeColor('main');
-        saveSettingsDebounced();
-    });
+    $('#main-text-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.main_text_color = evt.detail.rgba;
+            applyThemeColor('main');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#italics-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.italics_text_color = evt.detail.rgba;
-        applyThemeColor('italics');
-        saveSettingsDebounced();
-    });
+    $('#italics-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.italics_text_color = evt.detail.rgba;
+            applyThemeColor('italics');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#underline-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.underline_text_color = evt.detail.rgba;
-        applyThemeColor('underline');
-        saveSettingsDebounced();
-    });
+    $('#underline-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.underline_text_color = evt.detail.rgba;
+            applyThemeColor('underline');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#quote-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.quote_text_color = evt.detail.rgba;
-        applyThemeColor('quote');
-        saveSettingsDebounced();
-    });
+    $('#quote-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.quote_text_color = evt.detail.rgba;
+            applyThemeColor('quote');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.blur_tint_color = evt.detail.rgba;
-        applyThemeColor('blurTint');
-        saveSettingsDebounced();
-    });
+    $('#blur-tint-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.blur_tint_color = evt.detail.rgba;
+            applyThemeColor('blurTint');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#chat-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.chat_tint_color = evt.detail.rgba;
-        applyThemeColor('chatTint');
-        saveSettingsDebounced();
-    });
+    $('#chat-tint-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.chat_tint_color = evt.detail.rgba;
+            applyThemeColor('chatTint');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#user-mes-blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.user_mes_blur_tint_color = evt.detail.rgba;
-        applyThemeColor('userMesBlurTint');
-        saveSettingsDebounced();
-    });
+    $('#user-mes-blur-tint-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.user_mes_blur_tint_color = evt.detail.rgba;
+            applyThemeColor('userMesBlurTint');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#bot-mes-blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.bot_mes_blur_tint_color = evt.detail.rgba;
-        applyThemeColor('botMesBlurTint');
-        saveSettingsDebounced();
-    });
+    $('#bot-mes-blur-tint-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.bot_mes_blur_tint_color = evt.detail.rgba;
+            applyThemeColor('botMesBlurTint');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#shadow-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.shadow_color = evt.detail.rgba;
-        applyThemeColor('shadow');
-        saveSettingsDebounced();
-    });
+    $('#shadow-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.shadow_color = evt.detail.rgba;
+            applyThemeColor('shadow');
+            saveSettingsDebounced();
+        },
+    );
 
-    $('#border-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.border_color = evt.detail.rgba;
-        applyThemeColor('border');
-        saveSettingsDebounced();
-    });
+    $('#border-color-picker').on(
+        'change',
+        (/** @type {ColorPickerEvent} */ evt) => {
+            power_user.border_color = evt.detail.rgba;
+            applyThemeColor('border');
+            saveSettingsDebounced();
+        },
+    );
 
     $('#themes').on('change', function () {
         const themeSelected = String($(this).find(':selected').val());
@@ -3837,9 +4633,12 @@ jQuery(() => {
     $('#auto_swipe_blacklist').on('input', function () {
         power_user.auto_swipe_blacklist = String($(this).val())
             .split(',')
-            .map(str => str.trim())
-            .filter(str => str);
-        console.log('power_user.auto_swipe_blacklist', power_user.auto_swipe_blacklist);
+            .map((str) => str.trim())
+            .filter((str) => str);
+        console.log(
+            'power_user.auto_swipe_blacklist',
+            power_user.auto_swipe_blacklist,
+        );
         saveSettingsDebounced();
     });
 
@@ -3899,7 +4698,9 @@ jQuery(() => {
         if (isCustomTokenizer) {
             const status = await refreshCustomTokenizerStatus();
             if (previousTokenizer !== tokenizers.CUSTOM && !status.loaded) {
-                toastr.warning('Custom tokenizer selected, but no HuggingFace tokenizer is loaded yet.');
+                toastr.warning(
+                    'Custom tokenizer selected, but no HuggingFace tokenizer is loaded yet.',
+                );
             }
         }
 
@@ -3927,7 +4728,10 @@ jQuery(() => {
     $('#custom_tokenizer_load').on('click', async function () {
         const source = power_user.custom_tokenizer_source || 'url';
         const url = source === 'url' ? power_user.custom_tokenizer_url : undefined;
-        const json = source === 'paste' ? String($('#custom_tokenizer_json').val() || '') : undefined;
+        const json =
+            source === 'paste'
+                ? String($('#custom_tokenizer_json').val() || '')
+                : undefined;
 
         if (source === 'url' && !url?.trim()) {
             toastr.warning('Enter a HuggingFace model ID or tokenizer URL first.');
@@ -3950,14 +4754,22 @@ jQuery(() => {
                 return;
             }
 
-            setCustomTokenizerStatusText(`Loaded: ${result.name || 'Custom tokenizer'}`);
+            setCustomTokenizerStatusText(
+                `Loaded: ${result.name || 'Custom tokenizer'}`,
+            );
             await invalidateTokenCache();
             forceCharacterEditorTokenize();
-            toastr.success(`Custom tokenizer loaded: ${result.name || 'Custom tokenizer'}`);
+            toastr.success(
+                `Custom tokenizer loaded: ${result.name || 'Custom tokenizer'}`,
+            );
         } catch (error) {
             console.error(error);
             setCustomTokenizerStatusText('Load failed');
-            toastr.error(error?.responseJSON?.error || error?.message || 'Failed to load custom tokenizer.');
+            toastr.error(
+                error?.responseJSON?.error ||
+					error?.message ||
+					'Failed to load custom tokenizer.',
+            );
         }
     });
 
@@ -4259,7 +5071,8 @@ jQuery(() => {
     });
 
     $('#stscript_autocomplete_showInAllMacroFields').on('input', function () {
-        power_user.stscript.autocomplete.showInAllMacroFields = !!$(this).prop('checked');
+        power_user.stscript.autocomplete.showInAllMacroFields =
+			!!$(this).prop('checked');
         saveSettingsDebounced();
     });
 
@@ -4272,7 +5085,10 @@ jQuery(() => {
     $('#stscript_autocomplete_style').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.stscript.autocomplete.style = String(value);
-        document.body.setAttribute('data-stscript-style', power_user.stscript.autocomplete.style);
+        document.body.setAttribute(
+            'data-stscript-style',
+            power_user.stscript.autocomplete.style,
+        );
         saveSettingsDebounced();
     });
 
@@ -4302,7 +5118,9 @@ jQuery(() => {
     $('#stscript_autocomplete_width_left').on('input', function () {
         const value = $(this).val();
         power_user.stscript.autocomplete.width.left = Number(value);
-        /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
+        /**@type {HTMLElement}*/ (
+            this.closest('.doubleRangeInputContainer')
+        ).style.setProperty('--value', value.toString());
         window.dispatchEvent(new Event('resize', { bubbles: true }));
         saveSettingsDebounced();
     });
@@ -4310,7 +5128,9 @@ jQuery(() => {
     $('#stscript_autocomplete_width_right').on('input', function () {
         const value = $(this).val();
         power_user.stscript.autocomplete.width.right = Number(value);
-        /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
+        /**@type {HTMLElement}*/ (
+            this.closest('.doubleRangeInputContainer')
+        ).style.setProperty('--value', value.toString());
         window.dispatchEvent(new Event('resize', { bubbles: true }));
         saveSettingsDebounced();
     });
@@ -4416,7 +5236,9 @@ jQuery(() => {
 
     $(document).on('click', '#debug_table [data-debug-function]', function () {
         const functionId = $(this).data('debug-function');
-        const functionRecord = debug_functions.find(f => f.functionId === functionId);
+        const functionRecord = debug_functions.find(
+            (f) => f.functionId === functionId,
+        );
 
         if (functionRecord) {
             functionRecord.func();
@@ -4433,67 +5255,93 @@ jQuery(() => {
         browser_has_focus = false;
     });
 
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'vn',
-        callback: toggleWaifu,
-        helpString: 'Swaps Visual Novel Mode On/Off',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'newchat',
-        /** @type {(args: { delete: string?}, string) => Promise<''>} */
-        callback: async (args, _) => {
-            await doNewChat({ deleteCurrentChat: isTrueBoolean(args.delete) });
-            return '';
-        },
-        namedArgumentList: [
-            SlashCommandNamedArgument.fromProps({
-                name: 'delete',
-                description: 'delete the current chat',
-                typeList: [ARGUMENT_TYPE.BOOLEAN],
-                defaultValue: 'false',
-                enumList: commonEnumProviders.boolean('trueFalse')(),
-            }),
-        ],
-        helpString: 'Start a new chat with the current character',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'random',
-        callback: doRandomChat,
-        unnamedArgumentList: [
-            SlashCommandArgument.fromProps({
-                description: 'optional tag name',
-                typeList: [ARGUMENT_TYPE.STRING],
-                enumProvider: () => tags.filter(tag => Object.values(tag_map).some(x => x.includes(tag.id))).map(tag => new SlashCommandEnumValue(tag.name, null, enumTypes.enum, enumIcons.tag)),
-            }),
-        ],
-        helpString: 'Start a new chat with a random character. If an argument is provided, only considers characters that have the specified tag.',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'del',
-        callback: doDelMode,
-        aliases: ['delete', 'delmode'],
-        unnamedArgumentList: [
-            new SlashCommandArgument(
-                'optional number', [ARGUMENT_TYPE.NUMBER], false,
-            ),
-        ],
-        helpString: 'Enter message deletion mode, and auto-deletes last N messages if numeric argument is provided.',
-        returns: 'The text of the deleted messages.',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'cut',
-        callback: doMesCut,
-        returns: 'the text of cut messages separated by a newline',
-        unnamedArgumentList: [
-            SlashCommandArgument.fromProps({
-                description: 'number or range',
-                typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.RANGE],
-                isRequired: true,
-                acceptsMultiple: true,
-                enumProvider: commonEnumProviders.messages(),
-            }),
-        ],
-        helpString: `
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'vn',
+            callback: toggleWaifu,
+            helpString: 'Swaps Visual Novel Mode On/Off',
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'newchat',
+            /** @type {(args: { delete: string?}, string) => Promise<''>} */
+            callback: async (args, _) => {
+                await doNewChat({ deleteCurrentChat: isTrueBoolean(args.delete) });
+                return '';
+            },
+            namedArgumentList: [
+                SlashCommandNamedArgument.fromProps({
+                    name: 'delete',
+                    description: 'delete the current chat',
+                    typeList: [ARGUMENT_TYPE.BOOLEAN],
+                    defaultValue: 'false',
+                    enumList: commonEnumProviders.boolean('trueFalse')(),
+                }),
+            ],
+            helpString: 'Start a new chat with the current character',
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'random',
+            callback: doRandomChat,
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: 'optional tag name',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    enumProvider: () =>
+                        tags
+                            .filter((tag) =>
+                                Object.values(tag_map).some((x) => x.includes(tag.id)),
+                            )
+                            .map(
+                                (tag) =>
+                                    new SlashCommandEnumValue(
+                                        tag.name,
+                                        null,
+                                        enumTypes.enum,
+                                        enumIcons.tag,
+                                    ),
+                            ),
+                }),
+            ],
+            helpString:
+				'Start a new chat with a random character. If an argument is provided, only considers characters that have the specified tag.',
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'del',
+            callback: doDelMode,
+            aliases: ['delete', 'delmode'],
+            unnamedArgumentList: [
+                new SlashCommandArgument(
+                    'optional number',
+                    [ARGUMENT_TYPE.NUMBER],
+                    false,
+                ),
+            ],
+            helpString:
+				'Enter message deletion mode, and auto-deletes last N messages if numeric argument is provided.',
+            returns: 'The text of the deleted messages.',
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'cut',
+            callback: doMesCut,
+            returns: 'the text of cut messages separated by a newline',
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: 'number or range',
+                    typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.RANGE],
+                    isRequired: true,
+                    acceptsMultiple: true,
+                    enumProvider: commonEnumProviders.messages(),
+                }),
+            ],
+            helpString: `
             <div>
                 Cuts the specified message or continuous chunk from the chat.
             </div>
@@ -4509,50 +5357,60 @@ jQuery(() => {
                 </ul>
             </div>
         `,
-        aliases: [],
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'resetpanels',
-        callback: doResetPanels,
-        helpString: 'resets UI panels to original state',
-        aliases: ['resetui'],
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'bgcol',
-        callback: setAvgBG,
-        namedArgumentList: [
-            SlashCommandNamedArgument.fromProps({
-                name: 'force',
-                description: 'force generation even if a theme with the same name already exists',
-                typeList: [ARGUMENT_TYPE.BOOLEAN],
-                defaultValue: 'false',
-                enumList: commonEnumProviders.boolean('trueFalse')(),
-            }),
-            SlashCommandNamedArgument.fromProps({
-                name: 'name',
-                description: 'override the generated theme name',
-                typeList: [ARGUMENT_TYPE.STRING],
-            }),
-            SlashCommandNamedArgument.fromProps({
-                name: 'bg',
-                description: 'background image filename to use instead of the current one',
-                typeList: [ARGUMENT_TYPE.STRING],
-                enumProvider: commonEnumProviders.backgrounds,
-            }),
-        ],
-        helpString: 'Generates a new theme based on a dominant color of the specified background image. Saves as "bgcol - background name".',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'theme',
-        callback: setThemeCallback,
-        unnamedArgumentList: [
-            SlashCommandArgument.fromProps({
-                description: 'theme name',
-                typeList: [ARGUMENT_TYPE.STRING],
-                enumProvider: () => themes.map(theme => new SlashCommandEnumValue(theme.name)),
-            }),
-        ],
-        helpString: `
+            aliases: [],
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'resetpanels',
+            callback: doResetPanels,
+            helpString: 'resets UI panels to original state',
+            aliases: ['resetui'],
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'bgcol',
+            callback: setAvgBG,
+            namedArgumentList: [
+                SlashCommandNamedArgument.fromProps({
+                    name: 'force',
+                    description:
+						'force generation even if a theme with the same name already exists',
+                    typeList: [ARGUMENT_TYPE.BOOLEAN],
+                    defaultValue: 'false',
+                    enumList: commonEnumProviders.boolean('trueFalse')(),
+                }),
+                SlashCommandNamedArgument.fromProps({
+                    name: 'name',
+                    description: 'override the generated theme name',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                }),
+                SlashCommandNamedArgument.fromProps({
+                    name: 'bg',
+                    description:
+						'background image filename to use instead of the current one',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    enumProvider: commonEnumProviders.backgrounds,
+                }),
+            ],
+            helpString:
+				'Generates a new theme based on a dominant color of the specified background image. Saves as "bgcol - background name".',
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'theme',
+            callback: setThemeCallback,
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: 'theme name',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    enumProvider: () =>
+                        themes.map((theme) => new SlashCommandEnumValue(theme.name)),
+                }),
+            ],
+            helpString: `
         <div>
             Sets a UI theme by name.
         </div>
@@ -4571,73 +5429,100 @@ jQuery(() => {
             </ul>
         </div>
     `,
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'css-var',
-        /** @param {{to: string, varname: string }} args @param {string} value @returns {string} */
-        callback: (args, value) => {
-            // Map enum to target selector
-            const targetSelector = {
-                chat: '#chat',
-                background: '#bg1',
-                gallery: '#gallery',
-                zoomedAvatar: 'div.zoomed_avatar',
-            }[args.to || 'chat'];
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'css-var',
+            /** @param {{to: string, varname: string }} args @param {string} value @returns {string} */
+            callback: (args, value) => {
+                // Map enum to target selector
+                const targetSelector = {
+                    chat: '#chat',
+                    background: '#bg1',
+                    gallery: '#gallery',
+                    zoomedAvatar: 'div.zoomed_avatar',
+                }[args.to || 'chat'];
 
-            if (!targetSelector) {
-                toastr.error(`Invalid target: ${args.to}`);
-                return;
-            }
+                if (!targetSelector) {
+                    toastr.error(`Invalid target: ${args.to}`);
+                    return;
+                }
 
-            if (!args.varname) {
-                toastr.error('CSS variable name is required');
-                return;
-            }
-            if (!args.varname.startsWith('--')) {
-                toastr.error('CSS variable names must start with "--"');
-                return;
-            }
+                if (!args.varname) {
+                    toastr.error('CSS variable name is required');
+                    return;
+                }
+                if (!args.varname.startsWith('--')) {
+                    toastr.error('CSS variable names must start with "--"');
+                    return;
+                }
 
-            const elements = document.querySelectorAll(targetSelector);
-            if (elements.length === 0) {
-                toastr.error(`No elements found for ${args.to ?? 'chat'} with selector "${targetSelector}"`);
-                return;
-            }
+                const elements = document.querySelectorAll(targetSelector);
+                if (elements.length === 0) {
+                    toastr.error(
+                        `No elements found for ${args.to ?? 'chat'} with selector "${targetSelector}"`,
+                    );
+                    return;
+                }
 
-            elements.forEach(element => {
-                element.style.setProperty(args.varname, value);
-            });
+                elements.forEach((element) => {
+                    element.style.setProperty(args.varname, value);
+                });
 
-            console.info(`Set CSS variable "${args.varname}" to "${value}" on "${targetSelector}"`);
-        },
-        namedArgumentList: [
-            SlashCommandNamedArgument.fromProps({
-                name: 'varname',
-                description: 'CSS variable name (starting with double dashes)',
-                typeList: [ARGUMENT_TYPE.STRING],
-                isRequired: true,
-            }),
-            SlashCommandNamedArgument.fromProps({
-                name: 'to',
-                description: 'The target element to which the CSS variable will be applied',
-                typeList: [ARGUMENT_TYPE.STRING],
-                enumList: [
-                    new SlashCommandEnumValue('chat', null, enumTypes.enum, enumIcons.message),
-                    new SlashCommandEnumValue('background', null, enumTypes.enum, enumIcons.image),
-                    new SlashCommandEnumValue('zoomedAvatar', null, enumTypes.enum, enumIcons.character),
-                    new SlashCommandEnumValue('gallery', null, enumTypes.enum, enumIcons.image),
-                ],
-                defaultValue: 'chat',
-            }),
-        ],
-        unnamedArgumentList: [
-            SlashCommandArgument.fromProps({
-                description: 'CSS variable value',
-                typeList: [ARGUMENT_TYPE.STRING],
-                isRequired: true,
-            }),
-        ],
-        helpString: `
+                console.info(
+                    `Set CSS variable "${args.varname}" to "${value}" on "${targetSelector}"`,
+                );
+            },
+            namedArgumentList: [
+                SlashCommandNamedArgument.fromProps({
+                    name: 'varname',
+                    description: 'CSS variable name (starting with double dashes)',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    isRequired: true,
+                }),
+                SlashCommandNamedArgument.fromProps({
+                    name: 'to',
+                    description:
+						'The target element to which the CSS variable will be applied',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    enumList: [
+                        new SlashCommandEnumValue(
+                            'chat',
+                            null,
+                            enumTypes.enum,
+                            enumIcons.message,
+                        ),
+                        new SlashCommandEnumValue(
+                            'background',
+                            null,
+                            enumTypes.enum,
+                            enumIcons.image,
+                        ),
+                        new SlashCommandEnumValue(
+                            'zoomedAvatar',
+                            null,
+                            enumTypes.enum,
+                            enumIcons.character,
+                        ),
+                        new SlashCommandEnumValue(
+                            'gallery',
+                            null,
+                            enumTypes.enum,
+                            enumIcons.image,
+                        ),
+                    ],
+                    defaultValue: 'chat',
+                }),
+            ],
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: 'CSS variable value',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    isRequired: true,
+                }),
+            ],
+            helpString: `
             <div>
                 Sets a CSS variable to a specified value on a target element.
                 <br />
@@ -4660,24 +5545,35 @@ jQuery(() => {
                 </ul>
             </div>
         `,
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'movingui',
-        callback: setmovingUIPreset,
-        unnamedArgumentList: [
-            SlashCommandArgument.fromProps({
-                description: 'name',
-                typeList: [ARGUMENT_TYPE.STRING],
-                isRequired: true,
-                enumProvider: () => movingUIPresets.map(preset => new SlashCommandEnumValue(preset.name)),
-            }),
-        ],
-        helpString: 'activates a movingUI preset by name',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'stop-strings',
-        aliases: ['stopping-strings', 'custom-stopping-strings', 'custom-stop-strings'],
-        helpString: `
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'movingui',
+            callback: setmovingUIPreset,
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: 'name',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    isRequired: true,
+                    enumProvider: () =>
+                        movingUIPresets.map(
+                            (preset) => new SlashCommandEnumValue(preset.name),
+                        ),
+                }),
+            ],
+            helpString: 'activates a movingUI preset by name',
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'stop-strings',
+            aliases: [
+                'stopping-strings',
+                'custom-stopping-strings',
+                'custom-stop-strings',
+            ],
+            helpString: `
             <div>
                 Sets a list of custom stopping strings. Gets the list if no value is provided.
                 Use a "force" argument to force set an empty value.
@@ -4691,55 +5587,65 @@ jQuery(() => {
                 <li>Pipe characters must be escaped with a backslash: <pre><code class="language-stscript">/stop-strings ["left\\|right"]</code></pre></li>
             </ul>
         `,
-        returns: ARGUMENT_TYPE.LIST,
-        namedArgumentList: [
-            SlashCommandNamedArgument.fromProps({
-                name: 'force',
-                description: 'force set a value if empty',
-                typeList: [ARGUMENT_TYPE.BOOLEAN],
-                defaultValue: 'false',
-                enumList: commonEnumProviders.boolean('trueFalse')(),
-            }),
-        ],
-        unnamedArgumentList: [
-            SlashCommandArgument.fromProps({
-                description: 'list of strings',
-                typeList: [ARGUMENT_TYPE.LIST],
-                acceptsMultiple: false,
-                isRequired: false,
-            }),
-        ],
-        callback: (args, value) => {
-            const force = isTrueBoolean(String(args?.force ?? false));
-            value = String(value ?? '').trim();
+            returns: ARGUMENT_TYPE.LIST,
+            namedArgumentList: [
+                SlashCommandNamedArgument.fromProps({
+                    name: 'force',
+                    description: 'force set a value if empty',
+                    typeList: [ARGUMENT_TYPE.BOOLEAN],
+                    defaultValue: 'false',
+                    enumList: commonEnumProviders.boolean('trueFalse')(),
+                }),
+            ],
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: 'list of strings',
+                    typeList: [ARGUMENT_TYPE.LIST],
+                    acceptsMultiple: false,
+                    isRequired: false,
+                }),
+            ],
+            callback: (args, value) => {
+                const force = isTrueBoolean(String(args?.force ?? false));
+                value = String(value ?? '').trim();
 
-            // Skip processing if no value and not forced
-            if (!force && !value) {
+                // Skip processing if no value and not forced
+                if (!force && !value) {
+                    return power_user.custom_stopping_strings;
+                }
+
+                // Use empty array for forced empty value
+                if (force && !value) {
+                    value = JSON.stringify([]);
+                }
+
+                const parsedValue = ((x) => {
+                    try {
+                        return JSON.parse(x.toString());
+                    } catch {
+                        return null;
+                    }
+                })(value);
+                if (!parsedValue || !Array.isArray(parsedValue)) {
+                    throw new Error(
+                        'Invalid list format. The value must be a JSON-serialized array of strings.',
+                    );
+                }
+                parsedValue.forEach((item, index) => {
+                    parsedValue[index] = String(item);
+                });
+                power_user.custom_stopping_strings = JSON.stringify(parsedValue);
+                $('#custom_stopping_strings').val(power_user.custom_stopping_strings);
+                saveSettingsDebounced();
+
                 return power_user.custom_stopping_strings;
-            }
-
-            // Use empty array for forced empty value
-            if (force && !value) {
-                value = JSON.stringify([]);
-            }
-
-            const parsedValue = ((x) => { try { return JSON.parse(x.toString()); } catch { return null; } })(value);
-            if (!parsedValue || !Array.isArray(parsedValue)) {
-                throw new Error('Invalid list format. The value must be a JSON-serialized array of strings.');
-            }
-            parsedValue.forEach((item, index) => {
-                parsedValue[index] = String(item);
-            });
-            power_user.custom_stopping_strings = JSON.stringify(parsedValue);
-            $('#custom_stopping_strings').val(power_user.custom_stopping_strings);
-            saveSettingsDebounced();
-
-            return power_user.custom_stopping_strings;
-        },
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'start-reply-with',
-        helpString: `
+            },
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: 'start-reply-with',
+            helpString: `
             <div>
                 Sets a "Start Reply With". Gets the current value if no value is provided.
                 Use a "force" argument to force set an empty value.
@@ -4752,36 +5658,37 @@ jQuery(() => {
                 <li>Force set an empty value: <pre><code class="language-stscript">/start-reply-with force="true" {{noop}}</code></pre></li>
             </ul>
         `,
-        namedArgumentList: [
-            SlashCommandNamedArgument.fromProps({
-                name: 'force',
-                description: 'force set a value if empty',
-                typeList: [ARGUMENT_TYPE.BOOLEAN],
-                defaultValue: 'false',
-                enumList: commonEnumProviders.boolean('trueFalse')(),
-            }),
-        ],
-        unnamedArgumentList: [
-            SlashCommandArgument.fromProps({
-                description: 'value',
-                typeList: [ARGUMENT_TYPE.STRING],
-                acceptsMultiple: false,
-                isRequired: false,
-            }),
-        ],
-        callback: (args, value) => {
-            const force = isTrueBoolean(String(args?.force ?? false));
+            namedArgumentList: [
+                SlashCommandNamedArgument.fromProps({
+                    name: 'force',
+                    description: 'force set a value if empty',
+                    typeList: [ARGUMENT_TYPE.BOOLEAN],
+                    defaultValue: 'false',
+                    enumList: commonEnumProviders.boolean('trueFalse')(),
+                }),
+            ],
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: 'value',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    acceptsMultiple: false,
+                    isRequired: false,
+                }),
+            ],
+            callback: (args, value) => {
+                const force = isTrueBoolean(String(args?.force ?? false));
 
-            // Skip processing if no value and not forced
-            if (!force && !value) {
+                // Skip processing if no value and not forced
+                if (!force && !value) {
+                    return power_user.user_prompt_bias;
+                }
+
+                power_user.user_prompt_bias = String(value ?? '');
+                $('#start_reply_with').val(power_user.user_prompt_bias);
+                saveSettingsDebounced();
+
                 return power_user.user_prompt_bias;
-            }
-
-            power_user.user_prompt_bias = String(value ?? '');
-            $('#start_reply_with').val(power_user.user_prompt_bias);
-            saveSettingsDebounced();
-
-            return power_user.user_prompt_bias;
-        },
-    }));
+            },
+        }),
+    );
 });

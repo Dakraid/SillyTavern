@@ -46,6 +46,7 @@ import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { generateVoronoiComposite } from '../util/voronoi-composite.js';
+import { groupCardJobManager } from '../util/group-card-job.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue(
@@ -342,9 +343,9 @@ export async function applyAvatarCropResize(jimp, crop) {
     // Apply crop if defined
     if (
         typeof crop == 'object' &&
-		[crop.x, crop.y, crop.width, crop.height].every(
-		    (x) => typeof x === 'number',
-		)
+        [crop.x, crop.y, crop.width, crop.height].every(
+            (x) => typeof x === 'number',
+        )
     ) {
         image.crop({ x: crop.x, y: crop.y, w: crop.width, h: crop.height });
         // Apply standard resize if requested
@@ -955,13 +956,13 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
     const byafData = await new ByafParser(data).parse();
     const card = readFromV2(byafData.card);
     const fileName =
-		preservedFileName ||
-		getPngName(
-		    sanitize(byafData.character.displayName || card.name, {
-		        replacement: sanitizeSafeCharacterReplacements,
-		    }),
-		    request.user.directories,
-		);
+        preservedFileName ||
+        getPngName(
+            sanitize(byafData.character.displayName || card.name, {
+                replacement: sanitizeSafeCharacterReplacements,
+            }),
+            request.user.directories,
+        );
 
     // Don't import chats and images if the character is being replaced or updated, instead of newly imported.
     if (!preservedFileName) {
@@ -1772,20 +1773,16 @@ router.post(
                 response.sendStatus(200);
             } else {
                 console.warn(result.error);
-                response
-                    .status(400)
-                    .send({
-                        message: `Validation failed for ${update.avatar}`,
-                        error: result.error,
-                    });
+                response.status(400).send({
+                    message: `Validation failed for ${update.avatar}`,
+                    error: result.error,
+                });
             }
         } catch (exception) {
-            response
-                .status(500)
-                .send({
-                    message: 'Unexpected error while saving character.',
-                    error: exception.toString(),
-                });
+            response.status(500).send({
+                message: 'Unexpected error while saving character.',
+                error: exception.toString(),
+            });
         }
     },
 );
@@ -2155,6 +2152,73 @@ router.post(
     },
 );
 
+router.post('/group-card-job', async function (request, response) {
+    try {
+        if (!request.body || typeof request.body !== 'object') {
+            return response.status(400).send({ message: 'Job config is required' });
+        }
+
+        const config = {
+            ...(request.body.config && typeof request.body.config === 'object'
+                ? request.body.config
+                : request.body),
+            directories: request.user.directories,
+        };
+        const job = groupCardJobManager.createJob(config);
+
+        return response.send({ jobId: job.id });
+    } catch (err) {
+        console.error('Group card job creation failed:', err);
+        return response
+            .status(500)
+            .send({ message: 'Failed to create group card job' });
+    }
+});
+
+router.get('/group-card-job/:id/events', function (request, response) {
+    const jobId = String(request.params.id ?? '');
+    const job = groupCardJobManager.getJob(jobId);
+
+    if (!job) {
+        return response.status(404).send({ message: 'Group card job not found' });
+    }
+
+    response.setHeader('Content-Type', 'text/event-stream');
+    response.setHeader('Cache-Control', 'no-cache');
+    response.setHeader('Connection', 'keep-alive');
+    response.flushHeaders?.();
+    response.write(': connected\n\n');
+
+    const lastEventId = Number(request.get('Last-Event-ID') ?? 0);
+    groupCardJobManager.addSseClient(
+        jobId,
+        response,
+        Number.isFinite(lastEventId) ? lastEventId : 0,
+    );
+});
+
+router.get('/group-card-job/:id', function (request, response) {
+    const job = groupCardJobManager.getJob(String(request.params.id ?? ''));
+
+    if (!job) {
+        return response.status(404).send({ message: 'Group card job not found' });
+    }
+
+    return response.send(groupCardJobManager.serializeJob(job));
+});
+
+router.post('/group-card-job/:id/cancel', function (request, response) {
+    const cancelled = groupCardJobManager.cancelJob(
+        String(request.params.id ?? ''),
+    );
+
+    if (!cancelled) {
+        return response.status(404).send({ message: 'Group card job not found' });
+    }
+
+    return response.send({ cancelled: true });
+});
+
 router.post('/generate-voronoi-composite', async function (request, response) {
     try {
         if (!request.body || !Array.isArray(request.body.avatars)) {
@@ -2199,8 +2263,15 @@ router.post('/generate-voronoi-composite', async function (request, response) {
 
         const tempFile = `voronoi-${crypto.randomUUID()}.png`;
         const outputPath = path.join(os.tmpdir(), tempFile);
+        const cropStrategy = normalizeVoronoiCropStrategy(
+            request.body.cropStrategy,
+        );
+        const cropPadding = normalizeVoronoiCropPadding(request.body.cropPadding);
 
-        await generateVoronoiComposite(avatarPaths, outputPath);
+        await generateVoronoiComposite(avatarPaths, outputPath, {
+            cropStrategy,
+            cropPadding,
+        });
 
         return response.send({ file: tempFile });
     } catch (err) {
@@ -2210,6 +2281,22 @@ router.post('/generate-voronoi-composite', async function (request, response) {
             .send({ message: 'Failed to generate composite image' });
     }
 });
+
+function normalizeVoronoiCropStrategy(value) {
+    return ['attention', 'entropy', 'center', 'top', 'face'].includes(value)
+        ? value
+        : 'attention';
+}
+
+function normalizeVoronoiCropPadding(value) {
+    const padding = typeof value === 'number' ? value : Number(value);
+
+    if (!Number.isFinite(padding) || padding < 0 || padding > 50) {
+        return 15;
+    }
+
+    return padding;
+}
 
 router.get('/generate-voronoi-composite', async function (request, response) {
     try {
