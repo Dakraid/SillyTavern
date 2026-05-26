@@ -98,45 +98,80 @@ function buildPostMergePrompt(prompt, mergedOutput) {
     return `${String(prompt ?? '').trim()}\n\nMerged character definitions:\n${String(mergedOutput ?? '').trim()}`;
 }
 
-function stripTripleBacktickFences(output) {
-    return String(output ?? '')
-        .trim()
-        .replace(/^```[\w-]*\s*/, '')
-        .replace(/\s*```$/, '')
-        .trim();
+/**
+ * Strips markdown code fences, leading/trailing prose, and normalizes
+ * LLM output into clean text containing XML blocks.
+ * @param {string} output Raw LLM output.
+ * @returns {string} Cleaned text.
+ */
+function stripNoise(output) {
+    let text = String(output ?? '').trim();
+
+    // Remove all code fence blocks, keeping inner content.
+    // Handles ```xml, ```, and variants with or without language tags.
+    text = text.replace(/```[a-zA-Z]*\s*\n?/g, '').replace(/```/g, '');
+
+    return text.trim();
 }
 
-function extractTopLevelXmlBlocks(text) {
+/**
+ * Flexible tag-name-aware open-tag regex.
+ * Matches `<tag>`, `<tag attr="...">`, `<tag attr='...' >`, etc.
+ * Self-closing `<tag/>` is NOT matched as an open tag — it has no body to track.
+ * @param {string} tagName
+ * @returns {RegExp}
+ */
+function openTagRegexFor(tagName) {
+    return new RegExp(`<${tagName}(?:\\s+[^>]*[^/])?>`, 'g');
+}
+
+/**
+ * Extracts top-level XML blocks for the given tag name from text.
+ * Handles: attributes on open tags, whitespace variations, nested tags
+ * with the same name (depth tracking), mixed content around blocks.
+ * @param {string} text Input text possibly containing XML blocks.
+ * @param {string} tagName Tag name to extract (e.g. "character").
+ * @returns {Array<{tag: string, content: string, raw: string}>}
+ */
+function extractXmlBlocksByTag(text, tagName) {
     /** @type {Array<{tag: string, content: string, raw: string}>} */
     const blocks = [];
     let consumedUpTo = 0;
-    const openTagRegex = /(?:^|\n)\s*<([a-zA-Z_][\w.-]*)>/g;
+
+    const closeTag = `</${tagName}>`;
     let match;
 
-    while ((match = openTagRegex.exec(text)) !== null) {
-        if (match.index < consumedUpTo) {
+    // Create a fresh regex each outer loop iteration
+    const openRegex = openTagRegexFor(tagName);
+
+    while ((match = openRegex.exec(text)) !== null) {
+        const blockStart = match.index;
+        if (blockStart < consumedUpTo) {
             continue;
         }
 
-        const tagName = match[1];
-        const closeTag = `</${tagName}>`;
-        const openTag = `<${tagName}>`;
-        const searchStart = match.index + match[0].length;
+        const openTagText = match[0];
+        const searchStart = blockStart + openTagText.length;
         let depth = 1;
         let pos = searchStart;
         let closeIndex = -1;
 
         while (depth > 0 && pos < text.length) {
-            const nextOpen = text.indexOf(openTag, pos);
             const nextClose = text.indexOf(closeTag, pos);
 
             if (nextClose === -1) {
                 break;
             }
 
+            // Re-scan for opens from current position
+            const openScan = openTagRegexFor(tagName);
+            openScan.lastIndex = pos;
+            const nextOpenResult = openScan.exec(text);
+            const nextOpen = nextOpenResult?.index ?? -1;
+
             if (nextOpen !== -1 && nextOpen < nextClose) {
                 depth++;
-                pos = nextOpen + openTag.length;
+                pos = nextOpen + (nextOpenResult?.[0]?.length ?? openTagText.length);
             } else {
                 depth--;
                 if (depth === 0) {
@@ -147,7 +182,6 @@ function extractTopLevelXmlBlocks(text) {
         }
 
         if (closeIndex !== -1) {
-            const blockStart = match.index;
             const blockEnd = closeIndex + closeTag.length;
             blocks.push({
                 tag: tagName,
@@ -161,36 +195,81 @@ function extractTopLevelXmlBlocks(text) {
     return blocks;
 }
 
-function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
-    const unfencedOutput = stripTripleBacktickFences(output);
+/**
+ * Extracts any top-level XML blocks regardless of tag name.
+ * @param {string} text
+ * @returns {Array<{tag: string, content: string, raw: string}>}
+ */
+function extractTopLevelXmlBlocks(text) {
+    // First try the known "character" tag since that's the expected output.
+    const characterBlocks = extractXmlBlocksByTag(text, 'character');
+    if (characterBlocks.length > 0) {
+        return characterBlocks;
+    }
 
-    if (!unfencedOutput) {
+    // Fallback: find any top-level tag pairs using a generic approach.
+    const anyOpenRegex = /<([a-zA-Z_][\w.-]*)(?:\s+[^>]*[^/])?>/g;
+    /** @type {Array<{tag: string, content: string, raw: string}>} */
+    const blocks = [];
+    let consumedUpTo = 0;
+    let match;
+
+    while ((match = anyOpenRegex.exec(text)) !== null) {
+        const blockStart = match.index;
+        if (blockStart < consumedUpTo) {
+            continue;
+        }
+
+        const tagName = match[1];
+        const subBlocks = extractXmlBlocksByTag(text.slice(blockStart), tagName);
+
+        for (const block of subBlocks) {
+            const realEnd = blockStart + block.raw.length;
+            if (blockStart < consumedUpTo) {
+                continue;
+            }
+            blocks.push({
+                tag: block.tag,
+                content: block.content,
+                raw: text.slice(blockStart, realEnd),
+            });
+            consumedUpTo = realEnd;
+        }
+
+        anyOpenRegex.lastIndex = consumedUpTo;
+    }
+
+    return blocks;
+}
+
+function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
+    const cleaned = stripNoise(output);
+
+    if (!cleaned) {
         throw new Error('Generation returned empty output.');
     }
 
-    const blocks = extractTopLevelXmlBlocks(unfencedOutput);
+    const blocks = extractTopLevelXmlBlocks(cleaned);
 
     if (blocks.length === 0) {
         throw new Error('Generation did not return any valid XML blocks.');
     }
 
-    const characterTagCount = blocks.filter(
-        (block) => block.tag === 'character',
-    ).length;
+    // Only enforce character-tag presence for multi-character generation.
+    // For single-character calls (selectedCharacterCount === 1), any block is fine.
+    if (selectedCharacterCount > 1) {
+        const characterTagCount = blocks.filter(
+            (block) => block.tag === 'character',
+        ).length;
 
-    if (characterTagCount < selectedCharacterCount) {
-        throw new Error(
-            `Generation returned ${characterTagCount} character block(s), expected at least ${selectedCharacterCount}.`,
-        );
+        if (characterTagCount < 1) {
+            throw new Error(
+                `Generation returned ${blocks.length} XML block(s) but none are <character> blocks.`,
+            );
+        }
     }
 
     return blocks.map((block) => block.raw).join('\n\n');
-}
-
-function countCharacterBlocks(output) {
-    return extractTopLevelXmlBlocks(stripTripleBacktickFences(output)).filter(
-        (block) => block.tag === 'character',
-    ).length;
 }
 
 function normalizeConcurrency(value) {

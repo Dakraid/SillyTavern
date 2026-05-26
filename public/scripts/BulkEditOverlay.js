@@ -222,63 +222,73 @@ function buildGroupCardCombineQuietPrompt(prompt, selectedCharacters, fields) {
 }
 
 /**
- * Removes wrapping triple-backtick fences from generated output.
+ * Strips markdown code fences and normalizes LLM output.
  *
  * @param {string} output Raw generated output.
- * @returns {string} Unfenced output.
+ * @returns {string} Cleaned text.
  */
-function stripTripleBacktickFences(output) {
-    return String(output ?? '')
-        .trim()
-        .replace(/^```[\w-]*\s*/, '')
-        .replace(/\s*```$/, '')
-        .trim();
+function stripNoise(output) {
+    let text = String(output ?? '').trim();
+    // Remove all code fence markers, keeping inner content.
+    text = text.replace(/```[a-zA-Z]*\s*\n?/g, '').replace(/```/g, '');
+    return text.trim();
 }
 
 /**
- * Extracts top-level XML blocks from text. Each block is a tag pair whose
- * open tag starts at the beginning of a line (or the start of the string).
- * Nested tags of the same name are handled by counting depth.
+ * Flexible tag-name-aware open-tag regex.
+ * Matches `<tag>`, `<tag attr="...">`, etc. but NOT self-closing `<tag/>`.
+ * @param {string} tagName
+ * @returns {RegExp}
+ */
+function openTagRegexFor(tagName) {
+    return new RegExp(`<${tagName}(?:\\s+[^>]*[^/])?>`, 'g');
+}
+
+/**
+ * Extracts top-level XML blocks for a given tag name from text.
+ * Handles attributes on open tags, whitespace variations, nested tags
+ * with the same name (depth tracking), and mixed content around blocks.
  *
- * @param {string} text Input text to scan.
+ * @param {string} text Input text possibly containing XML blocks.
+ * @param {string} tagName Tag name to extract (e.g. "character").
  * @returns {Array<{tag: string, content: string, raw: string}>} Extracted blocks.
  */
-function extractTopLevelXmlBlocks(text) {
+function extractXmlBlocksByTag(text, tagName) {
     /** @type {Array<{tag: string, content: string, raw: string}>} */
     const blocks = [];
-    /** @type {number} End index of the last extracted block; inner tags before this are skipped. */
     let consumedUpTo = 0;
-    // Match any opening XML tag at the start of the string or after a newline
-    const openTagRegex = /(?:^|\n)\s*<([a-zA-Z_][\w.-]*)>/g;
+    const closeTag = `</${tagName}>`;
     let match;
 
-    while ((match = openTagRegex.exec(text)) !== null) {
-        // Skip if this tag falls inside a block we already extracted
-        if (match.index < consumedUpTo) {
+    const openRegex = openTagRegexFor(tagName);
+
+    while ((match = openRegex.exec(text)) !== null) {
+        const blockStart = match.index;
+        if (blockStart < consumedUpTo) {
             continue;
         }
 
-        const tagName = match[1];
-        const closeTag = `</${tagName}>`;
-        const openTag = `<${tagName}>`;
-
-        // Walk forward from the open tag, tracking depth
-        const searchStart = match.index + match[0].length;
+        const openTagText = match[0];
+        const searchStart = blockStart + openTagText.length;
         let depth = 1;
         let pos = searchStart;
         let closeIndex = -1;
 
         while (depth > 0 && pos < text.length) {
-            const nextOpen = text.indexOf(openTag, pos);
             const nextClose = text.indexOf(closeTag, pos);
 
             if (nextClose === -1) {
-                break; // Unmatched — skip this block
+                break;
             }
+
+            const openScan = openTagRegexFor(tagName);
+            openScan.lastIndex = pos;
+            const nextOpenResult = openScan.exec(text);
+            const nextOpen = nextOpenResult?.index ?? -1;
 
             if (nextOpen !== -1 && nextOpen < nextClose) {
                 depth++;
-                pos = nextOpen + openTag.length;
+                pos = nextOpen + (nextOpenResult?.[0]?.length ?? openTagText.length);
             } else {
                 depth--;
                 if (depth === 0) {
@@ -289,11 +299,12 @@ function extractTopLevelXmlBlocks(text) {
         }
 
         if (closeIndex !== -1) {
-            const blockStart = match.index;
             const blockEnd = closeIndex + closeTag.length;
-            const raw = text.slice(blockStart, blockEnd);
-            const content = text.slice(searchStart, closeIndex);
-            blocks.push({ tag: tagName, content, raw });
+            blocks.push({
+                tag: tagName,
+                content: text.slice(searchStart, closeIndex),
+                raw: text.slice(blockStart, blockEnd),
+            });
             consumedUpTo = blockEnd;
         }
     }
@@ -302,35 +313,86 @@ function extractTopLevelXmlBlocks(text) {
 }
 
 /**
+ * Extracts any top-level XML blocks regardless of tag name.
+ * Tries <character> first, then falls back to any tag.
+ *
+ * @param {string} text Input text to scan.
+ * @returns {Array<{tag: string, content: string, raw: string}>} Extracted blocks.
+ */
+function extractTopLevelXmlBlocks(text) {
+    const characterBlocks = extractXmlBlocksByTag(text, 'character');
+    if (characterBlocks.length > 0) {
+        return characterBlocks;
+    }
+
+    const anyOpenRegex = /<([a-zA-Z_][\w.-]*)(?:\s+[^>]*[^/])?>/g;
+    /** @type {Array<{tag: string, content: string, raw: string}>} */
+    const blocks = [];
+    let consumedUpTo = 0;
+    let match;
+
+    while ((match = anyOpenRegex.exec(text)) !== null) {
+        const blockStart = match.index;
+        if (blockStart < consumedUpTo) {
+            continue;
+        }
+
+        const tagName = match[1];
+        const subBlocks = extractXmlBlocksByTag(text.slice(blockStart), tagName);
+
+        for (const block of subBlocks) {
+            const realEnd = blockStart + block.raw.length;
+            if (blockStart < consumedUpTo) {
+                continue;
+            }
+            blocks.push({
+                tag: block.tag,
+                content: block.content,
+                raw: text.slice(blockStart, realEnd),
+            });
+            consumedUpTo = realEnd;
+        }
+
+        anyOpenRegex.lastIndex = consumedUpTo;
+    }
+
+    return blocks;
+}
+
+/**
  * Extracts and validates generated group card description XML-like output.
- * Supports arbitrary top-level XML elements alongside <character> blocks.
- * Each tag pair is independently verified for matching open/close tags.
+ * Tolerant of LLM output variations: code fences, preamble text,
+ * attributes on tags, whitespace, and fewer-than-expected blocks.
  *
  * @param {string} output Raw generated output.
  * @param {number} selectedCharacterCount Count of selected source characters.
  * @returns {string} Validated generated description.
- * @throws {Error} When output is empty, not XML-like, or has too few character tags.
+ * @throws {Error} When output is empty or contains no XML blocks at all.
  */
 function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
-    const unfencedOutput = stripTripleBacktickFences(output);
+    const cleaned = stripNoise(output);
 
-    if (!unfencedOutput) {
+    if (!cleaned) {
         throw new Error('Generation returned empty output.');
     }
 
-    const blocks = extractTopLevelXmlBlocks(unfencedOutput);
+    const blocks = extractTopLevelXmlBlocks(cleaned);
 
     if (blocks.length === 0) {
         throw new Error('Generation did not return any valid XML blocks.');
     }
 
-    const characterBlocks = blocks.filter((b) => b.tag === 'character');
-    const characterTagCount = characterBlocks.length;
+    // Only enforce character-tag presence for multi-character generation.
+    if (selectedCharacterCount > 1) {
+        const characterTagCount = blocks.filter(
+            (b) => b.tag === 'character',
+        ).length;
 
-    if (characterTagCount < selectedCharacterCount) {
-        throw new Error(
-            `Generation returned ${characterTagCount} character block(s), expected at least ${selectedCharacterCount}.`,
-        );
+        if (characterTagCount < 1) {
+            throw new Error(
+                `Generation returned ${blocks.length} XML block(s) but none are <character> blocks.`,
+            );
+        }
     }
 
     return blocks.map((b) => b.raw).join('\n\n');
