@@ -2195,92 +2195,105 @@ class BulkEditOverlay {
             if (!jobId) throw new Error('Server did not return a group card job ID.');
             sessionStorage.setItem(GROUP_CARD_JOB_SESSION_KEY, jobId);
 
-            const result = await new Promise((resolve, reject) => {
-                const parseEvent = (event) => JSON.parse(event.data || '{}');
-                jobEventSource = new EventSource(
-                    `/api/characters/group-card-job/${encodeURIComponent(jobId)}/events`,
-                );
-                groupCardJobs.set(jobId, {
-                    jobId,
-                    groupName: config.groupName,
-                    loaderHandle,
-                    source: jobEventSource,
-                    startedAt: Date.now(),
-                    status: 'running',
-                });
-                BulkEditOverlay.#renderGroupCardJobIndicator();
-                jobEventSource.addEventListener('character_started', (event) => {
-                    const data = parseEvent(event);
-                    loaderHandle.setMessage(
-                        `Processing character ${Number(data.index ?? 0) + 1}/${selectedCharacters.length}: ${data.name ?? ''}…`,
+            const SSE_TIMEOUT_MS = 10 * 60 * 1000;
+            const result = await Promise.race([
+                new Promise((resolve, reject) => {
+                    const parseEvent = (event) => JSON.parse(event.data || '{}');
+                    jobEventSource = new EventSource(
+                        `/api/characters/group-card-job/${encodeURIComponent(jobId)}/events`,
                     );
-                });
-                jobEventSource.addEventListener('character_completed', (event) => {
-                    const data = parseEvent(event);
-                    const index = Number(
-                        data.index ?? wizardState.characterOutputs.length,
-                    );
-                    wizardState.characterOutputs[index] =
-						BulkEditOverlay.#normalizeWizardCharacterOutput({
-						    characterIndex: index,
-						    characterName: String(
-						        data.name ??
-									getCoreCharacterField(
-									    selectedCharacters[index] ?? {},
-									    'name',
-									),
-						    ),
-						    xmlOutput: String(data.output ?? ''),
-						});
-                    BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
-                    loaderHandle.setMessage(
-                        `Completed character ${index + 1}/${selectedCharacters.length}…`,
-                    );
-                });
-                jobEventSource.addEventListener('character_failed', (event) => {
-                    const data = parseEvent(event);
-                    const index = Number(
-                        data.index ?? wizardState.characterOutputs.length,
-                    );
-                    wizardState.characterOutputs[index] =
-						BulkEditOverlay.#normalizeWizardCharacterOutput({
-						    characterIndex: index,
-						    characterName: String(
-						        data.name ??
-									getCoreCharacterField(
-									    selectedCharacters[index] ?? {},
-									    'name',
-									),
-						    ),
-						    xmlOutput: '',
-						    parseStatus: 'error',
-						    error: String(data.error ?? 'Generation failed.'),
-						});
-                    BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
-                });
-                jobEventSource.addEventListener('job_completed', (event) => {
-                    const data = parseEvent(event);
-                    sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
-                    BulkEditOverlay.#removeGroupCardJob(jobId);
-                    jobEventSource?.close();
-                    resolve(data);
-                });
-                jobEventSource.addEventListener('job_failed', (event) => {
-                    const data = parseEvent(event);
-                    sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
-                    BulkEditOverlay.#removeGroupCardJob(jobId);
-                    jobEventSource?.close();
-                    reject(
-                        new Error(
-                            data.error || 'Server-side group card generation failed.',
-                        ),
-                    );
-                });
-                jobEventSource.onerror = () =>
-                    loaderHandle.setMessage(
-                        t`Connection lost. Reconnecting to server job…`,
-                    );
-            });
+                    groupCardJobs.set(jobId, {
+                        jobId,
+                        groupName: config.groupName,
+                        loaderHandle,
+                        source: jobEventSource,
+                        startedAt: Date.now(),
+                        status: 'running',
+                    });
+                    BulkEditOverlay.#renderGroupCardJobIndicator();
+                    jobEventSource.addEventListener('character_started', (event) => {
+                        const data = parseEvent(event);
+                        loaderHandle.setMessage(
+                            `Processing character ${Number(data.index ?? 0) + 1}/${selectedCharacters.length}: ${data.name ?? ''}…`,
+                        );
+                    });
+                    jobEventSource.addEventListener('character_completed', (event) => {
+                        const data = parseEvent(event);
+                        const index = Number(
+                            data.index ?? wizardState.characterOutputs.length,
+                        );
+                        wizardState.characterOutputs[index] =
+							BulkEditOverlay.#normalizeWizardCharacterOutput({
+							    characterIndex: index,
+							    characterName: String(
+							        data.name ??
+										getCoreCharacterField(
+										    selectedCharacters[index] ?? {},
+										    'name',
+										),
+							    ),
+							    xmlOutput: String(data.output ?? ''),
+							});
+                        BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                        loaderHandle.setMessage(
+                            `Completed character ${index + 1}/${selectedCharacters.length}…`,
+                        );
+                    });
+                    jobEventSource.addEventListener('character_failed', (event) => {
+                        const data = parseEvent(event);
+                        const index = Number(
+                            data.index ?? wizardState.characterOutputs.length,
+                        );
+                        wizardState.characterOutputs[index] =
+							BulkEditOverlay.#normalizeWizardCharacterOutput({
+							    characterIndex: index,
+							    characterName: String(
+							        data.name ??
+										getCoreCharacterField(
+										    selectedCharacters[index] ?? {},
+										    'name',
+										),
+							    ),
+							    xmlOutput: '',
+							    parseStatus: 'error',
+							    error: String(data.error ?? 'Generation failed.'),
+							});
+                        BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                    });
+                    jobEventSource.addEventListener('job_completed', (event) => {
+                        const data = parseEvent(event);
+                        sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                        BulkEditOverlay.#removeGroupCardJob(jobId);
+                        jobEventSource?.close();
+                        resolve(data);
+                    });
+                    jobEventSource.addEventListener('job_failed', (event) => {
+                        const data = parseEvent(event);
+                        sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                        BulkEditOverlay.#removeGroupCardJob(jobId);
+                        jobEventSource?.close();
+                        reject(
+                            new Error(
+                                data.error || 'Server-side group card generation failed.',
+                            ),
+                        );
+                    });
+                    jobEventSource.onerror = () => {
+                        if (jobEventSource.readyState === EventSource.CLOSED) {
+                            return;
+                        }
+                        loaderHandle.setMessage(
+                            t`Connection lost. Reconnecting to server job…`,
+                        );
+                    };
+                }),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error('Generation timed out.')),
+                        SSE_TIMEOUT_MS,
+                    ),
+                ),
+            ]);
             wizardState.serverCreated = true;
             if (Array.isArray(result?.characterOutputs)) {
                 for (const serverOutput of result.characterOutputs) {
@@ -2293,6 +2306,9 @@ class BulkEditOverlay {
                     }
                 }
             }
+            wizardState.characterOutputs = wizardState.characterOutputs
+                .filter(Boolean)
+                .sort((a, b) => (a.characterIndex ?? 0) - (b.characterIndex ?? 0));
             BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
             return result;
         } catch (error) {
@@ -2362,7 +2378,7 @@ class BulkEditOverlay {
         const sourceCharacters =
 			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
 
-        wizardState.characterOutputs.forEach((output, index) => {
+        wizardState.characterOutputs.filter(Boolean).forEach((output, index) => {
             const character =
 				sourceCharacters[output.characterIndex] ??
 				sourceCharacters[index] ??
@@ -2410,9 +2426,9 @@ class BulkEditOverlay {
         });
 
         content.append(cards);
-        const successful = wizardState.characterOutputs.filter(
-            (output) => output.parseStatus === 'ok',
-        ).length;
+        const successful = wizardState.characterOutputs
+            .filter(Boolean)
+            .filter((output) => output.parseStatus === 'ok').length;
         content.append(
             $('<div></div>')
                 .addClass('results-summary')
@@ -3966,11 +3982,6 @@ class BulkEditOverlay {
         let indicator = document.getElementById('bulk_group_card_job_indicator');
         const count = groupCardJobs.size;
 
-        if (!count) {
-            indicator?.remove();
-            return;
-        }
-
         if (!indicator) {
             indicator = document.createElement('div');
             indicator.id = 'bulk_group_card_job_indicator';
@@ -3978,15 +3989,32 @@ class BulkEditOverlay {
 				'position:fixed;bottom:1em;right:1em;z-index:9999;background:var(--SmartThemeBodyColor);border:1px solid var(--SmartThemeBorderColor);border-radius:8px;padding:0.5em 1em;cursor:pointer;display:flex;align-items:center;gap:0.5em;font-size:0.85em;';
             document.body.appendChild(indicator);
 
-            indicator.addEventListener('click', () => {
-                BulkEditOverlay.#showGroupCardJobPopup();
+            indicator.addEventListener('click', async () => {
+                if (groupCardJobs.size > 0) {
+                    BulkEditOverlay.#showGroupCardJobPopup();
+                    return;
+                }
+
+                const selectedCharacters =
+					bulkEditOverlayInstance?.selectedCharacters?.slice?.() ?? [];
+                await BulkEditOverlay.combineIntoGroupCard(selectedCharacters);
             });
+        }
+
+        const icon = document.createElement('i');
+
+        if (!count) {
+            icon.className = 'fa-solid fa-layer-group';
+            indicator.replaceChildren(icon);
+            const label = document.createElement('span');
+            label.textContent = 'New Group Card';
+            indicator.appendChild(label);
+            return;
         }
 
         const jobs = [...groupCardJobs.values()];
         const latest = jobs[jobs.length - 1];
         const elapsed = Math.floor((Date.now() - latest.startedAt) / 1000);
-        const icon = document.createElement('i');
         icon.className = 'fa-solid fa-wand-magic-sparkles';
         indicator.replaceChildren(icon);
 
@@ -4011,6 +4039,18 @@ class BulkEditOverlay {
 
         const content = $('<div></div>');
         content.append($('<h4></h4>').text('Background Jobs'));
+        const newCardButton = $('<div></div>')
+            .addClass('menu_button')
+            .css({ marginBottom: '0.5em' })
+            .append($('<i></i>').addClass('fa-solid fa-layer-group'))
+            .append(' New Group Card');
+        newCardButton.on('click', async () => {
+            content.closest('.popup').remove();
+            const selectedCharacters =
+				bulkEditOverlayInstance?.selectedCharacters?.slice?.() ?? [];
+            await BulkEditOverlay.combineIntoGroupCard(selectedCharacters);
+        });
+        content.append(newCardButton);
         const list = $('<div></div>').css({ marginTop: '0.5em' });
 
         for (const job of jobs) {
@@ -4420,6 +4460,7 @@ class BulkEditOverlay {
     static reconnectGroupCardJob = async () => {
         const jobId = sessionStorage.getItem(GROUP_CARD_JOB_SESSION_KEY);
         if (!jobId) {
+            BulkEditOverlay.#renderGroupCardJobIndicator();
             return;
         }
 
@@ -4431,12 +4472,14 @@ class BulkEditOverlay {
 
             if (!statusResponse.ok) {
                 sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                BulkEditOverlay.#renderGroupCardJobIndicator();
                 return;
             }
 
             const status = await statusResponse.json();
             if (!['pending', 'running'].includes(status.status)) {
                 sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                BulkEditOverlay.#renderGroupCardJobIndicator();
                 return;
             }
 
@@ -4483,6 +4526,7 @@ class BulkEditOverlay {
         } catch (error) {
             console.warn('Failed to reconnect to group card job:', error);
             sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+            BulkEditOverlay.#renderGroupCardJobIndicator();
         }
     };
 
