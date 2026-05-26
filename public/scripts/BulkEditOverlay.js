@@ -1858,7 +1858,7 @@ class BulkEditOverlay {
                             <div class="char-lists-row">
                                 <div class="char-list-panel">
                                     <h4>Selected Characters</h4>
-                                    <div id="bulk_combine_group_card_selected_list" class="avatars_inline avatars_inline_small"></div>
+                                    <div id="bulk_combine_group_card_selected_list"></div>
                                 </div>
                                 <div id="bulk_combine_group_card_add_section" class="char-list-panel">
                                     <h4>Add Characters</h4>
