@@ -6699,14 +6699,14 @@ body:not(.movingUI) .drawer-content.maximized {
 }
 
 /* ===== Bulk Combine Wizard ===== */
-.bulk_combine_wizard {
+.bcw {
     display: flex;
     flex-direction: column;
     gap: 1em;
     color: var(--SmartThemeBodyColor);
 }
 
-.bulk_combine_wizard_header {
+.bcw > .header {
     display: flex;
     flex-direction: column;
     gap: 0.75em;
@@ -6714,14 +6714,18 @@ body:not(.movingUI) .drawer-content.maximized {
     border-bottom: 1px solid var(--SmartThemeBorderColor);
 }
 
-.bulk_combine_wizard_stages {
+.bcw > .header h3 {
+    margin-bottom: 0;
+}
+
+.bcw > .header .stages {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5em;
     align-items: center;
 }
 
-.bulk_combine_stage_indicator {
+.bcw .stage-indicator {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -6740,49 +6744,51 @@ body:not(.movingUI) .drawer-content.maximized {
     opacity: 0.75;
 }
 
-.bulk_combine_stage_indicator.active {
+.bcw .stage-indicator.active {
     border-color: var(--SmartThemeQuoteColor);
     box-shadow: 0 0 0 1px var(--SmartThemeQuoteColor) inset;
     color: var(--SmartThemeQuoteColor);
     opacity: 1;
 }
 
-.bulk_combine_stage_indicator.completed {
+.bcw .stage-indicator.completed {
     border-color: rgba(76, 175, 80, 0.75);
     color: #7fd37f;
     opacity: 0.9;
 }
 
-.bulk_combine_wizard_body {
+.bcw > .body {
     min-height: 12em;
 }
 
-.bulk_combine_stage {
+.bcw .stage {
     display: none;
 }
 
-.bulk_combine_stage.active {
+.bcw .stage.active {
     display: block;
 }
 
-.bulk_combine_wizard_footer {
+.bcw > .footer {
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.5em;
     padding-top: 0.75em;
     border-top: 1px solid var(--SmartThemeBorderColor);
+    align-items: center;
+    margin-top: 0.75em;
 }
 
-.bulk_combine_results_cards {
+.bcw .results-cards {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 18em), 1fr));
     gap: 0.75em;
 }
 
-.bulk_combine_result_card,
-.bulk_combine_offset_card,
-.bulk_combine_review_section {
+.bcw .result-card,
+.bcw .offset-card,
+.bcw .review-section {
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
     background-color: color-mix(
@@ -6793,21 +6799,21 @@ body:not(.movingUI) .drawer-content.maximized {
     box-shadow: 0 1px 3px var(--SmartThemeShadowColor);
 }
 
-.bulk_combine_result_card {
+.bcw .result-card {
     display: flex;
     flex-direction: column;
     gap: 0.6em;
     padding: 0.75em;
 }
 
-.bulk_combine_result_card_header {
+.bcw .result-card > .card-header {
     display: flex;
     align-items: center;
     gap: 0.5em;
 }
 
-.bulk_combine_result_avatar,
-.bulk_combine_offset_avatar {
+.bcw .result-card .avatar,
+.bcw .offset-card .avatar {
     width: 32px;
     height: 32px;
     flex: 0 0 32px;
@@ -6817,7 +6823,7 @@ body:not(.movingUI) .drawer-content.maximized {
     background-color: var(--SmartThemeBlurTintColor);
 }
 
-.bulk_combine_result_name {
+.bcw .result-card .name {
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -6826,23 +6832,23 @@ body:not(.movingUI) .drawer-content.maximized {
     white-space: nowrap;
 }
 
-.bulk_combine_result_status {
+.bcw .result-card .status {
     flex: 0 0 auto;
     font-weight: 700;
 }
 
-.bulk_combine_result_status:has(.fa-check),
-.bulk_combine_result_status.success {
+.bcw .result-card .status:has(.fa-check),
+.bcw .result-card .status.success {
     color: #7fd37f;
 }
 
-.bulk_combine_result_status:has(.fa-xmark),
-.bulk_combine_result_status:has(.fa-times),
-.bulk_combine_result_status.error {
+.bcw .result-card .status:has(.fa-xmark),
+.bcw .result-card .status:has(.fa-times),
+.bcw .result-card .status.error {
     color: #ff6b6b;
 }
 
-.bulk_combine_result_xml {
+.bcw .result-card .xml {
     width: 100%;
     min-height: 10em;
     resize: vertical;
@@ -6850,19 +6856,19 @@ body:not(.movingUI) .drawer-content.maximized {
     font-size: 0.9em;
 }
 
-.bulk_combine_result_actions {
+.bcw .result-card .actions {
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.5em;
 }
 
-.bulk_combine_result_autofix,
-.bulk_combine_result_edit {
+.bcw .result-card .autofix,
+.bcw .result-card .edit-btn {
     min-width: 7em;
 }
 
-.bulk_combine_postprocess_mode {
+.bcw .postprocess-mode {
     display: flex;
     flex-wrap: wrap;
     gap: 0.75em;
@@ -6877,7 +6883,7 @@ body:not(.movingUI) .drawer-content.maximized {
     );
 }
 
-.bulk_combine_preview_area {
+.bcw .preview-area {
     margin-top: 0.75em;
     padding: 0.75em;
     border: 1px solid var(--SmartThemeBorderColor);
@@ -6891,12 +6897,12 @@ body:not(.movingUI) .drawer-content.maximized {
     white-space: pre-wrap;
 }
 
-.bulk_combine_review_section {
+.bcw .review-section {
     margin-bottom: 0.75em;
     padding: 0.75em;
 }
 
-.bulk_combine_offset_card {
+.bcw .offset-card {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     gap: 0.6em 0.75em;
@@ -6905,52 +6911,141 @@ body:not(.movingUI) .drawer-content.maximized {
     margin-bottom: 0.6em;
 }
 
-.bulk_combine_offset_card label:has(.bulk_combine_offset_x),
-.bulk_combine_offset_card label:has(.bulk_combine_offset_y),
-.bulk_combine_offset_card label:has(.bulk_combine_offset_scale) {
+.bcw .offset-card label:has(.offset-x),
+.bcw .offset-card label:has(.offset-y),
+.bcw .offset-card label:has(.offset-scale) {
     display: grid;
     grid-template-columns: minmax(4em, auto) minmax(8em, 1fr) auto;
     gap: 0.5em;
     align-items: center;
 }
 
-.bulk_combine_offset_x,
-.bulk_combine_offset_y,
-.bulk_combine_offset_scale {
+.bcw .offset-x,
+.bcw .offset-y,
+.bcw .offset-scale {
     width: 100%;
     min-width: 8em;
 }
 
-.bulk_combine_offset_x_val,
-.bulk_combine_offset_y_val,
-.bulk_combine_offset_scale_val,
-.bulk_combine_offset_card output,
-.bulk_combine_offset_card .bulk_combine_offset_value {
+.bcw .offset-x-val,
+.bcw .offset-y-val,
+.bcw .offset-scale-val,
+.bcw .offset-card output,
+.bcw .offset-card .offset-value {
     min-width: 3.5em;
     color: var(--SmartThemeQuoteColor);
     font-variant-numeric: tabular-nums;
     text-align: right;
 }
 
+/* Layout helpers - replace ST utility classes */
+.bcw .flex-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    align-items: center;
+}
+
+.bcw .desc {
+    display: block;
+    margin-bottom: 0.75em;
+}
+
+.bcw .config-section {
+    margin-bottom: 0.75em;
+}
+
+.bcw .config-section h4 {
+    margin-bottom: 0.25em;
+}
+
+.bcw .add-section {
+    margin-top: 0.75em;
+}
+
+.bcw .field-group {
+    margin-top: 0.75em;
+}
+
+.bcw label.text_label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    margin-top: 0.75em;
+}
+
+.bcw input.text_pole,
+.bcw select.text_pole,
+.bcw textarea.text_pole {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+}
+
+.bcw .character-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    margin: 0.25em;
+    padding: 0.25em;
+}
+
+.bcw .character-item img {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: 4px;
+}
+
+.bcw .character-item .char-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bcw .character-item .menu_button {
+    flex: 0 0 auto;
+}
+
+.bcw .regen-checkbox {
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+
+.bcw .results-summary {
+    margin-top: 0.75em;
+}
+
+.bcw .results-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    margin-top: 0.75em;
+}
+
 @media screen and (max-width: 600px) {
-    .bulk_combine_wizard_footer,
-    .bulk_combine_result_actions {
+    .bcw > .footer {
         justify-content: stretch;
     }
 
-    .bulk_combine_result_autofix,
-    .bulk_combine_result_edit,
-    .bulk_combine_wizard_footer .menu_button {
+    .bcw .result-card .actions {
+        justify-content: stretch;
+    }
+
+    .bcw .result-card .autofix,
+    .bcw .result-card .edit-btn,
+    .bcw > .footer .menu_button {
         flex: 1 1 auto;
     }
 
-    .bulk_combine_offset_card {
+    .bcw .offset-card {
         grid-template-columns: 1fr;
     }
 
-    .bulk_combine_offset_card label:has(.bulk_combine_offset_x),
-    .bulk_combine_offset_card label:has(.bulk_combine_offset_y),
-    .bulk_combine_offset_card label:has(.bulk_combine_offset_scale) {
+    .bcw .offset-card label:has(.offset-x),
+    .bcw .offset-card label:has(.offset-y),
+    .bcw .offset-card label:has(.offset-scale) {
         grid-template-columns: 1fr;
     }
 }

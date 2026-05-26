@@ -202,9 +202,9 @@ function buildCoreCharacterPromptBlock(character, fields) {
     const fieldXml = normalizeSelectedFields(fields)
         .map((field) => {
             const value =
-                field === 'name'
-                    ? payload[field]
-                    : substituteParams(payload[field], { name2Override: characterName });
+				field === 'name'
+				    ? payload[field]
+				    : substituteParams(payload[field], { name2Override: characterName });
             return `  <${field}>${escapeHtml(value)}</${field}>`;
         })
         .join('\n');
@@ -1841,39 +1841,39 @@ class BulkEditOverlay {
 	 */
     static #getCombineGroupCardWizardHtml = (characterCount) => {
         return `
-            <div id="bulk_combine_wizard" class="bulk_combine_wizard">
-                <div class="bulk_combine_wizard_header marginBot10">
-                    <h3 class="bulk_combine_wizard_title marginBot5">Combine into Group Card</h3>
-                    <div class="bulk_combine_wizard_stages flex-container flexFlowColumn" style="gap:0.25em;">
-                        <div class="bulk_combine_stage_indicator active" data-stage="1">1. Config</div>
-                        <div class="bulk_combine_stage_indicator" data-stage="2">2. Results</div>
-                        <div class="bulk_combine_stage_indicator" data-stage="3">3. Post-Process</div>
-                        <div class="bulk_combine_stage_indicator" data-stage="4">4. Review</div>
+            <div id="bulk_combine_wizard" class="bcw">
+                <div class="header">
+                    <h3>Combine into Group Card</h3>
+                    <div class="stages">
+                        <div class="stage-indicator active" data-stage="1">1. Config</div>
+                        <div class="stage-indicator" data-stage="2">2. Results</div>
+                        <div class="stage-indicator" data-stage="3">3. Post-Process</div>
+                        <div class="stage-indicator" data-stage="4">4. Review</div>
                     </div>
                 </div>
-                <div class="bulk_combine_wizard_body">
-                    <div id="bulk_combine_stage_1" class="bulk_combine_stage active">
-                        <small class="bulk_combine_group_card_desc m-b-1">Generate a group card from ${characterCount} selected characters.</small>
-                        <div id="bulk_combine_group_card_characters" class="marginBot10">
+                <div class="body">
+                    <div id="bulk_combine_stage_1" class="stage active">
+                        <small class="desc">Generate a group card from ${characterCount} selected characters.</small>
+                        <div id="bulk_combine_group_card_characters" class="config-section">
                             <h4>Selected Characters</h4>
                             <div id="bulk_combine_group_card_selected_list" class="avatars_inline avatars_inline_small"></div>
-                            <div id="bulk_combine_group_card_add_section" class="m-t-1">
-                                <div class="flex-container">
-                                    <input id="bulk_combine_group_card_search" class="text_pole flex1" type="text" placeholder="Search characters..." />
+                            <div id="bulk_combine_group_card_add_section" class="add-section">
+                                <div class="flex-row">
+                                    <input id="bulk_combine_group_card_search" class="text_pole" type="text" placeholder="Search characters..." />
                                 </div>
-                                <div id="bulk_combine_group_card_available_list" class="m-t-1" style="max-height: 200px; overflow-y: auto;"></div>
+                                <div id="bulk_combine_group_card_available_list"></div>
                             </div>
                         </div>
                         <label for="bulk_combine_group_card_name" class="text_label">
                             <span>Group name</span>
-                            <input id="bulk_combine_group_card_name" class="text_pole wide100p margin0" type="text" autocomplete="off" autofocus />
+                            <input id="bulk_combine_group_card_name" class="text_pole" type="text" autocomplete="off" autofocus />
                         </label>
-                        <label for="bulk_combine_group_card_prompt" class="text_label marginTop10">
+                        <label for="bulk_combine_group_card_prompt" class="text_label">
                             <span>Prompt</span>
-                            <textarea id="bulk_combine_group_card_prompt" class="text_pole wide100p margin0" rows="12"></textarea>
+                            <textarea id="bulk_combine_group_card_prompt" class="text_pole" rows="12"></textarea>
                         </label>
-                        <div id="bulk_combine_group_card_preset_controls" class="m-t-1 flex-container">
-                            <select id="bulk_combine_group_card_preset_select" class="text_pole flex1">
+                        <div id="bulk_combine_group_card_preset_controls" class="flex-row">
+                            <select id="bulk_combine_group_card_preset_select" class="text_pole">
                                 <option value="">— Load preset —</option>
                             </select>
                             <div id="bulk_combine_group_card_preset_save" class="menu_button" title="Save current prompt as preset">
@@ -1886,9 +1886,9 @@ class BulkEditOverlay {
                                 <i class="fa-solid fa-rotate-left"></i>
                             </div>
                         </div>
-                        <div class="marginTop10">
+                        <div class="field-group">
                             <small>Processing mode</small>
-                            <div id="bulk_combine_group_card_mode" class="flex-container">
+                            <div id="bulk_combine_group_card_mode" class="flex-row">
                                 <label class="checkbox_label">
                                     <input type="radio" name="bulk_combine_mode" value="combined" />
                                     <span>Combined</span>
@@ -1902,16 +1902,16 @@ class BulkEditOverlay {
                                     <span>Serial</span>
                                 </label>
                             </div>
-                            <div id="bulk_combine_group_card_concurrency_container" class="m-t-1" style="display:none;">
+                            <div id="bulk_combine_group_card_concurrency_container" class="field-group" style="display:none;">
                                 <label for="bulk_combine_group_card_concurrency" class="text_label">
                                     <span>Max concurrency</span>
                                     <input id="bulk_combine_group_card_concurrency" class="text_pole" type="number" min="1" max="50" value="10" style="width:80px;" />
                                 </label>
                             </div>
                         </div>
-                        <div class="marginTop10">
+                        <div class="field-group">
                             <small>Post-processing</small>
-                            <div id="bulk_combine_group_card_post_process_mode" class="flex-container">
+                            <div id="bulk_combine_group_card_post_process_mode" class="flex-row">
                                 <label class="checkbox_label">
                                     <input type="radio" name="bulk_combine_post_process_mode" value="disabled" />
                                     <span>Disabled</span>
@@ -1929,13 +1929,13 @@ class BulkEditOverlay {
                                     <span>Append</span>
                                 </label>
                             </div>
-                            <div id="bulk_combine_group_card_post_process_section" class="m-t-1" style="display:none;">
+                            <div id="bulk_combine_group_card_post_process_section" class="field-group" style="display:none;">
                                 <label for="bulk_combine_group_card_post_process_prompt" class="text_label">
                                     <span>Post-processing prompt</span>
-                                    <textarea id="bulk_combine_group_card_post_process_prompt" class="text_pole wide100p margin0" rows="6"></textarea>
+                                    <textarea id="bulk_combine_group_card_post_process_prompt" class="text_pole" rows="6"></textarea>
                                 </label>
-                                <div id="bulk_combine_group_card_post_process_preset_controls" class="m-t-1 flex-container">
-                                    <select id="bulk_combine_group_card_post_process_preset_select" class="text_pole flex1">
+                                <div id="bulk_combine_group_card_post_process_preset_controls" class="flex-row">
+                                    <select id="bulk_combine_group_card_post_process_preset_select" class="text_pole">
                                         <option value="">— Load preset —</option>
                                     </select>
                                     <div id="bulk_combine_group_card_post_process_preset_save" class="menu_button" title="Save post-processing prompt as preset">
@@ -1950,9 +1950,9 @@ class BulkEditOverlay {
                                 </div>
                             </div>
                         </div>
-                        <div class="marginTop10">
+                        <div class="field-group">
                             <small>Avatar crop settings</small>
-                            <div id="bulk_combine_group_card_crop" class="flex-container">
+                            <div id="bulk_combine_group_card_crop" class="flex-row">
                                 <label class="text_label">
                                     <span>Focus strategy</span>
                                     <select id="bulk_combine_group_card_crop_strategy" class="text_pole">
@@ -1969,7 +1969,7 @@ class BulkEditOverlay {
                                 </label>
                             </div>
                         </div>
-                        <div class="marginTop10">
+                        <div class="field-group">
                             <small>Included fields</small>
                             <div id="bulk_combine_group_card_field_toggles">
                                 <label class="checkbox_label"><input type="checkbox" data-field="personality" /><span>Personality</span></label>
@@ -1978,30 +1978,29 @@ class BulkEditOverlay {
                                 <label class="checkbox_label"><input type="checkbox" data-field="mes_example" /><span>Example messages</span></label>
                             </div>
                         </div>
-                        <label for="bulk_combine_group_card_lorebook_toggle" class="checkbox_label marginTop10">
+                        <label for="bulk_combine_group_card_lorebook_toggle" class="checkbox_label">
                             <input type="checkbox" id="bulk_combine_group_card_lorebook_toggle" />
                             <span>Create lorebook with original character data</span>
                         </label>
                     </div>
-                    <div id="bulk_combine_stage_2" class="bulk_combine_stage" style="display:none;">
+                    <div id="bulk_combine_stage_2" class="stage" style="display:none;">
                         <h4>Generation Results</h4>
                         <div id="bulk_combine_results_content">Generation results will appear here.</div>
                     </div>
-                    <div id="bulk_combine_stage_3" class="bulk_combine_stage" style="display:none;">
+                    <div id="bulk_combine_stage_3" class="stage" style="display:none;">
                         <h4>Post-Processing</h4>
                         <div id="bulk_combine_postprocess_content">Post-processing controls will appear here.</div>
                     </div>
-                    <div id="bulk_combine_stage_4" class="bulk_combine_stage" style="display:none;">
+                    <div id="bulk_combine_stage_4" class="stage" style="display:none;">
                         <h4>Final Review</h4>
                         <div id="bulk_combine_review_content">Final review will appear here.</div>
                     </div>
                 </div>
-                <div class="bulk_combine_wizard_footer flex-container marginTop10 alignitemscenter">
+                <div class="footer">
                     <div id="bulk_combine_wizard_back" class="menu_button" style="display:none;">
                         <i class="fa-solid fa-chevron-left"></i> Back
                     </div>
                     <div id="bulk_combine_wizard_cancel" class="menu_button">Cancel</div>
-                    <div class="flex1"></div>
                     <div id="bulk_combine_wizard_save_as_is" class="menu_button" style="display:none;">Save As Is</div>
                     <div id="bulk_combine_wizard_next" class="menu_button">Generate</div>
                 </div>
@@ -2016,22 +2015,20 @@ class BulkEditOverlay {
 	 */
     static #wizardGoToStage = (popupContent, wizardState, stage) => {
         const normalizedStage = Math.max(1, Math.min(4, Number(stage) || 1));
-        popupContent.find('.bulk_combine_stage').removeClass('active').hide();
+        popupContent.find('.stage').removeClass('active').hide();
         popupContent
             .find(`#bulk_combine_stage_${normalizedStage}`)
             .addClass('active')
             .show();
 
-        popupContent
-            .find('.bulk_combine_stage_indicator')
-            .removeClass('active completed');
+        popupContent.find('.stage-indicator').removeClass('active completed');
         for (let i = 1; i < normalizedStage; i++) {
             popupContent
-                .find(`.bulk_combine_stage_indicator[data-stage="${i}"]`)
+                .find(`.stage-indicator[data-stage="${i}"]`)
                 .addClass('completed');
         }
         popupContent
-            .find(`.bulk_combine_stage_indicator[data-stage="${normalizedStage}"]`)
+            .find(`.stage-indicator[data-stage="${normalizedStage}"]`)
             .addClass('active');
 
         const backButton = popupContent.find('#bulk_combine_wizard_back');
@@ -2224,17 +2221,17 @@ class BulkEditOverlay {
                         data.index ?? wizardState.characterOutputs.length,
                     );
                     wizardState.characterOutputs[index] =
-                        BulkEditOverlay.#normalizeWizardCharacterOutput({
-                            characterIndex: index,
-                            characterName: String(
-                                data.name ??
-                                    getCoreCharacterField(
-                                        selectedCharacters[index] ?? {},
-                                        'name',
-                                    ),
-                            ),
-                            xmlOutput: String(data.output ?? ''),
-                        });
+						BulkEditOverlay.#normalizeWizardCharacterOutput({
+						    characterIndex: index,
+						    characterName: String(
+						        data.name ??
+									getCoreCharacterField(
+									    selectedCharacters[index] ?? {},
+									    'name',
+									),
+						    ),
+						    xmlOutput: String(data.output ?? ''),
+						});
                     BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
                     loaderHandle.setMessage(
                         `Completed character ${index + 1}/${selectedCharacters.length}…`,
@@ -2246,19 +2243,19 @@ class BulkEditOverlay {
                         data.index ?? wizardState.characterOutputs.length,
                     );
                     wizardState.characterOutputs[index] =
-                        BulkEditOverlay.#normalizeWizardCharacterOutput({
-                            characterIndex: index,
-                            characterName: String(
-                                data.name ??
-                                    getCoreCharacterField(
-                                        selectedCharacters[index] ?? {},
-                                        'name',
-                                    ),
-                            ),
-                            xmlOutput: '',
-                            parseStatus: 'error',
-                            error: String(data.error ?? 'Generation failed.'),
-                        });
+						BulkEditOverlay.#normalizeWizardCharacterOutput({
+						    characterIndex: index,
+						    characterName: String(
+						        data.name ??
+									getCoreCharacterField(
+									    selectedCharacters[index] ?? {},
+									    'name',
+									),
+						    ),
+						    xmlOutput: '',
+						    parseStatus: 'error',
+						    error: String(data.error ?? 'Generation failed.'),
+						});
                     BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
                 });
                 jobEventSource.addEventListener('job_completed', (event) => {
@@ -2285,13 +2282,16 @@ class BulkEditOverlay {
                     );
             });
             wizardState.serverCreated = true;
-            if (
-                Array.isArray(result?.characterOutputs) &&
-				!wizardState.characterOutputs.length
-            ) {
-                wizardState.characterOutputs = result.characterOutputs.map((output) =>
-                    BulkEditOverlay.#normalizeWizardCharacterOutput(output),
-                );
+            if (Array.isArray(result?.characterOutputs)) {
+                for (const serverOutput of result.characterOutputs) {
+                    const idx = Number(
+                        serverOutput.characterIndex ?? serverOutput.index ?? 0,
+                    );
+                    if (idx >= 0 && !wizardState.characterOutputs[idx]) {
+                        wizardState.characterOutputs[idx] =
+							BulkEditOverlay.#normalizeWizardCharacterOutput(serverOutput);
+                    }
+                }
             }
             BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
             return result;
@@ -2358,7 +2358,7 @@ class BulkEditOverlay {
         const content = popupContent.find('#bulk_combine_results_content');
         content.empty();
 
-        const cards = $('<div></div>').addClass('bulk_combine_results_cards');
+        const cards = $('<div></div>').addClass('results-cards');
         const sourceCharacters =
 			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
 
@@ -2369,61 +2369,41 @@ class BulkEditOverlay {
 				{};
             const ok = output.parseStatus === 'ok';
             const card = $('<div></div>')
-                .addClass('bulk_combine_result_card')
+                .addClass('result-card')
                 .attr('data-index', String(index));
-            const header = $('<div></div>').addClass(
-                'bulk_combine_result_card_header flex-container alignitemscenter',
-            );
+            const header = $('<div></div>').addClass('card-header');
             header.append(
                 $('<img alt="Avatar" />')
-                    .addClass('bulk_combine_result_avatar')
-                    .attr('src', getThumbnailUrl('avatar', character?.avatar ?? ''))
-                    .css({
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '4px',
-                        objectFit: 'cover',
-                    }),
+                    .addClass('avatar')
+                    .attr('src', getThumbnailUrl('avatar', character?.avatar ?? '')),
+            );
+            header.append(
+                $('<span></span>').addClass('name').text(output.characterName),
             );
             header.append(
                 $('<span></span>')
-                    .addClass('bulk_combine_result_name')
-                    .text(output.characterName),
-            );
-            header.append(
-                $('<span></span>')
-                    .addClass('bulk_combine_result_status')
+                    .addClass('status')
                     .text(ok ? '✅' : '❌'),
             );
             header.append(
                 $('<input type="checkbox" />')
-                    .addClass('bulk_combine_result_regen_checkbox')
+                    .addClass('regen-checkbox')
                     .prop('checked', !ok),
             );
             card.append(header);
             card.append(
-                $('<div></div>')
-                    .addClass('bulk_combine_result_xml_container')
-                    .append(
-                        $('<textarea></textarea>')
-                            .addClass('text_pole wide100p bulk_combine_result_xml')
-                            .attr('rows', '8')
-                            .prop('readonly', true)
-                            .val(output.xmlOutput || output.error || ''),
-                    ),
+                $('<textarea></textarea>')
+                    .addClass('text_pole xml')
+                    .attr('rows', '8')
+                    .prop('readonly', true)
+                    .val(output.xmlOutput || output.error || ''),
             );
-            const actions = $('<div></div>')
-                .addClass('bulk_combine_result_actions')
-                .toggle(!ok);
+            const actions = $('<div></div>').addClass('actions').toggle(!ok);
             actions.append(
-                $('<div></div>')
-                    .addClass('menu_button bulk_combine_result_autofix')
-                    .text('Auto-fix'),
+                $('<div></div>').addClass('menu_button autofix').text('Auto-fix'),
             );
             actions.append(
-                $('<div></div>')
-                    .addClass('menu_button bulk_combine_result_edit')
-                    .text('Edit'),
+                $('<div></div>').addClass('menu_button edit-btn').text('Edit'),
             );
             card.append(actions);
             cards.append(card);
@@ -2435,7 +2415,7 @@ class BulkEditOverlay {
         ).length;
         content.append(
             $('<div></div>')
-                .addClass('bulk_combine_results_summary marginTop10')
+                .addClass('results-summary')
                 .append(
                     $('<span></span>').text(
                         `${successful}/${wizardState.characterOutputs.length} characters generated successfully.`,
@@ -2444,7 +2424,7 @@ class BulkEditOverlay {
         );
         content.append(
             $('<div></div>')
-                .addClass('bulk_combine_results_actions marginTop10 flex-container')
+                .addClass('results-actions')
                 .append(
                     $('<div></div>')
                         .attr('id', 'bulk_combine_regen_selected')
@@ -2459,10 +2439,10 @@ class BulkEditOverlay {
                 ),
         );
 
-        content.find('.bulk_combine_result_autofix').on('click', function () {
-            const card = $(this).closest('.bulk_combine_result_card');
+        content.find('.autofix').on('click', function () {
+            const card = $(this).closest('.result-card');
             const index = Number(card.data('index'));
-            const textarea = card.find('.bulk_combine_result_xml');
+            const textarea = card.find('.xml');
             const fixed = autoFixXml(String(textarea.val() ?? ''));
             textarea.val(fixed.fixed);
             wizardState.characterOutputs[index].xmlOutput = fixed.fixed;
@@ -2490,10 +2470,10 @@ class BulkEditOverlay {
             }
         });
 
-        content.find('.bulk_combine_result_edit').on('click', function () {
-            const card = $(this).closest('.bulk_combine_result_card');
+        content.find('.edit-btn').on('click', function () {
+            const card = $(this).closest('.result-card');
             const index = Number(card.data('index'));
-            const textarea = card.find('.bulk_combine_result_xml');
+            const textarea = card.find('.xml');
             textarea.prop('readonly', false).trigger('focus');
             $(this)
                 .text('Re-parse')
@@ -2510,10 +2490,10 @@ class BulkEditOverlay {
         });
 
         content.find('#bulk_combine_regen_failed').on('click', async () => {
-            content.find('.bulk_combine_result_card').each((_, element) => {
+            content.find('.result-card').each((_, element) => {
                 const index = Number($(element).data('index'));
                 $(element)
-                    .find('.bulk_combine_result_regen_checkbox')
+                    .find('.regen-checkbox')
                     .prop(
                         'checked',
                         wizardState.characterOutputs[index]?.parseStatus !== 'ok',
@@ -2539,11 +2519,9 @@ class BulkEditOverlay {
 	 */
     static #regenWizardSelectedOutputs = async (popupContent, wizardState) => {
         const checkedIndexes = popupContent
-            .find('.bulk_combine_result_card')
+            .find('.result-card')
             .toArray()
-            .filter((element) =>
-                $(element).find('.bulk_combine_result_regen_checkbox').prop('checked'),
-            )
+            .filter((element) => $(element).find('.regen-checkbox').prop('checked'))
             .map((element) => Number($(element).data('index')))
             .filter((index) => Number.isInteger(index));
 
@@ -2574,12 +2552,12 @@ class BulkEditOverlay {
                 const generated = await Generate('quiet', { quiet_prompt });
                 const validated = validateGeneratedGroupCardDescription(generated, 1);
                 wizardState.characterOutputs[outputIndex] =
-                    BulkEditOverlay.#normalizeWizardCharacterOutput({
-                        characterIndex: oldOutput?.characterIndex ?? outputIndex,
-                        characterName: getCoreCharacterField(character, 'name'),
-                        xmlOutput: validated,
-                        parseStatus: 'ok',
-                    });
+					BulkEditOverlay.#normalizeWizardCharacterOutput({
+					    characterIndex: oldOutput?.characterIndex ?? outputIndex,
+					    characterName: getCoreCharacterField(character, 'name'),
+					    xmlOutput: validated,
+					    parseStatus: 'ok',
+					});
             }
             BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
             toastr.success('Regenerated selected output.', 'Combine into Group Card');
@@ -2612,27 +2590,27 @@ class BulkEditOverlay {
             wizardState.config?.postMergePrompt || DEFAULT_POST_MERGE_PROMPT,
         );
         const html = $(`
-            <div class="bulk_combine_postprocess_mode marginTop10">
+            <div class="postprocess-mode">
               <small>Post-processing mode</small>
-              <div id="bulk_combine_postprocess_mode_select" class="flex-container">
+              <div id="bulk_combine_postprocess_mode_select" class="flex-row">
                 <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="replace" /><span>Replace</span></label>
                 <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="prepend" /><span>Prepend</span></label>
                 <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="append" /><span>Append</span></label>
               </div>
             </div>
-            <div class="marginTop10">
-              <label class="text_label"><span>Post-processing prompt</span><textarea id="bulk_combine_postprocess_prompt" class="text_pole wide100p" rows="8"></textarea></label>
-              <div id="bulk_combine_postprocess_preset_controls" class="m-t-1 flex-container">
-                <select id="bulk_combine_postprocess_preset_select" class="text_pole flex1"><option value="">— Load preset —</option></select>
+            <div class="field-group">
+              <label class="text_label"><span>Post-processing prompt</span><textarea id="bulk_combine_postprocess_prompt" class="text_pole" rows="8"></textarea></label>
+              <div id="bulk_combine_postprocess_preset_controls" class="flex-row">
+                <select id="bulk_combine_postprocess_preset_select" class="text_pole"><option value="">— Load preset —</option></select>
                 <div id="bulk_combine_postprocess_preset_save" class="menu_button" title="Save post-processing prompt as preset"><i class="fa-solid fa-floppy-disk"></i></div>
                 <div id="bulk_combine_postprocess_preset_delete" class="menu_button" title="Delete selected preset"><i class="fa-solid fa-trash-can"></i></div>
                 <div id="bulk_combine_postprocess_preset_restore" class="menu_button" title="Restore built-in default"><i class="fa-solid fa-rotate-left"></i></div>
               </div>
-              <div id="bulk_combine_apply_postprocess" class="menu_button marginTop10">Apply Post-Processing</div>
+              <div id="bulk_combine_apply_postprocess" class="menu_button">Apply Post-Processing</div>
             </div>
-            <div class="marginTop10">
+            <div class="field-group">
               <label class="text_label"><span>Preview</span></label>
-              <div id="bulk_combine_postprocess_preview" class="bulk_combine_preview_area" style="max-height:300px;overflow-y:auto;"></div>
+              <div id="bulk_combine_postprocess_preview" class="preview-area" style="max-height:300px;overflow-y:auto;"></div>
             </div>`);
         content.append(html);
         content
@@ -2739,11 +2717,11 @@ class BulkEditOverlay {
             return;
         }
         const quiet_prompt =
-            mode === 'replace'
-                ? `${prompt}\n\n${wizardState.mergedXml}`
-                : mode === 'append'
-                    ? `${wizardState.mergedXml}\n\n${prompt}`
-                    : `${prompt}\n\nMerged output:\n${wizardState.mergedXml}`;
+			mode === 'replace'
+			    ? `${prompt}\n\n${wizardState.mergedXml}`
+			    : mode === 'append'
+			        ? `${wizardState.mergedXml}\n\n${prompt}`
+			        : `${prompt}\n\nMerged output:\n${wizardState.mergedXml}`;
         BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
         try {
             const generated = String(
@@ -2797,11 +2775,11 @@ class BulkEditOverlay {
         const content = popupContent.find('#bulk_combine_review_content');
         content.empty();
         const html = $(`
-            <div class="bulk_combine_review_section"><label class="text_label"><span>Character Name</span><input id="bulk_combine_review_name" class="text_pole wide100p" type="text" /></label></div>
-            <div class="bulk_combine_review_section marginTop10"><label class="text_label"><span>Description (merged XML)</span></label><textarea id="bulk_combine_review_description" class="text_pole wide100p" rows="12" readonly></textarea></div>
-            <div class="bulk_combine_review_section marginTop10"><label class="text_label"><span>First Message</span><textarea id="bulk_combine_review_first_mes" class="text_pole wide100p" rows="4"></textarea></label></div>
-            <div class="bulk_combine_review_section marginTop10"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div id="bulk_combine_avatar_offsets"></div><div class="marginTop10" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div></div>
-            <div class="bulk_combine_review_section marginTop10"><small id="bulk_combine_review_source_summary"></small></div>`);
+            <div class="review-section"><label class="text_label"><span>Character Name</span><input id="bulk_combine_review_name" class="text_pole" type="text" /></label></div>
+            <div class="review-section"><label class="text_label"><span>Description (merged XML)</span></label><textarea id="bulk_combine_review_description" class="text_pole" rows="12" readonly></textarea></div>
+            <div class="review-section"><label class="text_label"><span>First Message</span><textarea id="bulk_combine_review_first_mes" class="text_pole" rows="4"></textarea></label></div>
+            <div class="review-section"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div id="bulk_combine_avatar_offsets"></div><div class="field-group" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div></div>
+            <div class="review-section"><small id="bulk_combine_review_source_summary"></small></div>`);
         content.append(html);
         content
             .find('#bulk_combine_review_name')
@@ -2823,11 +2801,11 @@ class BulkEditOverlay {
         }
         const offsets = content.find('#bulk_combine_avatar_offsets');
         const sourceCharacters =
-            BulkEditOverlay.#getWizardSourceCharacters(wizardState);
+			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
         wizardState.avatarOffsets =
-            wizardState.avatarOffsets?.length === sourceCharacters.length
-                ? wizardState.avatarOffsets
-                : sourceCharacters.map(() => ({ x: 0, y: 0, scale: 100 }));
+			wizardState.avatarOffsets?.length === sourceCharacters.length
+			    ? wizardState.avatarOffsets
+			    : sourceCharacters.map(() => ({ x: 0, y: 0, scale: 100 }));
         sourceCharacters.forEach((character, index) => {
             const offset = wizardState.avatarOffsets[index] ?? {
                 x: 0,
@@ -2835,18 +2813,12 @@ class BulkEditOverlay {
                 scale: 100,
             };
             const card = $('<div></div>')
-                .addClass('bulk_combine_offset_card flex-container alignitemscenter')
+                .addClass('offset-card')
                 .attr('data-index', String(index));
             card.append(
                 $('<img alt="Avatar" />')
-                    .addClass('bulk_combine_offset_avatar')
-                    .attr('src', getThumbnailUrl('avatar', character?.avatar ?? ''))
-                    .css({
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '4px',
-                        objectFit: 'cover',
-                    }),
+                    .addClass('avatar')
+                    .attr('src', getThumbnailUrl('avatar', character?.avatar ?? '')),
             );
             card.append(
                 $('<span></span>').text(getCoreCharacterField(character, 'name')),
@@ -2855,15 +2827,14 @@ class BulkEditOverlay {
                 card.append(
                     $('<label></label>')
                         .addClass('text_label')
-                        .css({ margin: '0 0.5em' })
                         .append(`${axis.toUpperCase()}: `)
                         .append(
                             $(
-                                `<input type="range" class="bulk_combine_offset_${axis}" min="-100" max="100" />`,
+                                `<input type="range" class="offset-${axis}" min="-100" max="100" />`,
                             ).val(String(offset[axis] ?? 0)),
                         )
                         .append(
-                            $(`<span class="bulk_combine_offset_${axis}_val"></span>`).text(
+                            $(`<span class="offset-${axis}-val"></span>`).text(
                                 String(offset[axis] ?? 0),
                             ),
                         ),
@@ -2872,23 +2843,20 @@ class BulkEditOverlay {
             card.append(
                 $('<label></label>')
                     .addClass('text_label')
-                    .css({ margin: '0 0.5em' })
                     .append('Scale: ')
                     .append(
                         $(
-                            '<input type="range" class="bulk_combine_offset_scale" min="50" max="200" />',
+                            '<input type="range" class="offset-scale" min="50" max="200" />',
                         ).val(String(offset.scale ?? 100)),
                     )
                     .append(
-                        $('<span class="bulk_combine_offset_scale_val"></span>').text(
+                        $('<span class="offset-scale-val"></span>').text(
                             `${offset.scale ?? 100}%`,
                         ),
                     ),
             );
             card.append(
-                $('<div></div>')
-                    .addClass('menu_button bulk_combine_offset_reset')
-                    .text('Reset'),
+                $('<div></div>').addClass('menu_button offset-reset').text('Reset'),
             );
             offsets.append(card);
         });
@@ -2898,21 +2866,21 @@ class BulkEditOverlay {
                 `Source: ${sourceCharacters.length} characters | Mode: ${wizardState.config?.processingMode ?? 'parallel'} | Fields: ${(wizardState.config?.fields ?? []).join(', ')}`,
             );
         content.find('input[type="range"]').on('input', function () {
-            const card = $(this).closest('.bulk_combine_offset_card');
+            const card = $(this).closest('.offset-card');
             const index = Number(card.data('index'));
-            const x = Number(card.find('.bulk_combine_offset_x').val());
-            const y = Number(card.find('.bulk_combine_offset_y').val());
-            const scale = Number(card.find('.bulk_combine_offset_scale').val());
+            const x = Number(card.find('.offset-x').val());
+            const y = Number(card.find('.offset-y').val());
+            const scale = Number(card.find('.offset-scale').val());
             wizardState.avatarOffsets[index] = { x, y, scale };
-            card.find('.bulk_combine_offset_x_val').text(String(x));
-            card.find('.bulk_combine_offset_y_val').text(String(y));
-            card.find('.bulk_combine_offset_scale_val').text(`${scale}%`);
+            card.find('.offset-x-val').text(String(x));
+            card.find('.offset-y-val').text(String(y));
+            card.find('.offset-scale-val').text(`${scale}%`);
         });
-        content.find('.bulk_combine_offset_reset').on('click', function () {
-            const card = $(this).closest('.bulk_combine_offset_card');
-            card.find('.bulk_combine_offset_x').val('0').trigger('input');
-            card.find('.bulk_combine_offset_y').val('0').trigger('input');
-            card.find('.bulk_combine_offset_scale').val('100').trigger('input');
+        content.find('.offset-reset').on('click', function () {
+            const card = $(this).closest('.offset-card');
+            card.find('.offset-x').val('0').trigger('input');
+            card.find('.offset-y').val('0').trigger('input');
+            card.find('.offset-scale').val('100').trigger('input');
         });
         content.find('#bulk_combine_regenerate_avatar').on('click', async () => {
             await BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
@@ -3161,26 +3129,17 @@ class BulkEditOverlay {
         onClick,
     ) => {
         const item = $('<div></div>')
-            .addClass('bulk_combine_character_item flex-container alignitemscenter')
-            .attr('data-avatar', character?.avatar ?? '')
-            .css({ gap: '0.5em', margin: '0.25em', padding: '0.25em' });
+            .addClass('character-item')
+            .attr('data-avatar', character?.avatar ?? '');
         const avatar = $('<img alt="Avatar" />')
             .attr('src', getThumbnailUrl('avatar', character?.avatar ?? ''))
-            .attr('title', character?.avatar ?? '')
-            .css({
-                width: '32px',
-                height: '32px',
-                objectFit: 'cover',
-                borderRadius: '4px',
-            });
+            .attr('title', character?.avatar ?? '');
         const name = $('<span></span>')
-            .addClass('bulk_combine_character_name')
+            .addClass('char-name')
             .text(getCharacterName(character));
         const button = $('<div></div>')
             .addClass(
-                action === 'add'
-                    ? 'menu_button bulk_combine_character_add'
-                    : 'menu_button bulk_combine_character_remove',
+                action === 'add' ? 'menu_button char-add' : 'menu_button char-remove',
             )
             .attr('title', action === 'add' ? 'Add' : 'Remove')
             .append(
@@ -3210,7 +3169,7 @@ class BulkEditOverlay {
             '#bulk_combine_group_card_available_list',
         );
         const searchInput = popupContent.find('#bulk_combine_group_card_search');
-        const description = popupContent.find('.bulk_combine_group_card_desc');
+        const description = popupContent.find('.desc');
         const selectedIdSet = new Set(selectedCharacterIds);
         const query = String(searchInput.val() ?? '')
             .trim()
@@ -3958,7 +3917,9 @@ class BulkEditOverlay {
         concurrency,
         postMergeEnabled,
         postMergePrompt,
-        postProcessMode: ['replace', 'prepend', 'append'].includes(postProcessMode) ? postProcessMode : 'replace',
+        postProcessMode: ['replace', 'prepend', 'append'].includes(postProcessMode)
+            ? postProcessMode
+            : 'replace',
         avatarOffsets: [],
         createLorebook,
         cropStrategy,
