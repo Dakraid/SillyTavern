@@ -6959,6 +6959,28 @@ body:not(.movingUI) .drawer-content.maximized {
     margin-bottom: 0.25em;
 }
 
+.bcw .char-lists-row {
+    display: flex;
+    gap: 0.75em;
+    align-items: flex-start;
+}
+
+.bcw .char-lists-row .char-list-panel {
+    flex: 1 1 50%;
+    min-width: 0;
+}
+
+.bcw .char-lists-row .char-list-panel h4 {
+    margin: 0 0 0.25em 0;
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+.bcw #bulk_combine_group_card_available_list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
 .bcw .add-section {
     margin-top: 0.75em;
 }
@@ -7025,6 +7047,10 @@ body:not(.movingUI) .drawer-content.maximized {
 }
 
 @media screen and (max-width: 600px) {
+    .bcw .char-lists-row {
+        flex-direction: column;
+    }
+
     .bcw > .footer {
         justify-content: stretch;
     }
