@@ -9,7 +9,13 @@ const DEFAULT_HEIGHT = 1536;
 const DEFAULT_CROP_STRATEGY = 'attention';
 const DEFAULT_CROP_PADDING = 15;
 const MAX_CROP_PADDING = 50;
-const CROP_STRATEGIES = new Set(['attention', 'entropy', 'center', 'top', 'face']);
+const CROP_STRATEGIES = new Set([
+    'attention',
+    'entropy',
+    'center',
+    'top',
+    'face',
+]);
 const SEED_CANDIDATES = 10;
 const BORDER_COLOR = { r: 20, g: 20, b: 20, a: 255 };
 const BORDER_RADIUS = 1;
@@ -18,7 +24,7 @@ const BORDER_RADIUS = 1;
  * Generate a Voronoi mosaic composite from character avatar images.
  * @param {string[]} avatarPaths Absolute paths to character avatar PNGs.
  * @param {string} outputPath Where to write the composite PNG.
- * @param {{width?: number, height?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>}} options Output dimensions, crop options, and per-avatar offsets.
+ * @param {{width?: number, height?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>, seed?: number}} options Output dimensions, crop options, per-avatar offsets, and optional seed.
  * @returns {Promise<string>} The output path.
  */
 export async function generateVoronoiComposite(
@@ -39,30 +45,44 @@ export async function generateVoronoiComposite(
     }
 
     const width =
-        typeof options.width === 'number' &&
-        Number.isFinite(options.width) &&
-        options.width > 0
-            ? Math.round(options.width)
-            : DEFAULT_WIDTH;
+		typeof options.width === 'number' &&
+		Number.isFinite(options.width) &&
+		options.width > 0
+		    ? Math.round(options.width)
+		    : DEFAULT_WIDTH;
     const height =
-        typeof options.height === 'number' &&
-        Number.isFinite(options.height) &&
-        options.height > 0
-            ? Math.round(options.height)
-            : DEFAULT_HEIGHT;
+		typeof options.height === 'number' &&
+		Number.isFinite(options.height) &&
+		options.height > 0
+		    ? Math.round(options.height)
+		    : DEFAULT_HEIGHT;
     const cropOptions = normalizeCropOptions(options);
     const offsets = normalizeOffsets(options.offsets, avatarPaths.length);
+    const seed =
+		typeof options.seed === 'number' && Number.isFinite(options.seed)
+		    ? Math.round(options.seed)
+		    : null;
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
     if (avatarPaths.length === 1) {
-        const buffer = await readAvatarBuffer(avatarPaths[0], width, height, cropOptions);
-        const offsetBuffer = await applyAvatarOffset(buffer, width, height, offsets[0]);
+        const buffer = await readAvatarBuffer(
+            avatarPaths[0],
+            width,
+            height,
+            cropOptions,
+        );
+        const offsetBuffer = await applyAvatarOffset(
+            buffer,
+            width,
+            height,
+            offsets[0],
+        );
         await sharp(offsetBuffer).png().toFile(outputPath);
         return outputPath;
     }
 
-    const points = generateSeedPoints(avatarPaths.length, width, height);
+    const points = generateSeedPoints(avatarPaths.length, width, height, seed);
     const delaunay = Delaunay.from(points);
     const voronoi = delaunay.voronoi([0, 0, width, height]);
     /** @type {Array<Array<[number, number]>>} */
@@ -80,7 +100,12 @@ export async function generateVoronoiComposite(
         const normalizedPolygon = polygon.map((point) => [point[0], point[1]]);
         polygons.push(normalizedPolygon);
 
-        const imageBuffer = await readAvatarBuffer(avatarPaths[i], width, height, cropOptions);
+        const imageBuffer = await readAvatarBuffer(
+            avatarPaths[i],
+            width,
+            height,
+            cropOptions,
+        );
         const offsetImageBuffer = await applyAvatarOffset(
             imageBuffer,
             width,
@@ -143,7 +168,12 @@ async function createAvatarBuffer(avatarPath, width, height, cropOptions = {}) {
     const { cropStrategy, cropPadding } = normalizeCropOptions(cropOptions);
 
     if (cropStrategy === 'face') {
-        return createHeuristicFaceCropBuffer(avatarPath, width, height, cropPadding);
+        return createHeuristicFaceCropBuffer(
+            avatarPath,
+            width,
+            height,
+            cropPadding,
+        );
     }
 
     return sharp(avatarPath)
@@ -160,12 +190,12 @@ function normalizeCropOptions(options = {}) {
         ? options.cropStrategy
         : DEFAULT_CROP_STRATEGY;
     const cropPadding =
-        typeof options.cropPadding === 'number' &&
-        Number.isFinite(options.cropPadding) &&
-        options.cropPadding >= 0 &&
-        options.cropPadding <= MAX_CROP_PADDING
-            ? options.cropPadding
-            : DEFAULT_CROP_PADDING;
+		typeof options.cropPadding === 'number' &&
+		Number.isFinite(options.cropPadding) &&
+		options.cropPadding >= 0 &&
+		options.cropPadding <= MAX_CROP_PADDING
+		    ? options.cropPadding
+		    : DEFAULT_CROP_PADDING;
 
     return { cropStrategy, cropPadding };
 }
@@ -285,7 +315,12 @@ function getSharpCropPosition(cropStrategy) {
  * @param {number} cropPadding Padding percentage.
  * @returns {Promise<Buffer>} Cropped PNG buffer.
  */
-async function createHeuristicFaceCropBuffer(avatarPath, width, height, cropPadding) {
+async function createHeuristicFaceCropBuffer(
+    avatarPath,
+    width,
+    height,
+    cropPadding,
+) {
     const image = sharp(avatarPath);
     const metadata = await image.metadata();
     const sourceWidth = metadata.width;
@@ -293,7 +328,10 @@ async function createHeuristicFaceCropBuffer(avatarPath, width, height, cropPadd
 
     if (!sourceWidth || !sourceHeight) {
         return sharp(avatarPath)
-            .resize(width, height, { fit: 'cover', position: sharp.strategy.attention })
+            .resize(width, height, {
+                fit: 'cover',
+                position: sharp.strategy.attention,
+            })
             .png()
             .toBuffer();
     }
@@ -315,8 +353,16 @@ async function createHeuristicFaceCropBuffer(avatarPath, width, height, cropPadd
 
     const focusX = sourceWidth / 2;
     const focusY = sourceHeight * 0.35;
-    const left = clamp(Math.round(focusX - cropWidth / 2), 0, sourceWidth - cropWidth);
-    const top = clamp(Math.round(focusY - cropHeight / 2), 0, sourceHeight - cropHeight);
+    const left = clamp(
+        Math.round(focusX - cropWidth / 2),
+        0,
+        sourceWidth - cropWidth,
+    );
+    const top = clamp(
+        Math.round(focusY - cropHeight / 2),
+        0,
+        sourceHeight - cropHeight,
+    );
 
     return sharp(avatarPath)
         .extract({ left, top, width: cropWidth, height: cropHeight })
@@ -352,13 +398,26 @@ ${polylines}
 </svg>`;
 }
 
+function mulberry32(seed) {
+    return function () {
+        seed |= 0;
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
 /**
  * @param {number} count
  * @param {number} width
  * @param {number} height
+ * @param {?number} seed
  * @returns {Array<[number, number]>}
  */
-function generateSeedPoints(count, width, height) {
+function generateSeedPoints(count, width, height, seed) {
+    const rng =
+		seed !== null && seed !== undefined ? mulberry32(seed) : Math.random;
     const minDist = Math.sqrt((width * height) / (count * Math.PI)) * 0.5;
     const padding = minDist * 0.3;
     /** @type {Array<[number, number]>} */
@@ -376,8 +435,8 @@ function generateSeedPoints(count, width, height) {
         ) {
             /** @type {[number, number]} */
             const candidate = [
-                randomInRange(padding, width - padding),
-                randomInRange(padding, height - padding),
+                randomInRange(padding, width - padding, rng),
+                randomInRange(padding, height - padding, rng),
             ];
             const distance = nearestDistance(candidate, points, width, height);
 
@@ -393,12 +452,12 @@ function generateSeedPoints(count, width, height) {
     return points;
 }
 
-function randomInRange(min, max) {
+function randomInRange(min, max, rng = Math.random) {
     if (max <= min) {
         return (min + max) / 2;
     }
 
-    return min + Math.random() * (max - min);
+    return min + rng() * (max - min);
 }
 
 function nearestDistance(point, points, width, height) {

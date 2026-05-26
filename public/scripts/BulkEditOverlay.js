@@ -2870,7 +2870,7 @@ class BulkEditOverlay {
             <div class="review-section"><label class="text_label"><span>Character Name</span><input id="bulk_combine_review_name" class="text_pole" type="text" /></label></div>
             <div class="review-section"><label class="text_label"><span>Description (merged XML)</span></label><textarea id="bulk_combine_review_description" class="text_pole" rows="12" readonly></textarea></div>
             <div class="review-section"><label class="text_label"><span>First Message</span><textarea id="bulk_combine_review_first_mes" class="text_pole" rows="4"></textarea></label></div>
-            <div class="review-section"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div id="bulk_combine_avatar_offsets"></div><div class="field-group" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div></div>
+            <div class="review-section"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div id="bulk_combine_avatar_offsets"></div><div class="field-group" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div><div class="field-group" style="display:flex;align-items:center;gap:0.5em;justify-content:center;"><label class="text_label"><span>Voronoi Seed:</span> <input id="bulk_combine_voronoi_seed" class="text_pole" type="number" style="width:8em;" /></label><div id="bulk_combine_shuffle_seed" class="menu_button" title="Randomize pattern"><i class="fa-solid fa-shuffle"></i></div></div></div>
             <div class="review-section"><small id="bulk_combine_review_source_summary"></small></div>`);
         content.append(html);
         content
@@ -2977,6 +2977,19 @@ class BulkEditOverlay {
         content.find('#bulk_combine_regenerate_avatar').on('click', async () => {
             await BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
         });
+        content
+            .find('#bulk_combine_voronoi_seed')
+            .val(String(wizardState.voronoiSeed));
+        content.find('#bulk_combine_voronoi_seed').on('change', function () {
+            wizardState.voronoiSeed = Number($(this).val()) || 0;
+        });
+        content.find('#bulk_combine_shuffle_seed').on('click', function () {
+            wizardState.voronoiSeed = Math.floor(Math.random() * 2147483647);
+            content
+                .find('#bulk_combine_voronoi_seed')
+                .val(String(wizardState.voronoiSeed));
+            BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
+        });
         BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
     };
 
@@ -3007,13 +3020,14 @@ class BulkEditOverlay {
                         offsets: wizardState.avatarOffsets,
                         cropStrategy: wizardState.config?.cropStrategy,
                         cropPadding: wizardState.config?.cropPadding,
+                        seed: wizardState.voronoiSeed,
                     }),
                 },
             );
             await throwIfNotOk(response, 'Failed to regenerate avatar.');
             const data = await response.json();
-            if (data?.file) {
-                wizardState.avatarUrl = `/api/characters/generate-voronoi-composite?file=${encodeURIComponent(data.file)}`;
+            if (data?.image) {
+                wizardState.avatarUrl = data.image;
                 popupContent
                     .find('#bulk_combine_avatar_image')
                     .attr('src', wizardState.avatarUrl);
@@ -3539,7 +3553,7 @@ class BulkEditOverlay {
         const wizardHtml = BulkEditOverlay.#getCombineGroupCardWizardHtml(
             validCharacters.length,
         );
-        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, characterOutputs:Array<object>, mergedXml:string, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null}} */
+        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, characterOutputs:Array<object>, mergedXml:string, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null, voronoiSeed:number}} */
         const wizardState = {
             stage: 1,
             config: {},
@@ -3551,6 +3565,7 @@ class BulkEditOverlay {
             postProcessMode: 'replace',
             avatarOffsets: [],
             avatarUrl: null,
+            voronoiSeed: Math.floor(Math.random() * 2147483647),
         };
 
         await callGenericPopup(wizardHtml, POPUP_TYPE.CONFIRM, '', {
@@ -4242,11 +4257,9 @@ class BulkEditOverlay {
                 );
 
                 if (compositeResponse.ok) {
-                    const { file } = await compositeResponse.json();
-                    if (file) {
-                        const imageResponse = await fetch(
-                            `/api/characters/generate-voronoi-composite?file=${encodeURIComponent(file)}`,
-                        );
+                    const { image } = await compositeResponse.json();
+                    if (image) {
+                        const imageResponse = await fetch(image);
                         if (imageResponse.ok) {
                             const imageBlob = await imageResponse.blob();
                             const formData = new FormData();

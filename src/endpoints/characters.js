@@ -2270,14 +2270,21 @@ router.post('/generate-voronoi-composite', async function (request, response) {
         const offsets = Array.isArray(request.body.offsets)
             ? request.body.offsets.map(normalizeVoronoiOffset).filter(Boolean)
             : undefined;
+        const seed = typeof request.body.seed === 'number' && Number.isFinite(request.body.seed)
+            ? Math.round(request.body.seed)
+            : undefined;
 
         await generateVoronoiComposite(avatarPaths, outputPath, {
             cropStrategy,
             cropPadding,
             offsets,
+            seed,
         });
 
-        return response.send({ file: tempFile });
+        const imageBuffer = fs.readFileSync(outputPath);
+        fs.unlinkSync(outputPath); // clean up temp file immediately
+        const image = `data:image/png;base64,${imageBuffer.toString('base64')}`;
+        return response.send({ image });
     } catch (err) {
         console.error('Voronoi composite generation failed:', err);
         return response
@@ -2342,21 +2349,7 @@ router.get('/generate-voronoi-composite', async function (request, response) {
 
         const stream = fs.createReadStream(filePath);
         stream.pipe(response);
-
-        stream.on('end', () => {
-            try {
-                fs.unlinkSync(filePath);
-            } catch (error) {
-                console.debug('Voronoi composite cleanup failed:', error);
-            }
-        });
-        stream.on('error', () => {
-            try {
-                fs.unlinkSync(filePath);
-            } catch (error) {
-                console.debug('Voronoi composite cleanup failed:', error);
-            }
-        });
+        // TODO: Implement TTL-based cleanup for orphaned temp files
     } catch (err) {
         console.error('Voronoi composite serve failed:', err);
         return response
