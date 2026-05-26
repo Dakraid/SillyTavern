@@ -80,9 +80,12 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 
 /** @type {import('../public/scripts/BulkEditOverlay.js')} */
 let mod;
+/** @type {import('../public/scripts/group-card-xml-parser.js')} */
+let parserMod;
 
 beforeAll(async () => {
     mod = await import('../public/scripts/BulkEditOverlay.js');
+    parserMod = await import('../public/scripts/group-card-xml-parser.js');
 });
 
 beforeEach(() => {
@@ -404,7 +407,7 @@ Trailing text
 
 describe('XML parser edge cases', () => {
     test('unclosed XML tag does not hang extractTopLevelXmlBlocks', () => {
-        const result = mod.validateGeneratedGroupCardDescription(
+        const result = parserMod.validateGeneratedGroupCardDescription(
             '<character>\n  <name>Alice</name>\n</character>\n<character>\n  <name>Bob</name>\n',
             1,
         );
@@ -413,7 +416,7 @@ describe('XML parser edge cases', () => {
     });
 
     test('truly unclosed tag is dropped without hanging', () => {
-        const result = mod.validateGeneratedGroupCardDescription(
+        const result = parserMod.validateGeneratedGroupCardDescription(
             '<character>\n  <name>Alice</name>\n',
             1,
         );
@@ -421,7 +424,7 @@ describe('XML parser edge cases', () => {
     });
 
     test('extracts XML blocks surrounded by prose text', () => {
-        const result = mod.validateGeneratedGroupCardDescription(
+        const result = parserMod.validateGeneratedGroupCardDescription(
             'Here are the characters:\n<character>Alice</character>\n<character>Bob</character>\nHope this helps!',
             2,
         );
@@ -429,7 +432,7 @@ describe('XML parser edge cases', () => {
     });
 
     test('falls back to raw text wrapped in character block when no XML found', () => {
-        const result = mod.validateGeneratedGroupCardDescription(
+        const result = parserMod.validateGeneratedGroupCardDescription(
             'Just some plain text output from the LLM.',
             1,
         );
@@ -439,14 +442,14 @@ describe('XML parser edge cases', () => {
     });
 
     test('throws when fewer character blocks than expected', () => {
-        expect(() => mod.validateGeneratedGroupCardDescription(
+        expect(() => parserMod.validateGeneratedGroupCardDescription(
             '<character>one</character>\n<character>two</character>',
             5,
         )).toThrow('Generation returned 2 character block(s), expected at least 5.');
     });
 
     test('single-char mode accepts non-character XML tags', () => {
-        const result = mod.validateGeneratedGroupCardDescription(
+        const result = parserMod.validateGeneratedGroupCardDescription(
             '<persona>A mysterious figure</persona>',
             1,
         );
@@ -454,7 +457,7 @@ describe('XML parser edge cases', () => {
     });
 
     test('strips markdown code fences from output', () => {
-        const result = mod.validateGeneratedGroupCardDescription(
+        const result = parserMod.validateGeneratedGroupCardDescription(
             '```xml\n<character>test</character>\n```',
             1,
         );
@@ -462,7 +465,7 @@ describe('XML parser edge cases', () => {
     });
 
     test('handles attributes on XML tags', () => {
-        const result = mod.validateGeneratedGroupCardDescription(
+        const result = parserMod.validateGeneratedGroupCardDescription(
             '<character role="main">Alice</character>',
             1,
         );

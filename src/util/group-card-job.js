@@ -15,6 +15,10 @@ import { write as writeCharacterPngData } from '../character-card-parser.js';
 import { getUniqueName } from '../util.js';
 import { readSecret, SECRET_KEYS } from '../endpoints/secrets.js';
 import { generateVoronoiComposite } from './voronoi-composite.js';
+import {
+    escapeXml,
+    validateGeneratedGroupCardDescription,
+} from '../../public/scripts/group-card-xml-parser.js';
 
 const JOB_TTL_MS = 30 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
@@ -66,15 +70,6 @@ function getCharacterField(character, field) {
     return String(character?.[field] ?? character?.data?.[field] ?? '');
 }
 
-function escapeXml(value) {
-    return String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll('\'', '&#039;');
-}
-
 function buildCharacterXmlBlock(character, fields) {
     const fieldXml = normalizeSelectedFields(fields)
         .map(
@@ -96,186 +91,6 @@ function buildCombinePrompt(prompt, characters, fields) {
 
 function buildPostMergePrompt(prompt, mergedOutput) {
     return `${String(prompt ?? '').trim()}\n\nMerged character definitions:\n${String(mergedOutput ?? '').trim()}`;
-}
-
-/**
- * Strips markdown code fences, leading/trailing prose, and normalizes
- * LLM output into clean text containing XML blocks.
- * @param {string} output Raw LLM output.
- * @returns {string} Cleaned text.
- */
-function stripNoise(output) {
-    let text = String(output ?? '').trim();
-
-    // Remove all code fence blocks, keeping inner content.
-    // Handles ```xml, ```, and variants with or without language tags.
-    text = text.replace(/```[a-zA-Z]*\s*\n?/g, '').replace(/```/g, '');
-
-    return text.trim();
-}
-
-/**
- * Flexible tag-name-aware open-tag regex.
- * Matches `<tag>`, `<tag attr="...">`, `<tag attr='...' >`, etc.
- * Self-closing `<tag/>` is NOT matched as an open tag — it has no body to track.
- * @param {string} tagName
- * @returns {RegExp}
- */
-function openTagRegexFor(tagName) {
-    return new RegExp(`<${tagName}(?:\\s+[^>]*[^/])?>`, 'g');
-}
-
-/**
- * Extracts top-level XML blocks for the given tag name from text.
- * Handles: attributes on open tags, whitespace variations, nested tags
- * with the same name (depth tracking), mixed content around blocks.
- * @param {string} text Input text possibly containing XML blocks.
- * @param {string} tagName Tag name to extract (e.g. "character").
- * @returns {Array<{tag: string, content: string, raw: string}>}
- */
-function extractXmlBlocksByTag(text, tagName) {
-    /** @type {Array<{tag: string, content: string, raw: string}>} */
-    const blocks = [];
-    let consumedUpTo = 0;
-
-    const closeTag = `</${tagName}>`;
-    let match;
-
-    // Create a fresh regex each outer loop iteration
-    const openRegex = openTagRegexFor(tagName);
-
-    while ((match = openRegex.exec(text)) !== null) {
-        const blockStart = match.index;
-        if (blockStart < consumedUpTo) {
-            continue;
-        }
-
-        const openTagText = match[0];
-        const searchStart = blockStart + openTagText.length;
-        let depth = 1;
-        let pos = searchStart;
-        let closeIndex = -1;
-
-        while (depth > 0 && pos < text.length) {
-            const nextClose = text.indexOf(closeTag, pos);
-
-            if (nextClose === -1) {
-                break;
-            }
-
-            // Re-scan for opens from current position
-            const openScan = openTagRegexFor(tagName);
-            openScan.lastIndex = pos;
-            const nextOpenResult = openScan.exec(text);
-            const nextOpen = nextOpenResult?.index ?? -1;
-
-            if (nextOpen !== -1 && nextOpen < nextClose) {
-                depth++;
-                pos = nextOpen + (nextOpenResult?.[0]?.length ?? openTagText.length);
-            } else {
-                depth--;
-                if (depth === 0) {
-                    closeIndex = nextClose;
-                }
-                pos = nextClose + closeTag.length;
-            }
-        }
-
-        if (closeIndex !== -1) {
-            const blockEnd = closeIndex + closeTag.length;
-            blocks.push({
-                tag: tagName,
-                content: text.slice(searchStart, closeIndex),
-                raw: text.slice(blockStart, blockEnd),
-            });
-            consumedUpTo = blockEnd;
-        }
-    }
-
-    return blocks;
-}
-
-/**
- * Extracts any top-level XML blocks regardless of tag name.
- * @param {string} text
- * @returns {Array<{tag: string, content: string, raw: string}>}
- */
-function extractTopLevelXmlBlocks(text) {
-    // First try the known "character" tag since that's the expected output.
-    const characterBlocks = extractXmlBlocksByTag(text, 'character');
-    if (characterBlocks.length > 0) {
-        return characterBlocks;
-    }
-
-    // Fallback: find any top-level tag pairs using a generic approach.
-    const anyOpenRegex = /<([a-zA-Z_][\w.-]*)(?:\s+[^>]*[^/])?>/g;
-    /** @type {Array<{tag: string, content: string, raw: string}>} */
-    const blocks = [];
-    let consumedUpTo = 0;
-    let match;
-
-    while ((match = anyOpenRegex.exec(text)) !== null) {
-        const blockStart = match.index;
-        if (blockStart < consumedUpTo) {
-            continue;
-        }
-
-        const tagName = match[1];
-        const subBlocks = extractXmlBlocksByTag(text.slice(blockStart), tagName);
-        const nextSearchIndex = blockStart + match[0].length;
-
-        if (subBlocks.length === 0) {
-            consumedUpTo = Math.max(consumedUpTo, nextSearchIndex);
-        } else {
-            for (const block of subBlocks) {
-                const realEnd = blockStart + block.raw.length;
-                if (blockStart < consumedUpTo) {
-                    continue;
-                }
-                blocks.push({
-                    tag: block.tag,
-                    content: block.content,
-                    raw: text.slice(blockStart, realEnd),
-                });
-                consumedUpTo = realEnd;
-            }
-        }
-
-        anyOpenRegex.lastIndex = Math.max(consumedUpTo, nextSearchIndex);
-    }
-
-    return blocks;
-}
-
-function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
-    const cleaned = stripNoise(output);
-
-    if (!cleaned) {
-        throw new Error('Generation returned empty output.');
-    }
-
-    const blocks = extractTopLevelXmlBlocks(cleaned);
-
-    if (blocks.length === 0) {
-        console.warn('Group card generation: No XML blocks found in LLM output. Using raw text as fallback.');
-        return `<character>\n  <description>${escapeXml(cleaned)}</description>\n</character>`;
-    }
-
-    // Only enforce character-tag presence for multi-character generation.
-    // For single-character calls (selectedCharacterCount === 1), any block is fine.
-    if (selectedCharacterCount > 1) {
-        const characterTagCount = blocks.filter(
-            (block) => block.tag === 'character',
-        ).length;
-
-        if (characterTagCount < selectedCharacterCount) {
-            throw new Error(
-                `Generation returned ${characterTagCount} character block(s), expected at least ${selectedCharacterCount}.`,
-            );
-        }
-    }
-
-    return blocks.map((block) => block.raw).join('\n\n');
 }
 
 function normalizeConcurrency(value) {
