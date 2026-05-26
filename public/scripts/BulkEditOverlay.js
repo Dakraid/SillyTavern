@@ -52,6 +52,9 @@ import { horde_settings } from './horde.js';
 
 const GROUP_CARD_JOB_SESSION_KEY = 'groupCardJobId';
 
+/** @type {Map<string, {jobId: string, groupName: string, loaderHandle: import('./action-loader.js').ActionLoaderHandle, source: EventSource|null, startedAt: number, status: string}>} */
+const groupCardJobs = new Map();
+
 const CORE_CHARACTER_FIELDS = [
     'name',
     'description',
@@ -192,9 +195,9 @@ function buildCoreCharacterPromptBlock(character, fields) {
     const fieldXml = normalizeSelectedFields(fields)
         .map((field) => {
             const value =
-                field === 'name'
-                    ? payload[field]
-                    : substituteParams(payload[field], { name2Override: characterName });
+				field === 'name'
+				    ? payload[field]
+				    : substituteParams(payload[field], { name2Override: characterName });
             return `  <${field}>${escapeHtml(value)}</${field}>`;
         })
         .join('\n');
@@ -2626,35 +2629,37 @@ class BulkEditOverlay {
                 power_user.group_card_crop_padding = cropPadding;
                 saveSettingsDebounced();
 
-                try {
-                    await BulkEditOverlay.#startGroupCardCombinePipeline(
-                        request.groupName,
-                        prompt,
-                        request.characters,
-                        createLorebook,
-                        selectedFields,
-                        processingMode,
-                        concurrency,
-                        postMergeEnabled,
-                        postMergePrompt,
-                        cropStrategy,
-                        cropPadding,
-                    );
-                    await getCharacters();
-                    toastr.success(
-                        createLorebook
-                            ? 'Created group card and linked lorebook.'
-                            : 'Created group card.',
-                    );
-                    return true;
-                } catch (error) {
-                    console.error(error);
-                    toastr.error(
-                        error?.message ?? 'Failed to combine selected characters.',
-                        'Combine into Group Card',
-                    );
-                    return false;
-                }
+                // Fire and forget — popup closes immediately, generation runs in background.
+                BulkEditOverlay.#startGroupCardCombinePipeline(
+                    request.groupName,
+                    prompt,
+                    request.characters,
+                    createLorebook,
+                    selectedFields,
+                    processingMode,
+                    concurrency,
+                    postMergeEnabled,
+                    postMergePrompt,
+                    cropStrategy,
+                    cropPadding,
+                )
+                    .then(async () => {
+                        await getCharacters();
+                        toastr.success(
+                            createLorebook
+                                ? 'Created group card and linked lorebook.'
+                                : 'Created group card.',
+                        );
+                    })
+                    .catch((error) => {
+                        console.error(error);
+                        toastr.error(
+                            error?.message ?? 'Failed to combine selected characters.',
+                            'Combine into Group Card',
+                        );
+                    });
+
+                return true;
             },
         });
     };
@@ -2768,6 +2773,104 @@ class BulkEditOverlay {
         sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
     };
 
+    static #updateGroupCardJobStatus = (jobId, status) => {
+        const job = groupCardJobs.get(jobId);
+        if (!job) {
+            return;
+        }
+
+        job.status = status;
+        BulkEditOverlay.#renderGroupCardJobIndicator();
+    };
+
+    static #removeGroupCardJob = (jobId) => {
+        groupCardJobs.delete(jobId);
+        BulkEditOverlay.#renderGroupCardJobIndicator();
+    };
+
+    static #renderGroupCardJobIndicator = () => {
+        let indicator = document.getElementById('bulk_group_card_job_indicator');
+        const count = groupCardJobs.size;
+
+        if (!count) {
+            indicator?.remove();
+            return;
+        }
+
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'bulk_group_card_job_indicator';
+            indicator.style.cssText =
+				'position:fixed;bottom:1em;right:1em;z-index:9999;background:var(--SmartThemeBodyColor);border:1px solid var(--SmartThemeBorderColor);border-radius:8px;padding:0.5em 1em;cursor:pointer;display:flex;align-items:center;gap:0.5em;font-size:0.85em;';
+            document.body.appendChild(indicator);
+
+            indicator.addEventListener('click', () => {
+                BulkEditOverlay.#showGroupCardJobPopup();
+            });
+        }
+
+        const jobs = [...groupCardJobs.values()];
+        const latest = jobs[jobs.length - 1];
+        const elapsed = Math.floor((Date.now() - latest.startedAt) / 1000);
+        const icon = document.createElement('i');
+        icon.className = 'fa-solid fa-wand-magic-sparkles';
+        indicator.replaceChildren(icon);
+
+        if (count > 1) {
+            const badge = document.createElement('span');
+            badge.textContent = String(count);
+            badge.style.cssText =
+				'background:var(--SmartThemeQuoteColor);color:var(--SmartThemeBodyColor);border-radius:50%;width:1.2em;height:1.2em;display:inline-flex;align-items:center;justify-content:center;font-size:0.75em;';
+            indicator.appendChild(badge);
+        }
+
+        const status = document.createElement('span');
+        status.textContent = `${latest.status} (${elapsed}s)`;
+        indicator.appendChild(status);
+    };
+
+    static #showGroupCardJobPopup = () => {
+        const jobs = [...groupCardJobs.values()];
+        if (!jobs.length) {
+            return;
+        }
+
+        const content = $('<div></div>');
+        content.append($('<h4></h4>').text('Background Jobs'));
+        const list = $('<div></div>').css({ marginTop: '0.5em' });
+
+        for (const job of jobs) {
+            const elapsed = Math.floor((Date.now() - job.startedAt) / 1000);
+            const row = $('<div></div>')
+                .addClass('flex-container alignitemscenter')
+                .css({ gap: '1em', padding: '0.5em 0' });
+            row.append($('<span></span>').text(job.groupName));
+            row.append($('<small></small>').text(`${job.status} · ${elapsed}s`));
+            const cancelButton = $('<div></div>')
+                .addClass('menu_button')
+                .css({ marginLeft: 'auto' })
+                .append($('<i></i>').addClass('fa-solid fa-xmark'))
+                .append(' Cancel');
+
+            cancelButton.on('click', async () => {
+                await BulkEditOverlay.#cancelGroupCardJob(job.jobId);
+                job.loaderHandle?.hide();
+                job.source?.close();
+                BulkEditOverlay.#removeGroupCardJob(job.jobId);
+                content.closest('.popup').remove();
+            });
+
+            row.append(cancelButton);
+            list.append(row);
+        }
+
+        content.append(list);
+        callGenericPopup(content, POPUP_TYPE.DISPLAY, '', {
+            okButton: 'Close',
+            wide: false,
+        });
+    };
+
     /**
 	 * Connects to group card job SSE and resolves on completion.
 	 * @param {string} jobId Job ID.
@@ -2791,12 +2894,17 @@ class BulkEditOverlay {
         const parseEvent = (event) => JSON.parse(event.data || '{}');
 
         source.addEventListener('job_started', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'started');
             loaderHandle.setMessage(t`Server-side group card generation started…`);
         });
         source.addEventListener('character_started', (event) => {
             const data = parseEvent(event);
             const index = Number(data.index ?? 0) + 1;
             const total = Number(data.total ?? data.count ?? characterCount) || '?';
+            BulkEditOverlay.#updateGroupCardJobStatus(
+                jobId,
+                `Processing ${index}/${total}`,
+            );
             loaderHandle.setMessage(
                 `Processing character ${index}/${total}: ${data.name ?? ''}…`,
             );
@@ -2805,42 +2913,56 @@ class BulkEditOverlay {
             const data = parseEvent(event);
             const index = Number(data.index ?? 0) + 1;
             const total = Number(data.total ?? data.count ?? characterCount) || '?';
+            BulkEditOverlay.#updateGroupCardJobStatus(
+                jobId,
+                `Completed ${index}/${total}`,
+            );
             loaderHandle.setMessage(`Completed character ${index}/${total}…`);
         });
         source.addEventListener('character_failed', (event) => {
             const data = parseEvent(event);
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Character failed');
             loaderHandle.setMessage(
                 `Character failed: ${data.name ?? 'unknown'}. Continuing…`,
             );
         });
         source.addEventListener('merge_started', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Merging');
             loaderHandle.setMessage(t`Merging transformed character definitions…`);
         });
         source.addEventListener('merge_completed', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Merged');
             loaderHandle.setMessage(t`Merged character definitions.`);
         });
         source.addEventListener('post_merge_started', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Post-merge');
             loaderHandle.setMessage(t`Running universal post-merge step…`);
         });
         source.addEventListener('post_merge_completed', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Post-merge done');
             loaderHandle.setMessage(t`Universal post-merge step completed…`);
         });
         source.addEventListener('avatar_started', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Avatar');
             loaderHandle.setMessage(t`Generating group card avatar…`);
         });
         source.addEventListener('avatar_completed', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Avatar done');
             loaderHandle.setMessage(t`Group card avatar generated…`);
         });
         source.addEventListener('card_created', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Card created');
             loaderHandle.setMessage(t`Group card created…`);
         });
         source.addEventListener('lorebook_created', () => {
+            BulkEditOverlay.#updateGroupCardJobStatus(jobId, 'Lorebook linked');
             loaderHandle.setMessage(t`Lorebook linked…`);
         });
         source.addEventListener('job_completed', (event) => {
             completed = true;
             const data = parseEvent(event);
             sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+            BulkEditOverlay.#removeGroupCardJob(jobId);
             source.close();
             resolve(data);
         });
@@ -2848,6 +2970,7 @@ class BulkEditOverlay {
             completed = true;
             const data = parseEvent(event);
             sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+            BulkEditOverlay.#removeGroupCardJob(jobId);
             source.close();
             reject(
                 new Error(data.error || 'Server-side group card generation failed.'),
@@ -3023,7 +3146,10 @@ class BulkEditOverlay {
 
                 if (jobId) {
                     await BulkEditOverlay.#cancelGroupCardJob(jobId);
+                    BulkEditOverlay.#removeGroupCardJob(jobId);
                 }
+
+                await loaderHandle.hide();
             },
         });
 
@@ -3075,6 +3201,15 @@ class BulkEditOverlay {
                     resolve,
                     reject,
                 );
+                groupCardJobs.set(jobId, {
+                    jobId,
+                    groupName,
+                    loaderHandle,
+                    source: jobEventSource,
+                    startedAt: Date.now(),
+                    status: 'running',
+                });
+                BulkEditOverlay.#renderGroupCardJobIndicator();
             });
 
             sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
@@ -3128,6 +3263,8 @@ class BulkEditOverlay {
                 onStop: async () => {
                     jobEventSource?.close();
                     await BulkEditOverlay.#cancelGroupCardJob(jobId);
+                    BulkEditOverlay.#removeGroupCardJob(jobId);
+                    await loaderHandle.hide();
                 },
             });
 
@@ -3140,6 +3277,15 @@ class BulkEditOverlay {
                         resolve,
                         reject,
                     );
+                    groupCardJobs.set(jobId, {
+                        jobId,
+                        groupName: String(status.config?.groupName ?? 'Group card'),
+                        loaderHandle,
+                        source: jobEventSource,
+                        startedAt: Number(status.createdAt ?? Date.now()),
+                        status: String(status.progress?.step ?? status.status ?? 'running'),
+                    });
+                    BulkEditOverlay.#renderGroupCardJobIndicator();
                 });
                 await getCharacters();
                 toastr.success('Group card generation completed.');
@@ -3279,4 +3425,5 @@ export {
     saveGroupCardPostMergePromptPreset,
     deleteGroupCardPostMergePromptPreset,
     createGeneratedGroupCard,
+    groupCardJobs,
 };

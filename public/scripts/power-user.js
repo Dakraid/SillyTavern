@@ -2783,13 +2783,13 @@ async function loadContextSettings() {
                 : storyString.length;
             const endPosition = Math.min(lastTrimPosition, lastCurlyPosition);
             storyString =
-                position === 'start'
-                    ? storyString.substring(0, firstCurlyPosition) +
-                        fieldTemplate +
-                        storyString.substring(firstCurlyPosition)
-                    : storyString.substring(0, endPosition) +
-                        fieldTemplate +
-                        storyString.substring(endPosition);
+				position === 'start'
+				    ? storyString.substring(0, firstCurlyPosition) +
+						fieldTemplate +
+						storyString.substring(firstCurlyPosition)
+				    : storyString.substring(0, endPosition) +
+						fieldTemplate +
+						storyString.substring(endPosition);
         }
 
         autoFixMissingField('anchorBefore', 'start');
@@ -4729,9 +4729,9 @@ jQuery(() => {
         const source = power_user.custom_tokenizer_source || 'url';
         const url = source === 'url' ? power_user.custom_tokenizer_url : undefined;
         const json =
-            source === 'paste'
-                ? String($('#custom_tokenizer_json').val() || '')
-                : undefined;
+			source === 'paste'
+			    ? String($('#custom_tokenizer_json').val() || '')
+			    : undefined;
 
         if (source === 'url' && !url?.trim()) {
             toastr.warning('Enter a HuggingFace model ID or tokenizer URL first.');

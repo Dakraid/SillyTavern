@@ -6,7 +6,11 @@ import path from 'node:path';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
-import { CHAT_COMPLETION_SOURCES, DEFAULT_AVATAR_PATH, TEXTGEN_TYPES } from '../constants.js';
+import {
+    CHAT_COMPLETION_SOURCES,
+    DEFAULT_AVATAR_PATH,
+    TEXTGEN_TYPES,
+} from '../constants.js';
 import { write as writeCharacterPngData } from '../character-card-parser.js';
 import { getUniqueName } from '../util.js';
 import { readSecret, SECRET_KEYS } from '../endpoints/secrets.js';
@@ -287,7 +291,9 @@ function resolveOpenAiLikeConfig(llmConfig) {
     const sourceConfig = getOpenAiSourceConfig(source, settings);
 
     if (!sourceConfig) {
-        throw new Error(`Unsupported server-side group card LLM source: ${source || 'unknown'}.`);
+        throw new Error(
+            `Unsupported server-side group card LLM source: ${source || 'unknown'}.`,
+        );
     }
 
     return {
@@ -325,31 +331,83 @@ function getOpenAiSourceConfig(source, settings) {
                 model: settings.custom_model,
             };
         case CHAT_COMPLETION_SOURCES.MISTRALAI:
-            return { apiUrl: API_MISTRAL, secretKey: SECRET_KEYS.MISTRALAI, model: settings.mistralai_model };
+            return {
+                apiUrl: API_MISTRAL,
+                secretKey: SECRET_KEYS.MISTRALAI,
+                model: settings.mistralai_model,
+            };
         case CHAT_COMPLETION_SOURCES.DEEPSEEK:
-            return { apiUrl: API_DEEPSEEK, secretKey: SECRET_KEYS.DEEPSEEK, model: settings.deepseek_model };
+            return {
+                apiUrl: API_DEEPSEEK,
+                secretKey: SECRET_KEYS.DEEPSEEK,
+                model: settings.deepseek_model,
+            };
         case CHAT_COMPLETION_SOURCES.XAI:
-            return { apiUrl: API_XAI, secretKey: SECRET_KEYS.XAI, model: settings.xai_model };
+            return {
+                apiUrl: API_XAI,
+                secretKey: SECRET_KEYS.XAI,
+                model: settings.xai_model,
+            };
         case CHAT_COMPLETION_SOURCES.AIMLAPI:
-            return { apiUrl: API_AIMLAPI, secretKey: SECRET_KEYS.AIMLAPI, model: settings.aimlapi_model };
+            return {
+                apiUrl: API_AIMLAPI,
+                secretKey: SECRET_KEYS.AIMLAPI,
+                model: settings.aimlapi_model,
+            };
         case CHAT_COMPLETION_SOURCES.GROQ:
-            return { apiUrl: API_GROQ, secretKey: SECRET_KEYS.GROQ, model: settings.groq_model };
+            return {
+                apiUrl: API_GROQ,
+                secretKey: SECRET_KEYS.GROQ,
+                model: settings.groq_model,
+            };
         case CHAT_COMPLETION_SOURCES.CHUTES:
-            return { apiUrl: API_CHUTES, secretKey: SECRET_KEYS.CHUTES, model: settings.chutes_model };
+            return {
+                apiUrl: API_CHUTES,
+                secretKey: SECRET_KEYS.CHUTES,
+                model: settings.chutes_model,
+            };
         case CHAT_COMPLETION_SOURCES.ELECTRONHUB:
-            return { apiUrl: API_ELECTRONHUB, secretKey: SECRET_KEYS.ELECTRONHUB, model: settings.electronhub_model };
+            return {
+                apiUrl: API_ELECTRONHUB,
+                secretKey: SECRET_KEYS.ELECTRONHUB,
+                model: settings.electronhub_model,
+            };
         case CHAT_COMPLETION_SOURCES.NANOGPT:
-            return { apiUrl: API_NANOGPT, secretKey: SECRET_KEYS.NANOGPT, model: settings.nanogpt_model };
+            return {
+                apiUrl: API_NANOGPT,
+                secretKey: SECRET_KEYS.NANOGPT,
+                model: settings.nanogpt_model,
+            };
         case CHAT_COMPLETION_SOURCES.MOONSHOT:
-            return { apiUrl: API_MOONSHOT, secretKey: SECRET_KEYS.MOONSHOT, model: settings.moonshot_model };
+            return {
+                apiUrl: API_MOONSHOT,
+                secretKey: SECRET_KEYS.MOONSHOT,
+                model: settings.moonshot_model,
+            };
         case CHAT_COMPLETION_SOURCES.FIREWORKS:
-            return { apiUrl: API_FIREWORKS, secretKey: SECRET_KEYS.FIREWORKS, model: settings.fireworks_model };
+            return {
+                apiUrl: API_FIREWORKS,
+                secretKey: SECRET_KEYS.FIREWORKS,
+                model: settings.fireworks_model,
+            };
         case CHAT_COMPLETION_SOURCES.COMETAPI:
-            return { apiUrl: API_COMETAPI, secretKey: SECRET_KEYS.COMETAPI, model: settings.cometapi_model };
+            return {
+                apiUrl: API_COMETAPI,
+                secretKey: SECRET_KEYS.COMETAPI,
+                model: settings.cometapi_model,
+            };
         case CHAT_COMPLETION_SOURCES.SILICONFLOW:
-            return { apiUrl: API_SILICONFLOW, secretKey: SECRET_KEYS.SILICONFLOW, model: settings.siliconflow_model };
+            return {
+                apiUrl: API_SILICONFLOW,
+                secretKey: SECRET_KEYS.SILICONFLOW,
+                model: settings.siliconflow_model,
+            };
         case CHAT_COMPLETION_SOURCES.ZAI:
-            return { apiUrl: API_ZAI, secretKey: SECRET_KEYS.ZAI, model: settings.zai_model };
+            return {
+                apiUrl: API_ZAI,
+                secretKey: SECRET_KEYS.ZAI,
+                model: settings.zai_model,
+            };
         default:
             return null;
     }
@@ -369,7 +427,9 @@ function resolveTextGenOpenAiConfig(llmConfig) {
     const apiKey = secretKey ? readSecret(llmConfig.directories, secretKey) : '';
 
     if (!apiUrl) {
-        throw new Error('Text Completion API server URL is required for server-side group card generation.');
+        throw new Error(
+            'Text Completion API server URL is required for server-side group card generation.',
+        );
     }
 
     return { apiUrl, apiKey, model, headers: {} };
@@ -431,7 +491,9 @@ function resolveLlmConfig(llmConfig) {
         return resolveTextGenOpenAiConfig(llmConfig);
     }
 
-    throw new Error(`Unsupported server-side group card API type: ${llmConfig.type || 'unknown'}.`);
+    throw new Error(
+        `Unsupported server-side group card API type: ${llmConfig.type || 'unknown'}.`,
+    );
 }
 
 async function callLlmApi(llmConfig, prompt, signal) {
@@ -881,7 +943,7 @@ export class GroupCardJobManager {
                 );
                 generatedDescription = validateGeneratedGroupCardDescription(
                     postMergeOutput,
-                    countCharacterBlocks(generatedDescription),
+                    0,
                 );
                 this.emitEvent(jobId, 'post_merge_completed', {
                     output: generatedDescription,
@@ -953,6 +1015,7 @@ export class GroupCardJobManager {
             ...config,
             groupName,
             prompt,
+            parallelPrompt: String(config.parallelPrompt ?? prompt).trim() || prompt,
             characters,
             fields: Array.isArray(config.fields) ? config.fields : [],
             processingMode: normalizeProcessingMode(config.processingMode),
@@ -1043,11 +1106,12 @@ export class GroupCardJobManager {
             this.emitEvent(job.id, 'character_started', { index, name });
 
             try {
+                const charPrompt = config.parallelPrompt || config.prompt;
                 const output = await withRetries(
                     () =>
                         callLlmApi(
                             config.llm,
-                            buildCombinePrompt(config.prompt, [character], config.fields),
+                            buildCombinePrompt(charPrompt, [character], config.fields),
                             signal,
                         ),
                     signal,
