@@ -222,21 +222,26 @@ function extractTopLevelXmlBlocks(text) {
 
         const tagName = match[1];
         const subBlocks = extractXmlBlocksByTag(text.slice(blockStart), tagName);
+        const nextSearchIndex = blockStart + match[0].length;
 
-        for (const block of subBlocks) {
-            const realEnd = blockStart + block.raw.length;
-            if (blockStart < consumedUpTo) {
-                continue;
+        if (subBlocks.length === 0) {
+            consumedUpTo = Math.max(consumedUpTo, nextSearchIndex);
+        } else {
+            for (const block of subBlocks) {
+                const realEnd = blockStart + block.raw.length;
+                if (blockStart < consumedUpTo) {
+                    continue;
+                }
+                blocks.push({
+                    tag: block.tag,
+                    content: block.content,
+                    raw: text.slice(blockStart, realEnd),
+                });
+                consumedUpTo = realEnd;
             }
-            blocks.push({
-                tag: block.tag,
-                content: block.content,
-                raw: text.slice(blockStart, realEnd),
-            });
-            consumedUpTo = realEnd;
         }
 
-        anyOpenRegex.lastIndex = consumedUpTo;
+        anyOpenRegex.lastIndex = Math.max(consumedUpTo, nextSearchIndex);
     }
 
     return blocks;
@@ -252,7 +257,8 @@ function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
     const blocks = extractTopLevelXmlBlocks(cleaned);
 
     if (blocks.length === 0) {
-        throw new Error('Generation did not return any valid XML blocks.');
+        console.warn('Group card generation: No XML blocks found in LLM output. Using raw text as fallback.');
+        return `<character>\n  <description>${escapeXml(cleaned)}</description>\n</character>`;
     }
 
     // Only enforce character-tag presence for multi-character generation.
@@ -262,9 +268,9 @@ function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
             (block) => block.tag === 'character',
         ).length;
 
-        if (characterTagCount < 1) {
+        if (characterTagCount < selectedCharacterCount) {
             throw new Error(
-                `Generation returned ${blocks.length} XML block(s) but none are <character> blocks.`,
+                `Generation returned ${characterTagCount} character block(s), expected at least ${selectedCharacterCount}.`,
             );
         }
     }
@@ -912,7 +918,8 @@ export class GroupCardJobManager {
         job.status = 'cancelled';
         job.abortController?.abort();
         this.emitEvent(id, 'job_failed', { error: 'Job cancelled.' });
-        this.closeSseClients(job);
+        // Defer close to allow SSE event to flush to clients
+        setTimeout(() => this.closeSseClients(job), 50);
         return true;
     }
 
@@ -1040,7 +1047,8 @@ export class GroupCardJobManager {
             job.results = result;
             job.status = 'completed';
             this.emitEvent(jobId, 'job_completed', job.results);
-            this.closeSseClients(job);
+            // Defer close to allow SSE event to flush to clients
+            setTimeout(() => this.closeSseClients(job), 50);
         } catch (error) {
             this.cleanupArtifacts(createdArtifacts);
 
@@ -1052,7 +1060,8 @@ export class GroupCardJobManager {
             job.status = 'failed';
             job.error = error?.message ?? String(error);
             this.emitEvent(jobId, 'job_failed', { error: job.error });
-            this.closeSseClients(job);
+            // Defer close to allow SSE event to flush to clients
+            setTimeout(() => this.closeSseClients(job), 50);
         }
     }
 
@@ -1433,6 +1442,7 @@ export class GroupCardJobManager {
         response.write(`id: ${id}\n`);
         response.write(`event: ${eventType}\n`);
         response.write(`data: ${JSON.stringify(data)}\n\n`);
+        response.flush?.();
     }
 
     /**

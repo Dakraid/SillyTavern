@@ -20,6 +20,12 @@ jest.unstable_mockModule('../public/script.js', () => ({
     printCharactersDebounced: jest.fn(),
     deleteCharacter: jest.fn(),
     saveSettingsDebounced: mockSaveSettingsDebounced,
+    substituteParams: value => value,
+    unshallowCharacter: jest.fn(character => character),
+    getThumbnailUrl: jest.fn(() => ''),
+    main_api: 'kobold',
+    amount_gen: 200,
+    max_context: 4096,
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ favsToHotswap: jest.fn() }));
@@ -32,6 +38,7 @@ jest.unstable_mockModule('../public/scripts/popup.js', () => ({
 }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     DEFAULT_GROUP_CARD_COMBINE_PROMPT,
+    DEFAULT_POST_MERGE_PROMPT: 'Default post-merge prompt.',
     power_user: mockPowerUser,
 }));
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
@@ -57,6 +64,11 @@ jest.unstable_mockModule('../public/scripts/world-info.js', () => ({
     },
     world_names: mockWorldNames,
 }));
+jest.unstable_mockModule('../public/scripts/openai.js', () => ({ oai_settings: {} }));
+jest.unstable_mockModule('../public/scripts/textgen-settings.js', () => ({ textgenerationwebui_settings: {} }));
+jest.unstable_mockModule('../public/scripts/nai-settings.js', () => ({ nai_settings: {} }));
+jest.unstable_mockModule('../public/scripts/kai-settings.js', () => ({ kai_settings: {} }));
+jest.unstable_mockModule('../public/scripts/horde.js', () => ({ horde_settings: {} }));
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     escapeHtml: value => String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -178,7 +190,7 @@ Intro text
 Trailing text
 \`\`\``, 2);
 
-        expect(result).toBe('<character>one</character>\n<character>two</character>');
+        expect(result).toBe('<character>one</character>\n\n<character>two</character>');
     });
 
     test('rejects empty generated output and too few character tags', () => {
@@ -388,4 +400,72 @@ Trailing text
         expect(entryContent).not.toContain('Example messages:');
     });
 
+});
+
+describe('XML parser edge cases', () => {
+    test('unclosed XML tag does not hang extractTopLevelXmlBlocks', () => {
+        const result = mod.validateGeneratedGroupCardDescription(
+            '<character>\n  <name>Alice</name>\n</character>\n<character>\n  <name>Bob</name>\n',
+            1,
+        );
+        expect(result).toContain('<name>Alice</name>');
+        expect(result).not.toContain('Bob');
+    });
+
+    test('truly unclosed tag is dropped without hanging', () => {
+        const result = mod.validateGeneratedGroupCardDescription(
+            '<character>\n  <name>Alice</name>\n',
+            1,
+        );
+        expect(result).toContain('Alice');
+    });
+
+    test('extracts XML blocks surrounded by prose text', () => {
+        const result = mod.validateGeneratedGroupCardDescription(
+            'Here are the characters:\n<character>Alice</character>\n<character>Bob</character>\nHope this helps!',
+            2,
+        );
+        expect(result).toBe('<character>Alice</character>\n\n<character>Bob</character>');
+    });
+
+    test('falls back to raw text wrapped in character block when no XML found', () => {
+        const result = mod.validateGeneratedGroupCardDescription(
+            'Just some plain text output from the LLM.',
+            1,
+        );
+        expect(result).toContain('<character>');
+        expect(result).toContain('Just some plain text output from the LLM.');
+        expect(result).toContain('</character>');
+    });
+
+    test('throws when fewer character blocks than expected', () => {
+        expect(() => mod.validateGeneratedGroupCardDescription(
+            '<character>one</character>\n<character>two</character>',
+            5,
+        )).toThrow('Generation returned 2 character block(s), expected at least 5.');
+    });
+
+    test('single-char mode accepts non-character XML tags', () => {
+        const result = mod.validateGeneratedGroupCardDescription(
+            '<persona>A mysterious figure</persona>',
+            1,
+        );
+        expect(result).toContain('<persona>');
+    });
+
+    test('strips markdown code fences from output', () => {
+        const result = mod.validateGeneratedGroupCardDescription(
+            '```xml\n<character>test</character>\n```',
+            1,
+        );
+        expect(result).toBe('<character>test</character>');
+    });
+
+    test('handles attributes on XML tags', () => {
+        const result = mod.validateGeneratedGroupCardDescription(
+            '<character role="main">Alice</character>',
+            1,
+        );
+        expect(result).toContain('Alice');
+    });
 });

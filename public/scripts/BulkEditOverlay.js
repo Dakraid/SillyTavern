@@ -195,9 +195,9 @@ function buildCoreCharacterPromptBlock(character, fields) {
     const fieldXml = normalizeSelectedFields(fields)
         .map((field) => {
             const value =
-				field === 'name'
-				    ? payload[field]
-				    : substituteParams(payload[field], { name2Override: characterName });
+                field === 'name'
+                    ? payload[field]
+                    : substituteParams(payload[field], { name2Override: characterName });
             return `  <${field}>${escapeHtml(value)}</${field}>`;
         })
         .join('\n');
@@ -339,21 +339,26 @@ function extractTopLevelXmlBlocks(text) {
 
         const tagName = match[1];
         const subBlocks = extractXmlBlocksByTag(text.slice(blockStart), tagName);
+        const nextSearchIndex = blockStart + match[0].length;
 
-        for (const block of subBlocks) {
-            const realEnd = blockStart + block.raw.length;
-            if (blockStart < consumedUpTo) {
-                continue;
+        if (subBlocks.length === 0) {
+            consumedUpTo = Math.max(consumedUpTo, nextSearchIndex);
+        } else {
+            for (const block of subBlocks) {
+                const realEnd = blockStart + block.raw.length;
+                if (blockStart < consumedUpTo) {
+                    continue;
+                }
+                blocks.push({
+                    tag: block.tag,
+                    content: block.content,
+                    raw: text.slice(blockStart, realEnd),
+                });
+                consumedUpTo = realEnd;
             }
-            blocks.push({
-                tag: block.tag,
-                content: block.content,
-                raw: text.slice(blockStart, realEnd),
-            });
-            consumedUpTo = realEnd;
         }
 
-        anyOpenRegex.lastIndex = consumedUpTo;
+        anyOpenRegex.lastIndex = Math.max(consumedUpTo, nextSearchIndex);
     }
 
     return blocks;
@@ -379,7 +384,8 @@ function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
     const blocks = extractTopLevelXmlBlocks(cleaned);
 
     if (blocks.length === 0) {
-        throw new Error('Generation did not return any valid XML blocks.');
+        console.warn('Group card generation: No XML blocks found in LLM output. Using raw text as fallback.');
+        return `<character>\n  <description>${escapeHtml(cleaned)}</description>\n</character>`;
     }
 
     // Only enforce character-tag presence for multi-character generation.
@@ -388,9 +394,9 @@ function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
             (b) => b.tag === 'character',
         ).length;
 
-        if (characterTagCount < 1) {
+        if (characterTagCount < selectedCharacterCount) {
             throw new Error(
-                `Generation returned ${blocks.length} XML block(s) but none are <character> blocks.`,
+                `Generation returned ${characterTagCount} character block(s), expected at least ${selectedCharacterCount}.`,
             );
         }
     }
@@ -3200,6 +3206,7 @@ class BulkEditOverlay {
             slug: 'combine-group-card',
             title: t`Combine into Group Card`,
             message: t`Starting server-side generation for "${groupName}"…`,
+            blocking: false,
             toastMode: loader.ToastMode.STOPPABLE,
             stopTooltip: t`Cancel`,
             onStop: async () => {
@@ -3255,24 +3262,35 @@ class BulkEditOverlay {
             }
 
             sessionStorage.setItem(GROUP_CARD_JOB_SESSION_KEY, jobId);
-            const result = await new Promise((resolve, reject) => {
-                jobEventSource = BulkEditOverlay.#connectGroupCardJobEvents(
-                    jobId,
-                    loaderHandle,
-                    selectedCharacters.length,
-                    resolve,
-                    reject,
-                );
-                groupCardJobs.set(jobId, {
-                    jobId,
-                    groupName,
-                    loaderHandle,
-                    source: jobEventSource,
-                    startedAt: Date.now(),
-                    status: 'running',
-                });
-                BulkEditOverlay.#renderGroupCardJobIndicator();
-            });
+            const SSE_TIMEOUT_MS = 5 * 60 * 1000;
+            const result = await Promise.race([
+                new Promise((resolve, reject) => {
+                    jobEventSource = BulkEditOverlay.#connectGroupCardJobEvents(
+                        jobId,
+                        loaderHandle,
+                        selectedCharacters.length,
+                        resolve,
+                        reject,
+                    );
+                    groupCardJobs.set(jobId, {
+                        jobId,
+                        groupName,
+                        loaderHandle,
+                        source: jobEventSource,
+                        startedAt: Date.now(),
+                        status: 'running',
+                    });
+                    BulkEditOverlay.#renderGroupCardJobIndicator();
+                }),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(
+                            new Error('Group card generation timed out after 5 minutes.'),
+                        ),
+                        SSE_TIMEOUT_MS,
+                    ),
+                ),
+            ]);
 
             sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
             return result;
