@@ -5,7 +5,7 @@ import {
     characters,
     event_types,
     eventSource,
-    Generate,
+    generateQuietPrompt,
     getCharacters,
     getRequestHeaders,
     buildAvatarList,
@@ -2054,7 +2054,13 @@ class BulkEditOverlay {
                 selectedCharacters,
                 config.fields,
             );
-            const generatedDescription = await Generate('quiet', { quiet_prompt });
+            const generatedDescription = String(
+                (await generateQuietPrompt({
+                    quietPrompt: quiet_prompt,
+                    quietToLoud: true,
+                    skipWIAN: true,
+                })) ?? '',
+            );
             const validatedDescription = validateGeneratedGroupCardDescription(
                 generatedDescription,
                 selectedCharacters.length,
@@ -2129,7 +2135,13 @@ class BulkEditOverlay {
                     selectedCharacters,
                     config.fields,
                 );
-                const generatedDescription = await Generate('quiet', { quiet_prompt });
+                const generatedDescription = String(
+                    (await generateQuietPrompt({
+                        quietPrompt: quiet_prompt,
+                        quietToLoud: true,
+                        skipWIAN: true,
+                    })) ?? '',
+                );
                 const validatedDescription = validateGeneratedGroupCardDescription(
                     generatedDescription,
                     selectedCharacters.length,
@@ -2573,7 +2585,13 @@ class BulkEditOverlay {
                     [character],
                     wizardState.config.fields,
                 );
-                const generated = await Generate('quiet', { quiet_prompt });
+                const generated = String(
+                    (await generateQuietPrompt({
+                        quietPrompt: quiet_prompt,
+                        quietToLoud: true,
+                        skipWIAN: true,
+                    })) ?? '',
+                );
                 const validated = validateGeneratedGroupCardDescription(generated, 1);
                 wizardState.characterOutputs[outputIndex] =
 					BulkEditOverlay.#normalizeWizardCharacterOutput({
@@ -2796,7 +2814,13 @@ class BulkEditOverlay {
         BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
         try {
             const generated = String(
-                (await Generate('quiet', { quiet_prompt })) ?? '',
+                (await generateQuietPrompt({
+                    quietPrompt: quiet_prompt,
+                    quietToLoud: true,
+                    skipWIAN: true,
+                    quietName: 'System',
+                    removeReasoning: true,
+                })) ?? '',
             ).trim();
             let result = generated;
             if (mode === 'replace') {
@@ -4177,7 +4201,13 @@ class BulkEditOverlay {
             selectedCharacters,
             fields,
         );
-        const generatedDescription = await Generate('quiet', { quiet_prompt });
+        const generatedDescription = String(
+            (await generateQuietPrompt({
+                quietPrompt: quiet_prompt,
+                quietToLoud: true,
+                skipWIAN: true,
+            })) ?? '',
+        );
         const validatedDescription = validateGeneratedGroupCardDescription(
             generatedDescription,
             selectedCharacters.length,
