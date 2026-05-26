@@ -1913,47 +1913,6 @@ class BulkEditOverlay {
                             </div>
                         </div>
                         <div class="field-group">
-                            <small>Post-processing</small>
-                            <div id="bulk_combine_group_card_post_process_mode" class="flex-row">
-                                <label class="checkbox_label">
-                                    <input type="radio" name="bulk_combine_post_process_mode" value="disabled" />
-                                    <span>Disabled</span>
-                                </label>
-                                <label class="checkbox_label">
-                                    <input type="radio" name="bulk_combine_post_process_mode" value="replace" />
-                                    <span>Replace</span>
-                                </label>
-                                <label class="checkbox_label">
-                                    <input type="radio" name="bulk_combine_post_process_mode" value="prepend" />
-                                    <span>Prepend</span>
-                                </label>
-                                <label class="checkbox_label">
-                                    <input type="radio" name="bulk_combine_post_process_mode" value="append" />
-                                    <span>Append</span>
-                                </label>
-                            </div>
-                            <div id="bulk_combine_group_card_post_process_section" class="field-group" style="display:none;">
-                                <label for="bulk_combine_group_card_post_process_prompt" class="text_label">
-                                    <span>Post-processing prompt</span>
-                                    <textarea id="bulk_combine_group_card_post_process_prompt" class="text_pole" rows="6"></textarea>
-                                </label>
-                                <div id="bulk_combine_group_card_post_process_preset_controls" class="flex-row">
-                                    <select id="bulk_combine_group_card_post_process_preset_select" class="text_pole">
-                                        <option value="">— Load preset —</option>
-                                    </select>
-                                    <div id="bulk_combine_group_card_post_process_preset_save" class="menu_button" title="Save post-processing prompt as preset">
-                                        <i class="fa-solid fa-floppy-disk"></i>
-                                    </div>
-                                    <div id="bulk_combine_group_card_post_process_preset_delete" class="menu_button" title="Delete selected preset">
-                                        <i class="fa-solid fa-trash-can"></i>
-                                    </div>
-                                    <div id="bulk_combine_group_card_post_process_preset_restore" class="menu_button" title="Restore built-in default">
-                                        <i class="fa-solid fa-rotate-left"></i>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="field-group">
                             <small>Avatar crop settings</small>
                             <div id="bulk_combine_group_card_crop" class="flex-row">
                                 <label class="text_label">
@@ -2489,6 +2448,20 @@ class BulkEditOverlay {
                         .text('Regen Failed'),
                 ),
         );
+        content.append(
+            $('<label></label>')
+                .addClass('checkbox_label skip-postprocess')
+                .append(
+                    $('<input type="checkbox" />')
+                        .attr('id', 'bulk_combine_skip_postprocess')
+                        .prop('checked', false),
+                )
+                .append(
+                    $('<span></span>').text(
+                        'Skip post-processing (use raw merged output)',
+                    ),
+                ),
+        );
 
         content.find('.autofix').on('click', function () {
             const card = $(this).closest('.result-card');
@@ -2729,18 +2702,65 @@ class BulkEditOverlay {
                         .val() ?? 'replace',
                 );
             });
-        content.find('#bulk_combine_apply_postprocess').on('click', async () => {
-            await BulkEditOverlay.#applyWizardPostProcessing(
-                popupContent,
-                wizardState,
-            );
-        });
+        content
+            .find('#bulk_combine_apply_postprocess')
+            .on('click', async function () {
+                const button = $(this);
+                if (button.hasClass('disabled')) {
+                    return;
+                }
+
+                button
+                    .addClass('disabled')
+                    .css('pointer-events', 'none')
+                    .text('Processing…');
+                const preview = content.find('#bulk_combine_postprocess_preview');
+                preview.html(
+                    '<p><i class="fa-solid fa-spinner fa-spin"></i> Running post-processing…</p>',
+                );
+
+                try {
+                    const applied = await BulkEditOverlay.#applyWizardPostProcessing(
+                        popupContent,
+                        wizardState,
+                    );
+                    if (applied) {
+                        toastr.success(
+                            'Post-processing complete.',
+                            'Combine into Group Card',
+                        );
+                    } else if (!wizardState.postProcessResult) {
+                        preview
+                            .empty()
+                            .append(
+                                $('<small></small>').text(
+                                    'Click "Apply Post-Processing" to see the result.',
+                                ),
+                            );
+                    }
+                } catch (error) {
+                    console.error(error);
+                    preview.html(
+                        `<p class="error">Post-processing failed: ${escapeHtml(error?.message ?? 'Unknown error')}</p>`,
+                    );
+                    toastr.error(
+                        error?.message ?? 'Post-processing failed.',
+                        'Combine into Group Card',
+                    );
+                } finally {
+                    button
+                        .removeClass('disabled')
+                        .css('pointer-events', '')
+                        .text('Apply Post-Processing');
+                }
+            });
     };
 
     /**
 	 * Applies Stage 3 post-processing.
 	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
 	 * @param {object} wizardState Wizard state.
+	 * @returns {Promise<boolean>} Whether post-processing completed.
 	 */
     static #applyWizardPostProcessing = async (popupContent, wizardState) => {
         const content = popupContent.find('#bulk_combine_postprocess_content');
@@ -2757,7 +2777,7 @@ class BulkEditOverlay {
                 'Enter a post-processing prompt.',
                 'Combine into Group Card',
             );
-            return;
+            return false;
         }
         BulkEditOverlay.#updateWizardMergedXml(wizardState);
         if (!wizardState.mergedXml) {
@@ -2765,7 +2785,7 @@ class BulkEditOverlay {
                 'At least one valid output required.',
                 'Combine into Group Card',
             );
-            return;
+            return false;
         }
         const quiet_prompt =
 			mode === 'replace'
@@ -2788,7 +2808,7 @@ class BulkEditOverlay {
                         `Post-processing returned ${outputCount} XML block(s), expected ${inputCount}.`,
                         'Combine into Group Card',
                     );
-                    return;
+                    return false;
                 }
                 result = fixed;
             } else if (mode === 'prepend') {
@@ -2798,15 +2818,12 @@ class BulkEditOverlay {
             }
             wizardState.postProcessMode = mode;
             wizardState.postProcessResult = result;
+            power_user.group_card_post_process_mode = mode;
+            power_user.group_card_post_merge_prompt = prompt;
+            saveSettingsDebounced();
             content.find('#bulk_combine_postprocess_preview').text(result);
             BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
-            toastr.success('Post-processing applied.', 'Combine into Group Card');
-        } catch (error) {
-            console.error(error);
-            toastr.error(
-                error?.message ?? 'Failed to apply post-processing.',
-                'Combine into Group Card',
-            );
+            return true;
         } finally {
             if (!wizardState.postProcessResult) {
                 BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
@@ -3321,12 +3338,6 @@ class BulkEditOverlay {
         const concurrencyInput = popupContent.find(
             '#bulk_combine_group_card_concurrency',
         );
-        const postProcessModeInputs = popupContent.find(
-            'input[name="bulk_combine_post_process_mode"]',
-        );
-        const postProcessPromptInput = popupContent.find(
-            '#bulk_combine_group_card_post_process_prompt',
-        );
         const cropStrategySelect = popupContent.find(
             '#bulk_combine_group_card_crop_strategy',
         );
@@ -3359,19 +3370,11 @@ class BulkEditOverlay {
         const concurrency = Number.isFinite(parsedConcurrency)
             ? Math.max(1, Math.min(50, Math.round(parsedConcurrency)))
             : 10;
-        const selectedPostProcessMode = String(
-            postProcessModeInputs.filter(':checked').val() ?? 'replace',
-        );
-        const postProcessMode = [
-            'disabled',
-            'replace',
-            'prepend',
-            'append',
-        ].includes(selectedPostProcessMode)
-            ? selectedPostProcessMode
-            : 'replace';
-        const postMergeEnabled = postProcessMode !== 'disabled';
-        const postMergePrompt = String(postProcessPromptInput.val() ?? '').trim();
+        const postProcessMode = 'replace';
+        const postMergeEnabled = true;
+        const postMergePrompt = String(
+            power_user.group_card_post_merge_prompt ?? DEFAULT_POST_MERGE_PROMPT,
+        ).trim();
         const cropStrategyValue = String(cropStrategySelect.val() ?? 'attention');
         const cropStrategy = [
             'attention',
@@ -3422,9 +3425,6 @@ class BulkEditOverlay {
         power_user.group_card_combine_included_fields = selectedOptionalFields;
         power_user.group_card_processing_mode = processingMode;
         power_user.group_card_parallel_concurrency = concurrency;
-        power_user.group_card_post_merge_enabled = postMergeEnabled;
-        power_user.group_card_post_merge_prompt = postMergePrompt;
-        power_user.group_card_post_process_mode = postProcessMode;
         power_user.group_card_crop_strategy = cropStrategy;
         power_user.group_card_crop_padding = cropPadding;
         saveSettingsDebounced();
@@ -3444,8 +3444,7 @@ class BulkEditOverlay {
             cropStrategy,
             cropPadding,
         };
-        wizardState.postProcessMode =
-			postProcessMode === 'disabled' ? 'replace' : postProcessMode;
+        wizardState.postProcessMode = postProcessMode;
         wizardState.characterOutputs = [];
         wizardState.results = null;
         wizardState.postProcessResult = null;
@@ -3516,13 +3515,14 @@ class BulkEditOverlay {
         const wizardHtml = BulkEditOverlay.#getCombineGroupCardWizardHtml(
             validCharacters.length,
         );
-        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, characterOutputs:Array<object>, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null}} */
+        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, characterOutputs:Array<object>, mergedXml:string, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null}} */
         const wizardState = {
             stage: 1,
             config: {},
             selectedCharacterIds,
             results: null,
             characterOutputs: [],
+            mergedXml: '',
             postProcessResult: null,
             postProcessMode: 'replace',
             avatarOffsets: [],
@@ -3568,27 +3568,6 @@ class BulkEditOverlay {
                 const concurrencyInput = popupContent.find(
                     '#bulk_combine_group_card_concurrency',
                 );
-                const postProcessModeInputs = popupContent.find(
-                    'input[name="bulk_combine_post_process_mode"]',
-                );
-                const postProcessSection = popupContent.find(
-                    '#bulk_combine_group_card_post_process_section',
-                );
-                const postProcessPromptInput = popupContent.find(
-                    '#bulk_combine_group_card_post_process_prompt',
-                );
-                const postProcessPresetSelect = popupContent.find(
-                    '#bulk_combine_group_card_post_process_preset_select',
-                );
-                const postProcessSavePresetButton = popupContent.find(
-                    '#bulk_combine_group_card_post_process_preset_save',
-                );
-                const postProcessDeletePresetButton = popupContent.find(
-                    '#bulk_combine_group_card_post_process_preset_delete',
-                );
-                const postProcessRestorePresetButton = popupContent.find(
-                    '#bulk_combine_group_card_post_process_preset_restore',
-                );
                 const cropStrategySelect = popupContent.find(
                     '#bulk_combine_group_card_crop_strategy',
                 );
@@ -3618,23 +3597,6 @@ class BulkEditOverlay {
                         : '10',
                 );
                 concurrencyContainer.toggle(persistedMode === 'parallel');
-
-                const persistedPostProcessMode = [
-                    'disabled',
-                    'replace',
-                    'prepend',
-                    'append',
-                ].includes(power_user.group_card_post_process_mode)
-                    ? power_user.group_card_post_process_mode
-                    : 'replace';
-                postProcessModeInputs
-                    .filter(`[value="${persistedPostProcessMode}"]`)
-                    .prop('checked', true);
-                postProcessSection.toggle(persistedPostProcessMode !== 'disabled');
-                postProcessPromptInput.val(
-                    power_user.group_card_post_merge_prompt ?? DEFAULT_POST_MERGE_PROMPT,
-                );
-                renderGroupCardPostMergePromptPresetSelect(postProcessPresetSelect);
 
                 cropStrategySelect.val(
                     ['attention', 'entropy', 'center', 'top', 'face'].includes(
@@ -3683,72 +3645,8 @@ class BulkEditOverlay {
                     concurrencyContainer.toggle(selectedMode === 'parallel');
                 });
 
-                postProcessModeInputs.on('change', () => {
-                    const selectedMode = String(
-                        postProcessModeInputs.filter(':checked').val() ?? 'replace',
-                    );
-                    postProcessSection.toggle(selectedMode !== 'disabled');
-                });
-
                 cropPaddingInput.on('input', () => {
                     cropPaddingValue.text(String(cropPaddingInput.val() ?? '15'));
-                });
-
-                postProcessPresetSelect.on('change', () => {
-                    const presetIndex = Number(postProcessPresetSelect.val());
-                    const preset = getGroupCardPostMergePromptPresets()[presetIndex];
-
-                    if (preset) {
-                        postProcessPromptInput.val(preset.prompt);
-                    }
-                });
-
-                postProcessSavePresetButton.on('click', async () => {
-                    const currentIndex = Number(postProcessPresetSelect.val());
-                    const currentPreset =
-						getGroupCardPostMergePromptPresets()[currentIndex];
-                    const presetName = await callGenericPopup(
-                        'Enter a post-processing prompt preset name:',
-                        POPUP_TYPE.INPUT,
-                        currentPreset?.name ?? '',
-                        {
-                            okButton: 'Save',
-                            cancelButton: 'Cancel',
-                        },
-                    );
-
-                    if (!presetName) {
-                        return;
-                    }
-
-                    const savedPreset = await saveGroupCardPostMergePromptPreset(
-                        String(presetName),
-                        String(postProcessPromptInput.val() ?? ''),
-                    );
-
-                    if (!savedPreset) {
-                        return;
-                    }
-
-                    const savedIndex = findGroupCardPostMergePromptPresetIndex(
-                        savedPreset.name,
-                    );
-                    renderGroupCardPostMergePromptPresetSelect(
-                        postProcessPresetSelect,
-                        savedIndex,
-                    );
-                });
-
-                postProcessDeletePresetButton.on('click', () => {
-                    const presetIndex = Number(postProcessPresetSelect.val());
-
-                    if (deleteGroupCardPostMergePromptPreset(presetIndex)) {
-                        renderGroupCardPostMergePromptPresetSelect(postProcessPresetSelect);
-                    }
-                });
-
-                postProcessRestorePresetButton.on('click', () => {
-                    postProcessPromptInput.val(DEFAULT_POST_MERGE_PROMPT);
                 });
 
                 presetSelect.on('change', () => {
@@ -3852,6 +3750,17 @@ class BulkEditOverlay {
                                     'Combine into Group Card',
                                 );
                                 return;
+                            }
+                            if (
+                                popupContent
+                                    .find('#bulk_combine_skip_postprocess')
+                                    .prop('checked')
+                            ) {
+                                wizardState.postProcessResult = wizardState.mergedXml;
+                                wizardState.postProcessMode = 'replace';
+                                BulkEditOverlay.#wizardGoToStage(popupContent, wizardState, 4);
+                                BulkEditOverlay.#renderStage4Content(popupContent, wizardState);
+                                break;
                             }
                             BulkEditOverlay.#wizardGoToStage(popupContent, wizardState, 3);
                             BulkEditOverlay.#renderStage3Content(popupContent, wizardState);
