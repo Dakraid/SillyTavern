@@ -18,7 +18,7 @@ const BORDER_RADIUS = 1;
  * Generate a Voronoi mosaic composite from character avatar images.
  * @param {string[]} avatarPaths Absolute paths to character avatar PNGs.
  * @param {string} outputPath Where to write the composite PNG.
- * @param {{width?: number, height?: number, cropStrategy?: string, cropPadding?: number}} options Output dimensions and crop options.
+ * @param {{width?: number, height?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>}} options Output dimensions, crop options, and per-avatar offsets.
  * @returns {Promise<string>} The output path.
  */
 export async function generateVoronoiComposite(
@@ -51,12 +51,14 @@ export async function generateVoronoiComposite(
             ? Math.round(options.height)
             : DEFAULT_HEIGHT;
     const cropOptions = normalizeCropOptions(options);
+    const offsets = normalizeOffsets(options.offsets, avatarPaths.length);
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
     if (avatarPaths.length === 1) {
         const buffer = await readAvatarBuffer(avatarPaths[0], width, height, cropOptions);
-        await sharp(buffer).png().toFile(outputPath);
+        const offsetBuffer = await applyAvatarOffset(buffer, width, height, offsets[0]);
+        await sharp(offsetBuffer).png().toFile(outputPath);
         return outputPath;
     }
 
@@ -79,10 +81,16 @@ export async function generateVoronoiComposite(
         polygons.push(normalizedPolygon);
 
         const imageBuffer = await readAvatarBuffer(avatarPaths[i], width, height, cropOptions);
+        const offsetImageBuffer = await applyAvatarOffset(
+            imageBuffer,
+            width,
+            height,
+            offsets[i],
+        );
         const maskBuffer = Buffer.from(
             createSvgPolygonMask(width, height, normalizedPolygon),
         );
-        const maskedCell = await sharp(imageBuffer)
+        const maskedCell = await sharp(offsetImageBuffer)
             .composite([{ input: maskBuffer, blend: 'dest-in' }])
             .png()
             .toBuffer();
@@ -160,6 +168,96 @@ function normalizeCropOptions(options = {}) {
             : DEFAULT_CROP_PADDING;
 
     return { cropStrategy, cropPadding };
+}
+
+function normalizeOffsets(offsets, count) {
+    return Array.from({ length: count }, (_, index) =>
+        normalizeOffset(Array.isArray(offsets) ? offsets[index] : null),
+    );
+}
+
+function normalizeOffset(offset) {
+    const x = Number(offset?.x);
+    const y = Number(offset?.y);
+    const scale = Number(offset?.scale);
+
+    return {
+        x: Number.isFinite(x) ? clamp(Math.round(x), -100, 100) : 0,
+        y: Number.isFinite(y) ? clamp(Math.round(y), -100, 100) : 0,
+        scale: Number.isFinite(scale) ? clamp(Math.round(scale), 50, 200) : 100,
+    };
+}
+
+async function applyAvatarOffset(imageBuffer, width, height, offset) {
+    const { x, y, scale } = normalizeOffset(offset);
+
+    if (x === 0 && y === 0 && scale === 100) {
+        return imageBuffer;
+    }
+
+    let transformedBuffer = imageBuffer;
+    let transformedWidth = width;
+    let transformedHeight = height;
+
+    if (scale !== 100) {
+        const scaleFactor = scale / 100;
+        transformedWidth = Math.round(width * scaleFactor);
+        transformedHeight = Math.round(height * scaleFactor);
+        transformedBuffer = await sharp(imageBuffer)
+            .resize(transformedWidth, transformedHeight, {
+                fit: 'cover',
+            })
+            .png()
+            .toBuffer();
+    }
+
+    const canvasLeft = clamp(x, 0, width);
+    const canvasTop = clamp(y, 0, height);
+    const canvasRight = clamp(x + transformedWidth, 0, width);
+    const canvasBottom = clamp(y + transformedHeight, 0, height);
+    const visibleWidth = canvasRight - canvasLeft;
+    const visibleHeight = canvasBottom - canvasTop;
+
+    if (visibleWidth <= 0 || visibleHeight <= 0) {
+        return createTransparentCanvas(width, height);
+    }
+
+    const extractLeft = Math.max(0, -x);
+    const extractTop = Math.max(0, -y);
+    const visibleBuffer = await sharp(transformedBuffer)
+        .extract({
+            left: extractLeft,
+            top: extractTop,
+            width: visibleWidth,
+            height: visibleHeight,
+        })
+        .png()
+        .toBuffer();
+
+    return sharp({
+        create: {
+            width,
+            height,
+            channels: 4,
+            background: { r: 0, g: 0, b: 0, alpha: 0 },
+        },
+    })
+        .composite([{ input: visibleBuffer, left: canvasLeft, top: canvasTop }])
+        .png()
+        .toBuffer();
+}
+
+async function createTransparentCanvas(width, height) {
+    return sharp({
+        create: {
+            width,
+            height,
+            channels: 4,
+            background: { r: 0, g: 0, b: 0, alpha: 0 },
+        },
+    })
+        .png()
+        .toBuffer();
 }
 
 function getSharpCropPosition(cropStrategy) {

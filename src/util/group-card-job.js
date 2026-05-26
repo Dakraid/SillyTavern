@@ -18,6 +18,7 @@ import { generateVoronoiComposite } from './voronoi-composite.js';
 import {
     escapeXml,
     validateGeneratedGroupCardDescription,
+    countXmlCorpus,
 } from '../../public/scripts/group-card-xml-parser.js';
 
 const JOB_TTL_MS = 30 * 60 * 1000;
@@ -109,6 +110,10 @@ function normalizeProcessingMode(value) {
     return ['combined', 'parallel', 'serial'].includes(value)
         ? value
         : 'combined';
+}
+
+function normalizePostProcessMode(value) {
+    return ['replace', 'prepend', 'append'].includes(value) ? value : 'replace';
 }
 
 function delay(ms, signal) {
@@ -904,10 +909,38 @@ export class GroupCardJobManager {
                         ),
                     signal,
                 );
-                generatedDescription = validateGeneratedGroupCardDescription(
+                const validatedPostMergeOutput = validateGeneratedGroupCardDescription(
                     postMergeOutput,
                     0,
                 );
+
+                switch (config.postProcessMode) {
+                    case 'prepend':
+                        generatedDescription = `${validatedPostMergeOutput}\n\n${generatedDescription}`;
+                        break;
+                    case 'append':
+                        generatedDescription = `${generatedDescription}\n\n${validatedPostMergeOutput}`;
+                        break;
+                    case 'replace':
+                    default: {
+                        const inputCorpusCount = countXmlCorpus(generatedDescription);
+                        const outputCorpusCount = countXmlCorpus(validatedPostMergeOutput);
+
+                        if (
+                            inputCorpusCount > 0 &&
+							outputCorpusCount !== inputCorpusCount
+                        ) {
+                            throw new Error(
+                                `Post-processing returned ${outputCorpusCount} root XML corpus block(s), expected ${inputCorpusCount}.`,
+                            );
+                        }
+
+                        generatedDescription = validatedPostMergeOutput;
+                        break;
+                    }
+                }
+
+                job.results.postProcessOutput = generatedDescription;
                 this.emitEvent(jobId, 'post_merge_completed', {
                     output: generatedDescription,
                 });
@@ -921,7 +954,7 @@ export class GroupCardJobManager {
             );
 
             job.progress = { step: 'completed' };
-            job.results = result;
+            job.results = { ...job.results, ...result };
             job.status = 'completed';
             this.emitEvent(jobId, 'job_completed', job.results);
             // Defer close to allow SSE event to flush to clients
@@ -987,9 +1020,13 @@ export class GroupCardJobManager {
             concurrency: normalizeConcurrency(config.concurrency),
             postMergeEnabled: Boolean(config.postMergeEnabled),
             postMergePrompt: String(config.postMergePrompt ?? ''),
+            postProcessMode: normalizePostProcessMode(config.postProcessMode),
             createLorebook: Boolean(config.createLorebook),
             cropStrategy: config.cropStrategy,
             cropPadding: config.cropPadding,
+            avatarOffsets: Array.isArray(config.avatarOffsets)
+                ? config.avatarOffsets
+                : [],
             directories: config.directories,
             llm: {
                 ...(config.llm && typeof config.llm === 'object' ? config.llm : {}),
@@ -1037,6 +1074,7 @@ export class GroupCardJobManager {
             output,
             config.characters.length,
         );
+        job.results.combinedOutput = validatedOutput;
 
         this.emitEvent(job.id, 'merge_completed', { output: validatedOutput });
         return validatedOutput;
@@ -1051,6 +1089,7 @@ export class GroupCardJobManager {
     async generateIndividualMode(job, config, concurrency) {
         const signal = job.abortController?.signal;
         const warnings = [];
+        job.results.characterOutputs = [];
 
         this.emitEvent(job.id, 'merge_started', {
             mode: concurrency === 1 ? 'serial' : 'parallel',
@@ -1083,6 +1122,12 @@ export class GroupCardJobManager {
                     output,
                     1,
                 );
+                job.results.characterOutputs.push({
+                    characterIndex: index,
+                    characterName: name,
+                    xmlOutput: validatedOutput,
+                    parseStatus: 'ok',
+                });
                 this.emitEvent(job.id, 'character_completed', {
                     index,
                     name,
@@ -1091,6 +1136,13 @@ export class GroupCardJobManager {
                 return { ok: true, output: validatedOutput };
             } catch (error) {
                 const message = error?.message ?? String(error);
+                job.results.characterOutputs.push({
+                    characterIndex: index,
+                    characterName: name,
+                    xmlOutput: '',
+                    parseStatus: 'error',
+                    error: message,
+                });
                 this.emitEvent(job.id, 'character_failed', {
                     index,
                     name,
@@ -1168,6 +1220,7 @@ export class GroupCardJobManager {
         await generateVoronoiComposite(avatarPaths, tempAvatarPath, {
             cropStrategy: config.cropStrategy,
             cropPadding: config.cropPadding,
+            offsets: config.avatarOffsets,
         });
         this.emitEvent(job.id, 'avatar_completed', {});
         throwIfAborted(signal);

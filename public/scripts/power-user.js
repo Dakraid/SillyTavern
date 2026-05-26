@@ -376,6 +376,7 @@ export const power_user = {
     group_card_post_merge_enabled: true,
     group_card_post_merge_prompt: DEFAULT_POST_MERGE_PROMPT,
     group_card_post_merge_prompt_presets: [],
+    group_card_post_process_mode: 'replace',
     group_card_crop_strategy: 'attention',
     group_card_crop_padding: 15,
     fuzzy_search: false,

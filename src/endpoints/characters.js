@@ -343,9 +343,9 @@ export async function applyAvatarCropResize(jimp, crop) {
     // Apply crop if defined
     if (
         typeof crop == 'object' &&
-        [crop.x, crop.y, crop.width, crop.height].every(
-            (x) => typeof x === 'number',
-        )
+		[crop.x, crop.y, crop.width, crop.height].every(
+		    (x) => typeof x === 'number',
+		)
     ) {
         image.crop({ x: crop.x, y: crop.y, w: crop.width, h: crop.height });
         // Apply standard resize if requested
@@ -956,13 +956,13 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
     const byafData = await new ByafParser(data).parse();
     const card = readFromV2(byafData.card);
     const fileName =
-        preservedFileName ||
-        getPngName(
-            sanitize(byafData.character.displayName || card.name, {
-                replacement: sanitizeSafeCharacterReplacements,
-            }),
-            request.user.directories,
-        );
+		preservedFileName ||
+		getPngName(
+		    sanitize(byafData.character.displayName || card.name, {
+		        replacement: sanitizeSafeCharacterReplacements,
+		    }),
+		    request.user.directories,
+		);
 
     // Don't import chats and images if the character is being replaced or updated, instead of newly imported.
     if (!preservedFileName) {
@@ -2267,10 +2267,14 @@ router.post('/generate-voronoi-composite', async function (request, response) {
             request.body.cropStrategy,
         );
         const cropPadding = normalizeVoronoiCropPadding(request.body.cropPadding);
+        const offsets = Array.isArray(request.body.offsets)
+            ? request.body.offsets.map(normalizeVoronoiOffset).filter(Boolean)
+            : undefined;
 
         await generateVoronoiComposite(avatarPaths, outputPath, {
             cropStrategy,
             cropPadding,
+            offsets,
         });
 
         return response.send({ file: tempFile });
@@ -2296,6 +2300,20 @@ function normalizeVoronoiCropPadding(value) {
     }
 
     return padding;
+}
+
+function normalizeVoronoiOffset(offset) {
+    if (!offset || typeof offset !== 'object') return undefined;
+    const x = Number(offset.x);
+    const y = Number(offset.y);
+    const scale = Number(offset.scale);
+    return {
+        x: Number.isFinite(x) ? Math.max(-100, Math.min(100, Math.round(x))) : 0,
+        y: Number.isFinite(y) ? Math.max(-100, Math.min(100, Math.round(y))) : 0,
+        scale: Number.isFinite(scale)
+            ? Math.max(50, Math.min(200, Math.round(scale)))
+            : 100,
+    };
 }
 
 router.get('/generate-voronoi-composite', async function (request, response) {

@@ -44,7 +44,13 @@ import {
 import { t } from './i18n.js';
 import { newWorldInfoEntryTemplate, world_names } from './world-info.js';
 import { escapeHtml } from './utils.js';
-import { validateGeneratedGroupCardDescription } from './group-card-xml-parser.js';
+import {
+    validateGeneratedGroupCardDescription,
+    extractTopLevelXmlBlocks,
+    countXmlCorpus,
+    autoFixXml,
+    extractFirstMessage,
+} from './group-card-xml-parser.js';
 import { oai_settings } from './openai.js';
 import { textgenerationwebui_settings } from './textgen-settings.js';
 import { nai_settings } from './nai-settings.js';
@@ -1828,128 +1834,1277 @@ class BulkEditOverlay {
     };
 
     /**
-	 * Gets the HTML as a string that is displayed inside the group card combine popup.
+	 * Gets the HTML as a string that is displayed inside the group card combine wizard.
 	 *
 	 * @param {number} characterCount Selected valid character count.
 	 * @returns {string} Popup content HTML.
 	 */
-    static #getCombineGroupCardPopupContentHtml = (characterCount) => {
+    static #getCombineGroupCardWizardHtml = (characterCount) => {
         return `
-            <h3 class="marginBot5">Combine into Group Card</h3>
-            <small class="bulk_combine_group_card_desc m-b-1">Generate a group card from ${characterCount} selected characters.</small>
-            <div id="bulk_combine_group_card_characters" class="marginBot10">
-                <h4>Selected Characters</h4>
-                <div id="bulk_combine_group_card_selected_list" class="avatars_inline avatars_inline_small"></div>
-                <div id="bulk_combine_group_card_add_section" class="m-t-1">
-                    <div class="flex-container">
-                        <input id="bulk_combine_group_card_search" class="text_pole flex1" type="text" placeholder="Search characters..." />
-                    </div>
-                    <div id="bulk_combine_group_card_available_list" class="m-t-1" style="max-height: 200px; overflow-y: auto;"></div>
-                </div>
-            </div>
-            <label for="bulk_combine_group_card_name" class="text_label">
-                <span>Group name</span>
-                <input id="bulk_combine_group_card_name" class="text_pole wide100p margin0" type="text" autocomplete="off" autofocus />
-            </label>
-            <label for="bulk_combine_group_card_prompt" class="text_label marginTop10">
-                <span>Prompt</span>
-                <textarea id="bulk_combine_group_card_prompt" class="text_pole wide100p margin0" rows="12"></textarea>
-            </label>
-            <div id="bulk_combine_group_card_preset_controls" class="m-t-1 flex-container">
-                <select id="bulk_combine_group_card_preset_select" class="text_pole flex1">
-                    <option value="">— Load preset —</option>
-                </select>
-                <div id="bulk_combine_group_card_preset_save" class="menu_button" title="Save current prompt as preset">
-                    <i class="fa-solid fa-floppy-disk"></i>
-                </div>
-                <div id="bulk_combine_group_card_preset_delete" class="menu_button" title="Delete selected preset">
-                    <i class="fa-solid fa-trash-can"></i>
-                </div>
-                <div id="bulk_combine_group_card_preset_restore" class="menu_button" title="Restore built-in default prompt">
-                    <i class="fa-solid fa-rotate-left"></i>
-                </div>
-            </div>
-            <div class="marginTop10">
-                <small>Processing mode</small>
-                <div id="bulk_combine_group_card_mode" class="flex-container">
-                    <label class="checkbox_label">
-                        <input type="radio" name="bulk_combine_mode" value="combined" />
-                        <span>Combined</span>
-                    </label>
-                    <label class="checkbox_label">
-                        <input type="radio" name="bulk_combine_mode" value="parallel" />
-                        <span>Parallel</span>
-                    </label>
-                    <label class="checkbox_label">
-                        <input type="radio" name="bulk_combine_mode" value="serial" />
-                        <span>Serial</span>
-                    </label>
-                </div>
-                <div id="bulk_combine_group_card_concurrency_container" class="m-t-1" style="display:none;">
-                    <label for="bulk_combine_group_card_concurrency" class="text_label">
-                        <span>Max concurrency</span>
-                        <input id="bulk_combine_group_card_concurrency" class="text_pole" type="number" min="1" max="50" value="10" style="width:80px;" />
-                    </label>
-                </div>
-            </div>
-            <div class="marginTop10">
-                <label class="checkbox_label">
-                    <input type="checkbox" id="bulk_combine_group_card_post_merge_toggle" />
-                    <span>Universal post-merge step</span>
-                </label>
-                <div id="bulk_combine_group_card_post_merge_section" class="m-t-1">
-                    <label for="bulk_combine_group_card_post_merge_prompt" class="text_label">
-                        <span>Post-merge prompt</span>
-                        <textarea id="bulk_combine_group_card_post_merge_prompt" class="text_pole wide100p margin0" rows="6"></textarea>
-                    </label>
-                    <div id="bulk_combine_group_card_post_merge_preset_controls" class="m-t-1 flex-container">
-                        <select id="bulk_combine_group_card_post_merge_preset_select" class="text_pole flex1">
-                            <option value="">— Load preset —</option>
-                        </select>
-                        <div id="bulk_combine_group_card_post_merge_preset_save" class="menu_button" title="Save post-merge prompt as preset">
-                            <i class="fa-solid fa-floppy-disk"></i>
-                        </div>
-                        <div id="bulk_combine_group_card_post_merge_preset_delete" class="menu_button" title="Delete selected preset">
-                            <i class="fa-solid fa-trash-can"></i>
-                        </div>
-                        <div id="bulk_combine_group_card_post_merge_preset_restore" class="menu_button" title="Restore built-in default">
-                            <i class="fa-solid fa-rotate-left"></i>
-                        </div>
+            <div id="bulk_combine_wizard" class="bulk_combine_wizard">
+                <div class="bulk_combine_wizard_header marginBot10">
+                    <h3 class="bulk_combine_wizard_title marginBot5">Combine into Group Card</h3>
+                    <div class="bulk_combine_wizard_stages flex-container flexFlowColumn" style="gap:0.25em;">
+                        <div class="bulk_combine_stage_indicator active" data-stage="1">1. Config</div>
+                        <div class="bulk_combine_stage_indicator" data-stage="2">2. Results</div>
+                        <div class="bulk_combine_stage_indicator" data-stage="3">3. Post-Process</div>
+                        <div class="bulk_combine_stage_indicator" data-stage="4">4. Review</div>
                     </div>
                 </div>
+                <div class="bulk_combine_wizard_body">
+                    <div id="bulk_combine_stage_1" class="bulk_combine_stage active">
+                        <small class="bulk_combine_group_card_desc m-b-1">Generate a group card from ${characterCount} selected characters.</small>
+                        <div id="bulk_combine_group_card_characters" class="marginBot10">
+                            <h4>Selected Characters</h4>
+                            <div id="bulk_combine_group_card_selected_list" class="avatars_inline avatars_inline_small"></div>
+                            <div id="bulk_combine_group_card_add_section" class="m-t-1">
+                                <div class="flex-container">
+                                    <input id="bulk_combine_group_card_search" class="text_pole flex1" type="text" placeholder="Search characters..." />
+                                </div>
+                                <div id="bulk_combine_group_card_available_list" class="m-t-1" style="max-height: 200px; overflow-y: auto;"></div>
+                            </div>
+                        </div>
+                        <label for="bulk_combine_group_card_name" class="text_label">
+                            <span>Group name</span>
+                            <input id="bulk_combine_group_card_name" class="text_pole wide100p margin0" type="text" autocomplete="off" autofocus />
+                        </label>
+                        <label for="bulk_combine_group_card_prompt" class="text_label marginTop10">
+                            <span>Prompt</span>
+                            <textarea id="bulk_combine_group_card_prompt" class="text_pole wide100p margin0" rows="12"></textarea>
+                        </label>
+                        <div id="bulk_combine_group_card_preset_controls" class="m-t-1 flex-container">
+                            <select id="bulk_combine_group_card_preset_select" class="text_pole flex1">
+                                <option value="">— Load preset —</option>
+                            </select>
+                            <div id="bulk_combine_group_card_preset_save" class="menu_button" title="Save current prompt as preset">
+                                <i class="fa-solid fa-floppy-disk"></i>
+                            </div>
+                            <div id="bulk_combine_group_card_preset_delete" class="menu_button" title="Delete selected preset">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </div>
+                            <div id="bulk_combine_group_card_preset_restore" class="menu_button" title="Restore built-in default prompt">
+                                <i class="fa-solid fa-rotate-left"></i>
+                            </div>
+                        </div>
+                        <div class="marginTop10">
+                            <small>Processing mode</small>
+                            <div id="bulk_combine_group_card_mode" class="flex-container">
+                                <label class="checkbox_label">
+                                    <input type="radio" name="bulk_combine_mode" value="combined" />
+                                    <span>Combined</span>
+                                </label>
+                                <label class="checkbox_label">
+                                    <input type="radio" name="bulk_combine_mode" value="parallel" />
+                                    <span>Parallel</span>
+                                </label>
+                                <label class="checkbox_label">
+                                    <input type="radio" name="bulk_combine_mode" value="serial" />
+                                    <span>Serial</span>
+                                </label>
+                            </div>
+                            <div id="bulk_combine_group_card_concurrency_container" class="m-t-1" style="display:none;">
+                                <label for="bulk_combine_group_card_concurrency" class="text_label">
+                                    <span>Max concurrency</span>
+                                    <input id="bulk_combine_group_card_concurrency" class="text_pole" type="number" min="1" max="50" value="10" style="width:80px;" />
+                                </label>
+                            </div>
+                        </div>
+                        <div class="marginTop10">
+                            <small>Post-processing</small>
+                            <div id="bulk_combine_group_card_post_process_mode" class="flex-container">
+                                <label class="checkbox_label">
+                                    <input type="radio" name="bulk_combine_post_process_mode" value="disabled" />
+                                    <span>Disabled</span>
+                                </label>
+                                <label class="checkbox_label">
+                                    <input type="radio" name="bulk_combine_post_process_mode" value="replace" />
+                                    <span>Replace</span>
+                                </label>
+                                <label class="checkbox_label">
+                                    <input type="radio" name="bulk_combine_post_process_mode" value="prepend" />
+                                    <span>Prepend</span>
+                                </label>
+                                <label class="checkbox_label">
+                                    <input type="radio" name="bulk_combine_post_process_mode" value="append" />
+                                    <span>Append</span>
+                                </label>
+                            </div>
+                            <div id="bulk_combine_group_card_post_process_section" class="m-t-1" style="display:none;">
+                                <label for="bulk_combine_group_card_post_process_prompt" class="text_label">
+                                    <span>Post-processing prompt</span>
+                                    <textarea id="bulk_combine_group_card_post_process_prompt" class="text_pole wide100p margin0" rows="6"></textarea>
+                                </label>
+                                <div id="bulk_combine_group_card_post_process_preset_controls" class="m-t-1 flex-container">
+                                    <select id="bulk_combine_group_card_post_process_preset_select" class="text_pole flex1">
+                                        <option value="">— Load preset —</option>
+                                    </select>
+                                    <div id="bulk_combine_group_card_post_process_preset_save" class="menu_button" title="Save post-processing prompt as preset">
+                                        <i class="fa-solid fa-floppy-disk"></i>
+                                    </div>
+                                    <div id="bulk_combine_group_card_post_process_preset_delete" class="menu_button" title="Delete selected preset">
+                                        <i class="fa-solid fa-trash-can"></i>
+                                    </div>
+                                    <div id="bulk_combine_group_card_post_process_preset_restore" class="menu_button" title="Restore built-in default">
+                                        <i class="fa-solid fa-rotate-left"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="marginTop10">
+                            <small>Avatar crop settings</small>
+                            <div id="bulk_combine_group_card_crop" class="flex-container">
+                                <label class="text_label">
+                                    <span>Focus strategy</span>
+                                    <select id="bulk_combine_group_card_crop_strategy" class="text_pole">
+                                        <option value="attention">Attention (auto)</option>
+                                        <option value="entropy">Entropy</option>
+                                        <option value="center">Center</option>
+                                        <option value="top">Top</option>
+                                        <option value="face">Face (heuristic)</option>
+                                    </select>
+                                </label>
+                                <label class="text_label">
+                                    <span>Padding: <span id="bulk_combine_group_card_crop_padding_value">15</span>%</span>
+                                    <input id="bulk_combine_group_card_crop_padding" type="range" min="0" max="50" value="15" />
+                                </label>
+                            </div>
+                        </div>
+                        <div class="marginTop10">
+                            <small>Included fields</small>
+                            <div id="bulk_combine_group_card_field_toggles">
+                                <label class="checkbox_label"><input type="checkbox" data-field="personality" /><span>Personality</span></label>
+                                <label class="checkbox_label"><input type="checkbox" data-field="scenario" /><span>Scenario</span></label>
+                                <label class="checkbox_label"><input type="checkbox" data-field="first_mes" /><span>First message</span></label>
+                                <label class="checkbox_label"><input type="checkbox" data-field="mes_example" /><span>Example messages</span></label>
+                            </div>
+                        </div>
+                        <label for="bulk_combine_group_card_lorebook_toggle" class="checkbox_label marginTop10">
+                            <input type="checkbox" id="bulk_combine_group_card_lorebook_toggle" />
+                            <span>Create lorebook with original character data</span>
+                        </label>
+                    </div>
+                    <div id="bulk_combine_stage_2" class="bulk_combine_stage" style="display:none;">
+                        <h4>Generation Results</h4>
+                        <div id="bulk_combine_results_content">Generation results will appear here.</div>
+                    </div>
+                    <div id="bulk_combine_stage_3" class="bulk_combine_stage" style="display:none;">
+                        <h4>Post-Processing</h4>
+                        <div id="bulk_combine_postprocess_content">Post-processing controls will appear here.</div>
+                    </div>
+                    <div id="bulk_combine_stage_4" class="bulk_combine_stage" style="display:none;">
+                        <h4>Final Review</h4>
+                        <div id="bulk_combine_review_content">Final review will appear here.</div>
+                    </div>
+                </div>
+                <div class="bulk_combine_wizard_footer flex-container marginTop10 alignitemscenter">
+                    <div id="bulk_combine_wizard_back" class="menu_button" style="display:none;">
+                        <i class="fa-solid fa-chevron-left"></i> Back
+                    </div>
+                    <div id="bulk_combine_wizard_cancel" class="menu_button">Cancel</div>
+                    <div class="flex1"></div>
+                    <div id="bulk_combine_wizard_save_as_is" class="menu_button" style="display:none;">Save As Is</div>
+                    <div id="bulk_combine_wizard_next" class="menu_button">Generate</div>
+                </div>
+            </div>`;
+    };
+
+    /**
+	 * Moves the combine wizard to one stage.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 * @param {number} stage Target stage.
+	 */
+    static #wizardGoToStage = (popupContent, wizardState, stage) => {
+        const normalizedStage = Math.max(1, Math.min(4, Number(stage) || 1));
+        popupContent.find('.bulk_combine_stage').removeClass('active').hide();
+        popupContent
+            .find(`#bulk_combine_stage_${normalizedStage}`)
+            .addClass('active')
+            .show();
+
+        popupContent
+            .find('.bulk_combine_stage_indicator')
+            .removeClass('active completed');
+        for (let i = 1; i < normalizedStage; i++) {
+            popupContent
+                .find(`.bulk_combine_stage_indicator[data-stage="${i}"]`)
+                .addClass('completed');
+        }
+        popupContent
+            .find(`.bulk_combine_stage_indicator[data-stage="${normalizedStage}"]`)
+            .addClass('active');
+
+        const backButton = popupContent.find('#bulk_combine_wizard_back');
+        const nextButton = popupContent.find('#bulk_combine_wizard_next');
+        const saveAsIsButton = popupContent.find('#bulk_combine_wizard_save_as_is');
+        backButton.toggle(normalizedStage > 1);
+        saveAsIsButton.toggle(normalizedStage === 2);
+
+        switch (normalizedStage) {
+            case 1:
+                nextButton.text('Generate');
+                break;
+            case 2:
+                nextButton.html(
+                    'Apply Processing <i class="fa-solid fa-chevron-right"></i>',
+                );
+                break;
+            case 3:
+                nextButton.html(
+                    'Apply Changes <i class="fa-solid fa-chevron-right"></i>',
+                );
+                break;
+            case 4:
+                nextButton.text('Create Character');
+                break;
+        }
+
+        wizardState.stage = normalizedStage;
+    };
+
+    /**
+	 * Toggles wizard next button disabled state.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {boolean} disabled Whether button is disabled.
+	 */
+    static #setCombineWizardNextDisabled = (popupContent, disabled) => {
+        popupContent
+            .find('#bulk_combine_wizard_next')
+            .toggleClass('disabled', disabled)
+            .css('pointer-events', disabled ? 'none' : '')
+            .attr('aria-disabled', String(disabled));
+    };
+
+    /**
+	 * Runs Stage 1 generation for wizard without client-side character creation.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 * @returns {Promise<unknown>} Generation result.
+	 */
+    static #runCombineWizardStage1Generation = async (
+        popupContent,
+        wizardState,
+    ) => {
+        const config = wizardState.config;
+        const selectedCharacters =
+			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
+
+        if (!BulkEditOverlay.#canUseServerGroupCardJob()) {
+            const quiet_prompt = buildGroupCardCombineQuietPrompt(
+                config.prompt,
+                selectedCharacters,
+                config.fields,
+            );
+            const generatedDescription = await Generate('quiet', { quiet_prompt });
+            const validatedDescription = validateGeneratedGroupCardDescription(
+                generatedDescription,
+                selectedCharacters.length,
+            );
+            const blocks = extractTopLevelXmlBlocks(validatedDescription);
+            wizardState.characterOutputs = blocks.map((block, index) =>
+                BulkEditOverlay.#normalizeWizardCharacterOutput({
+                    characterIndex: index,
+                    characterName:
+						getCoreCharacterField(selectedCharacters[index] ?? {}, 'name') ||
+						`Character ${index + 1}`,
+                    xmlOutput: block.raw,
+                    parseStatus: 'ok',
+                }),
+            );
+            BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+            return {
+                description: validatedDescription,
+                characterOutputs: wizardState.characterOutputs,
+            };
+        }
+
+        const jobConfig = BulkEditOverlay.#buildGroupCardJobConfig(
+            config.groupName,
+            config.prompt,
+            selectedCharacters,
+            config.createLorebook,
+            config.fields,
+            config.processingMode,
+            config.concurrency,
+            config.postMergeEnabled,
+            config.postMergePrompt,
+            config.cropStrategy,
+            config.cropPadding,
+            config.postProcessMode,
+        );
+        let jobEventSource = null;
+        let jobId = '';
+        let cancelRequested = false;
+        const loaderHandle = loader.show({
+            slug: 'combine-group-card-wizard',
+            title: t`Combine into Group Card`,
+            message: t`Starting server-side generation for "${config.groupName}"…`,
+            blocking: false,
+            toastMode: loader.ToastMode.STOPPABLE,
+            stopTooltip: t`Cancel`,
+            onStop: async () => {
+                cancelRequested = true;
+                jobEventSource?.close();
+                if (jobId) {
+                    await BulkEditOverlay.#cancelGroupCardJob(jobId);
+                    BulkEditOverlay.#removeGroupCardJob(jobId);
+                }
+                await loaderHandle.hide();
+            },
+        });
+
+        try {
+            const jobResponse = await fetch('/api/characters/group-card-job', {
+                method: 'POST',
+                headers: { ...getRequestHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: jobConfig }),
+            });
+            if (jobResponse.status === 404) {
+                loaderHandle.setMessage(
+                    t`Server job endpoint unavailable. Using local generation…`,
+                );
+                const quiet_prompt = buildGroupCardCombineQuietPrompt(
+                    config.prompt,
+                    selectedCharacters,
+                    config.fields,
+                );
+                const generatedDescription = await Generate('quiet', { quiet_prompt });
+                const validatedDescription = validateGeneratedGroupCardDescription(
+                    generatedDescription,
+                    selectedCharacters.length,
+                );
+                const blocks = extractTopLevelXmlBlocks(validatedDescription);
+                wizardState.characterOutputs = blocks.map((block, index) =>
+                    BulkEditOverlay.#normalizeWizardCharacterOutput({
+                        characterIndex: index,
+                        characterName:
+							getCoreCharacterField(selectedCharacters[index] ?? {}, 'name') ||
+							`Character ${index + 1}`,
+                        xmlOutput: block.raw,
+                    }),
+                );
+                BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                return {
+                    description: validatedDescription,
+                    characterOutputs: wizardState.characterOutputs,
+                };
+            }
+            await throwIfNotOk(
+                jobResponse,
+                'Failed to start server-side group card generation.',
+            );
+            const jobData = await jobResponse.json();
+            jobId = String(jobData.jobId ?? jobData.id ?? '');
+            if (!jobId) throw new Error('Server did not return a group card job ID.');
+            sessionStorage.setItem(GROUP_CARD_JOB_SESSION_KEY, jobId);
+
+            const result = await new Promise((resolve, reject) => {
+                const parseEvent = (event) => JSON.parse(event.data || '{}');
+                jobEventSource = new EventSource(
+                    `/api/characters/group-card-job/${encodeURIComponent(jobId)}/events`,
+                );
+                groupCardJobs.set(jobId, {
+                    jobId,
+                    groupName: config.groupName,
+                    loaderHandle,
+                    source: jobEventSource,
+                    startedAt: Date.now(),
+                    status: 'running',
+                });
+                BulkEditOverlay.#renderGroupCardJobIndicator();
+                jobEventSource.addEventListener('character_started', (event) => {
+                    const data = parseEvent(event);
+                    loaderHandle.setMessage(
+                        `Processing character ${Number(data.index ?? 0) + 1}/${selectedCharacters.length}: ${data.name ?? ''}…`,
+                    );
+                });
+                jobEventSource.addEventListener('character_completed', (event) => {
+                    const data = parseEvent(event);
+                    const index = Number(
+                        data.index ?? wizardState.characterOutputs.length,
+                    );
+                    wizardState.characterOutputs[index] =
+                        BulkEditOverlay.#normalizeWizardCharacterOutput({
+                            characterIndex: index,
+                            characterName: String(
+                                data.name ??
+                                    getCoreCharacterField(
+                                        selectedCharacters[index] ?? {},
+                                        'name',
+                                    ),
+                            ),
+                            xmlOutput: String(data.output ?? ''),
+                        });
+                    BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                    loaderHandle.setMessage(
+                        `Completed character ${index + 1}/${selectedCharacters.length}…`,
+                    );
+                });
+                jobEventSource.addEventListener('character_failed', (event) => {
+                    const data = parseEvent(event);
+                    const index = Number(
+                        data.index ?? wizardState.characterOutputs.length,
+                    );
+                    wizardState.characterOutputs[index] =
+                        BulkEditOverlay.#normalizeWizardCharacterOutput({
+                            characterIndex: index,
+                            characterName: String(
+                                data.name ??
+                                    getCoreCharacterField(
+                                        selectedCharacters[index] ?? {},
+                                        'name',
+                                    ),
+                            ),
+                            xmlOutput: '',
+                            parseStatus: 'error',
+                            error: String(data.error ?? 'Generation failed.'),
+                        });
+                    BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                });
+                jobEventSource.addEventListener('job_completed', (event) => {
+                    const data = parseEvent(event);
+                    sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                    BulkEditOverlay.#removeGroupCardJob(jobId);
+                    jobEventSource?.close();
+                    resolve(data);
+                });
+                jobEventSource.addEventListener('job_failed', (event) => {
+                    const data = parseEvent(event);
+                    sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                    BulkEditOverlay.#removeGroupCardJob(jobId);
+                    jobEventSource?.close();
+                    reject(
+                        new Error(
+                            data.error || 'Server-side group card generation failed.',
+                        ),
+                    );
+                });
+                jobEventSource.onerror = () =>
+                    loaderHandle.setMessage(
+                        t`Connection lost. Reconnecting to server job…`,
+                    );
+            });
+            wizardState.serverCreated = true;
+            if (
+                Array.isArray(result?.characterOutputs) &&
+				!wizardState.characterOutputs.length
+            ) {
+                wizardState.characterOutputs = result.characterOutputs.map((output) =>
+                    BulkEditOverlay.#normalizeWizardCharacterOutput(output),
+                );
+            }
+            BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+            return result;
+        } catch (error) {
+            if (cancelRequested) throw new Error('Group card generation cancelled.');
+            throw error;
+        } finally {
+            jobEventSource?.close();
+            await loaderHandle.hide();
+        }
+    };
+
+    /**
+	 * Normalizes wizard character output parse state.
+	 * @param {object} output Output object.
+	 * @returns {object} Normalized output.
+	 */
+    static #normalizeWizardCharacterOutput = (output) => {
+        const xmlOutput = String(output?.xmlOutput ?? output?.output ?? '').trim();
+        const blocks = extractTopLevelXmlBlocks(xmlOutput);
+        return {
+            ...output,
+            characterIndex: Number(output?.characterIndex ?? output?.index ?? 0),
+            characterName: String(
+                output?.characterName ?? output?.name ?? 'Character',
+            ),
+            xmlOutput,
+            parseStatus: blocks.length > 0 ? 'ok' : 'error',
+            error: output?.error ? String(output.error) : '',
+        };
+    };
+
+    /**
+	 * Rebuilds merged XML from valid per-character outputs.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #updateWizardMergedXml = (wizardState) => {
+        wizardState.characterOutputs = (wizardState.characterOutputs ?? []).map(
+            (output) => BulkEditOverlay.#normalizeWizardCharacterOutput(output),
+        );
+        wizardState.mergedXml = wizardState.characterOutputs
+            .filter((output) => output.parseStatus === 'ok')
+            .map((output) => output.xmlOutput)
+            .join('\n\n');
+    };
+
+    /**
+	 * Gets selected source character objects for wizard state.
+	 * @param {object} wizardState Wizard state.
+	 * @returns {Array<object>} Source characters.
+	 */
+    static #getWizardSourceCharacters = (wizardState) =>
+        (wizardState.config?.characters ?? []).filter(
+            (character) => character && typeof character === 'object',
+        );
+
+    /**
+	 * Renders generation result cards.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #renderStage2Content = (popupContent, wizardState) => {
+        BulkEditOverlay.#updateWizardMergedXml(wizardState);
+        const content = popupContent.find('#bulk_combine_results_content');
+        content.empty();
+
+        const cards = $('<div></div>').addClass('bulk_combine_results_cards');
+        const sourceCharacters =
+			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
+
+        wizardState.characterOutputs.forEach((output, index) => {
+            const character =
+				sourceCharacters[output.characterIndex] ??
+				sourceCharacters[index] ??
+				{};
+            const ok = output.parseStatus === 'ok';
+            const card = $('<div></div>')
+                .addClass('bulk_combine_result_card')
+                .attr('data-index', String(index));
+            const header = $('<div></div>').addClass(
+                'bulk_combine_result_card_header flex-container alignitemscenter',
+            );
+            header.append(
+                $('<img alt="Avatar" />')
+                    .addClass('bulk_combine_result_avatar')
+                    .attr('src', getThumbnailUrl('avatar', character?.avatar ?? ''))
+                    .css({
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '4px',
+                        objectFit: 'cover',
+                    }),
+            );
+            header.append(
+                $('<span></span>')
+                    .addClass('bulk_combine_result_name')
+                    .text(output.characterName),
+            );
+            header.append(
+                $('<span></span>')
+                    .addClass('bulk_combine_result_status')
+                    .text(ok ? '✅' : '❌'),
+            );
+            header.append(
+                $('<input type="checkbox" />')
+                    .addClass('bulk_combine_result_regen_checkbox')
+                    .prop('checked', !ok),
+            );
+            card.append(header);
+            card.append(
+                $('<div></div>')
+                    .addClass('bulk_combine_result_xml_container')
+                    .append(
+                        $('<textarea></textarea>')
+                            .addClass('text_pole wide100p bulk_combine_result_xml')
+                            .attr('rows', '8')
+                            .prop('readonly', true)
+                            .val(output.xmlOutput || output.error || ''),
+                    ),
+            );
+            const actions = $('<div></div>')
+                .addClass('bulk_combine_result_actions')
+                .toggle(!ok);
+            actions.append(
+                $('<div></div>')
+                    .addClass('menu_button bulk_combine_result_autofix')
+                    .text('Auto-fix'),
+            );
+            actions.append(
+                $('<div></div>')
+                    .addClass('menu_button bulk_combine_result_edit')
+                    .text('Edit'),
+            );
+            card.append(actions);
+            cards.append(card);
+        });
+
+        content.append(cards);
+        const successful = wizardState.characterOutputs.filter(
+            (output) => output.parseStatus === 'ok',
+        ).length;
+        content.append(
+            $('<div></div>')
+                .addClass('bulk_combine_results_summary marginTop10')
+                .append(
+                    $('<span></span>').text(
+                        `${successful}/${wizardState.characterOutputs.length} characters generated successfully.`,
+                    ),
+                ),
+        );
+        content.append(
+            $('<div></div>')
+                .addClass('bulk_combine_results_actions marginTop10 flex-container')
+                .append(
+                    $('<div></div>')
+                        .attr('id', 'bulk_combine_regen_selected')
+                        .addClass('menu_button')
+                        .text('Regen Selected'),
+                )
+                .append(
+                    $('<div></div>')
+                        .attr('id', 'bulk_combine_regen_failed')
+                        .addClass('menu_button')
+                        .text('Regen Failed'),
+                ),
+        );
+
+        content.find('.bulk_combine_result_autofix').on('click', function () {
+            const card = $(this).closest('.bulk_combine_result_card');
+            const index = Number(card.data('index'));
+            const textarea = card.find('.bulk_combine_result_xml');
+            const fixed = autoFixXml(String(textarea.val() ?? ''));
+            textarea.val(fixed.fixed);
+            wizardState.characterOutputs[index].xmlOutput = fixed.fixed;
+            wizardState.characterOutputs[index].parseStatus = fixed.succeeded
+                ? 'ok'
+                : 'error';
+            if (fixed.succeeded) {
+                BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+            } else {
+                textarea.prop('readonly', false);
+                $(this)
+                    .text('Re-parse')
+                    .off('click')
+                    .on('click', () => {
+                        const blocks = extractTopLevelXmlBlocks(
+                            String(textarea.val() ?? ''),
+                        );
+                        wizardState.characterOutputs[index].xmlOutput = String(
+                            textarea.val() ?? '',
+                        );
+                        wizardState.characterOutputs[index].parseStatus =
+							blocks.length > 0 ? 'ok' : 'error';
+                        BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                    });
+            }
+        });
+
+        content.find('.bulk_combine_result_edit').on('click', function () {
+            const card = $(this).closest('.bulk_combine_result_card');
+            const index = Number(card.data('index'));
+            const textarea = card.find('.bulk_combine_result_xml');
+            textarea.prop('readonly', false).trigger('focus');
+            $(this)
+                .text('Re-parse')
+                .off('click')
+                .on('click', () => {
+                    const blocks = extractTopLevelXmlBlocks(String(textarea.val() ?? ''));
+                    wizardState.characterOutputs[index].xmlOutput = String(
+                        textarea.val() ?? '',
+                    );
+                    wizardState.characterOutputs[index].parseStatus =
+						blocks.length > 0 ? 'ok' : 'error';
+                    BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                });
+        });
+
+        content.find('#bulk_combine_regen_failed').on('click', async () => {
+            content.find('.bulk_combine_result_card').each((_, element) => {
+                const index = Number($(element).data('index'));
+                $(element)
+                    .find('.bulk_combine_result_regen_checkbox')
+                    .prop(
+                        'checked',
+                        wizardState.characterOutputs[index]?.parseStatus !== 'ok',
+                    );
+            });
+            await BulkEditOverlay.#regenWizardSelectedOutputs(
+                popupContent,
+                wizardState,
+            );
+        });
+        content.find('#bulk_combine_regen_selected').on('click', async () => {
+            await BulkEditOverlay.#regenWizardSelectedOutputs(
+                popupContent,
+                wizardState,
+            );
+        });
+    };
+
+    /**
+	 * Regenerates checked Stage 2 cards.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #regenWizardSelectedOutputs = async (popupContent, wizardState) => {
+        const checkedIndexes = popupContent
+            .find('.bulk_combine_result_card')
+            .toArray()
+            .filter((element) =>
+                $(element).find('.bulk_combine_result_regen_checkbox').prop('checked'),
+            )
+            .map((element) => Number($(element).data('index')))
+            .filter((index) => Number.isInteger(index));
+
+        if (!checkedIndexes.length) {
+            toastr.warning(
+                'Select at least one result to regenerate.',
+                'Combine into Group Card',
+            );
+            return;
+        }
+
+        BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
+        try {
+            const sourceCharacters =
+				BulkEditOverlay.#getWizardSourceCharacters(wizardState);
+            for (const outputIndex of checkedIndexes) {
+                const oldOutput = wizardState.characterOutputs[outputIndex];
+                const character =
+					sourceCharacters[oldOutput?.characterIndex ?? outputIndex];
+                if (!character) {
+                    continue;
+                }
+                const quiet_prompt = buildGroupCardCombineQuietPrompt(
+                    wizardState.config.prompt,
+                    [character],
+                    wizardState.config.fields,
+                );
+                const generated = await Generate('quiet', { quiet_prompt });
+                const validated = validateGeneratedGroupCardDescription(generated, 1);
+                wizardState.characterOutputs[outputIndex] =
+                    BulkEditOverlay.#normalizeWizardCharacterOutput({
+                        characterIndex: oldOutput?.characterIndex ?? outputIndex,
+                        characterName: getCoreCharacterField(character, 'name'),
+                        xmlOutput: validated,
+                        parseStatus: 'ok',
+                    });
+            }
+            BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+            toastr.success('Regenerated selected output.', 'Combine into Group Card');
+        } catch (error) {
+            console.error(error);
+            toastr.error(
+                error?.message ?? 'Failed to regenerate selected output.',
+                'Combine into Group Card',
+            );
+        } finally {
+            BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
+        }
+    };
+
+    /**
+	 * Renders post-processing controls.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #renderStage3Content = (popupContent, wizardState) => {
+        BulkEditOverlay.#updateWizardMergedXml(wizardState);
+        const content = popupContent.find('#bulk_combine_postprocess_content');
+        content.empty();
+        const mode = ['replace', 'prepend', 'append'].includes(
+            wizardState.postProcessMode,
+        )
+            ? wizardState.postProcessMode
+            : 'replace';
+        const prompt = String(
+            wizardState.config?.postMergePrompt || DEFAULT_POST_MERGE_PROMPT,
+        );
+        const html = $(`
+            <div class="bulk_combine_postprocess_mode marginTop10">
+              <small>Post-processing mode</small>
+              <div id="bulk_combine_postprocess_mode_select" class="flex-container">
+                <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="replace" /><span>Replace</span></label>
+                <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="prepend" /><span>Prepend</span></label>
+                <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="append" /><span>Append</span></label>
+              </div>
             </div>
             <div class="marginTop10">
-                <small>Avatar crop settings</small>
-                <div id="bulk_combine_group_card_crop" class="flex-container">
-                    <label class="text_label">
-                        <span>Focus strategy</span>
-                        <select id="bulk_combine_group_card_crop_strategy" class="text_pole">
-                            <option value="attention">Attention (auto)</option>
-                            <option value="entropy">Entropy</option>
-                            <option value="center">Center</option>
-                            <option value="top">Top</option>
-                            <option value="face">Face (heuristic)</option>
-                        </select>
-                    </label>
-                    <label class="text_label">
-                        <span>Padding: <span id="bulk_combine_group_card_crop_padding_value">15</span>%</span>
-                        <input id="bulk_combine_group_card_crop_padding" type="range" min="0" max="50" value="15" />
-                    </label>
-                </div>
+              <label class="text_label"><span>Post-processing prompt</span><textarea id="bulk_combine_postprocess_prompt" class="text_pole wide100p" rows="8"></textarea></label>
+              <div id="bulk_combine_postprocess_preset_controls" class="m-t-1 flex-container">
+                <select id="bulk_combine_postprocess_preset_select" class="text_pole flex1"><option value="">— Load preset —</option></select>
+                <div id="bulk_combine_postprocess_preset_save" class="menu_button" title="Save post-processing prompt as preset"><i class="fa-solid fa-floppy-disk"></i></div>
+                <div id="bulk_combine_postprocess_preset_delete" class="menu_button" title="Delete selected preset"><i class="fa-solid fa-trash-can"></i></div>
+                <div id="bulk_combine_postprocess_preset_restore" class="menu_button" title="Restore built-in default"><i class="fa-solid fa-rotate-left"></i></div>
+              </div>
+              <div id="bulk_combine_apply_postprocess" class="menu_button marginTop10">Apply Post-Processing</div>
             </div>
             <div class="marginTop10">
-                <small>Included fields</small>
-                <div id="bulk_combine_group_card_field_toggles">
-                    <label class="checkbox_label"><input type="checkbox" data-field="personality" /><span>Personality</span></label>
-                    <label class="checkbox_label"><input type="checkbox" data-field="scenario" /><span>Scenario</span></label>
-                    <label class="checkbox_label"><input type="checkbox" data-field="first_mes" /><span>First message</span></label>
-                    <label class="checkbox_label"><input type="checkbox" data-field="mes_example" /><span>Example messages</span></label>
-                </div>
-            </div>
-            <label for="bulk_combine_group_card_lorebook_toggle" class="checkbox_label marginTop10">
-                <input type="checkbox" id="bulk_combine_group_card_lorebook_toggle" />
-                <span>Create lorebook with original character data</span>
-            </label>`;
+              <label class="text_label"><span>Preview</span></label>
+              <div id="bulk_combine_postprocess_preview" class="bulk_combine_preview_area" style="max-height:300px;overflow-y:auto;"></div>
+            </div>`);
+        content.append(html);
+        content
+            .find(`input[name="bulk_combine_postprocess_mode"][value="${mode}"]`)
+            .prop('checked', true);
+        content.find('#bulk_combine_postprocess_prompt').val(prompt);
+        const preview = content.find('#bulk_combine_postprocess_preview');
+        if (wizardState.postProcessResult) {
+            preview.text(String(wizardState.postProcessResult));
+            BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
+        } else {
+            preview.append(
+                $('<small></small>').text(
+                    'Click "Apply Post-Processing" to see the result.',
+                ),
+            );
+            BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
+        }
+
+        const presetSelect = content.find(
+            '#bulk_combine_postprocess_preset_select',
+        );
+        renderGroupCardPostMergePromptPresetSelect(presetSelect);
+        presetSelect.on('change', () => {
+            const preset =
+				getGroupCardPostMergePromptPresets()[Number(presetSelect.val())];
+            if (preset)
+                content.find('#bulk_combine_postprocess_prompt').val(preset.prompt);
+        });
+        content
+            .find('#bulk_combine_postprocess_preset_save')
+            .on('click', async () => {
+                const presetName = await callGenericPopup(
+                    'Enter a post-processing prompt preset name:',
+                    POPUP_TYPE.INPUT,
+                    '',
+                    { okButton: 'Save', cancelButton: 'Cancel' },
+                );
+                if (!presetName) return;
+                const saved = await saveGroupCardPostMergePromptPreset(
+                    String(presetName),
+                    String(content.find('#bulk_combine_postprocess_prompt').val() ?? ''),
+                );
+                if (saved)
+                    renderGroupCardPostMergePromptPresetSelect(
+                        presetSelect,
+                        findGroupCardPostMergePromptPresetIndex(saved.name),
+                    );
+            });
+        content.find('#bulk_combine_postprocess_preset_delete').on('click', () => {
+            if (deleteGroupCardPostMergePromptPreset(Number(presetSelect.val())))
+                renderGroupCardPostMergePromptPresetSelect(presetSelect);
+        });
+        content.find('#bulk_combine_postprocess_preset_restore').on('click', () => {
+            content
+                .find('#bulk_combine_postprocess_prompt')
+                .val(DEFAULT_POST_MERGE_PROMPT);
+        });
+        content
+            .find('input[name="bulk_combine_postprocess_mode"]')
+            .on('change', () => {
+                wizardState.postProcessMode = String(
+                    content
+                        .find('input[name="bulk_combine_postprocess_mode"]:checked')
+                        .val() ?? 'replace',
+                );
+            });
+        content.find('#bulk_combine_apply_postprocess').on('click', async () => {
+            await BulkEditOverlay.#applyWizardPostProcessing(
+                popupContent,
+                wizardState,
+            );
+        });
+    };
+
+    /**
+	 * Applies Stage 3 post-processing.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #applyWizardPostProcessing = async (popupContent, wizardState) => {
+        const content = popupContent.find('#bulk_combine_postprocess_content');
+        const mode = String(
+            content
+                .find('input[name="bulk_combine_postprocess_mode"]:checked')
+                .val() ?? 'replace',
+        );
+        const prompt = String(
+            content.find('#bulk_combine_postprocess_prompt').val() ?? '',
+        ).trim();
+        if (!prompt) {
+            toastr.warning(
+                'Enter a post-processing prompt.',
+                'Combine into Group Card',
+            );
+            return;
+        }
+        BulkEditOverlay.#updateWizardMergedXml(wizardState);
+        if (!wizardState.mergedXml) {
+            toastr.warning(
+                'At least one valid output required.',
+                'Combine into Group Card',
+            );
+            return;
+        }
+        const quiet_prompt =
+            mode === 'replace'
+                ? `${prompt}\n\n${wizardState.mergedXml}`
+                : mode === 'append'
+                    ? `${wizardState.mergedXml}\n\n${prompt}`
+                    : `${prompt}\n\nMerged output:\n${wizardState.mergedXml}`;
+        BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
+        try {
+            const generated = String(
+                (await Generate('quiet', { quiet_prompt })) ?? '',
+            ).trim();
+            let result = generated;
+            if (mode === 'replace') {
+                const fixed = validateGeneratedGroupCardDescription(generated, 0);
+                const inputCount = countXmlCorpus(wizardState.mergedXml);
+                const outputCount = countXmlCorpus(fixed);
+                if (inputCount > 0 && outputCount !== inputCount) {
+                    toastr.error(
+                        `Post-processing returned ${outputCount} XML block(s), expected ${inputCount}.`,
+                        'Combine into Group Card',
+                    );
+                    return;
+                }
+                result = fixed;
+            } else if (mode === 'prepend') {
+                result = `${generated}\n\n${wizardState.mergedXml}`;
+            } else {
+                result = `${wizardState.mergedXml}\n\n${generated}`;
+            }
+            wizardState.postProcessMode = mode;
+            wizardState.postProcessResult = result;
+            content.find('#bulk_combine_postprocess_preview').text(result);
+            BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
+            toastr.success('Post-processing applied.', 'Combine into Group Card');
+        } catch (error) {
+            console.error(error);
+            toastr.error(
+                error?.message ?? 'Failed to apply post-processing.',
+                'Combine into Group Card',
+            );
+        } finally {
+            if (!wizardState.postProcessResult) {
+                BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
+            }
+        }
+    };
+
+    /**
+	 * Renders final review controls.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #renderStage4Content = (popupContent, wizardState) => {
+        const description = String(
+            wizardState.postProcessResult || wizardState.mergedXml || '',
+        );
+        const content = popupContent.find('#bulk_combine_review_content');
+        content.empty();
+        const html = $(`
+            <div class="bulk_combine_review_section"><label class="text_label"><span>Character Name</span><input id="bulk_combine_review_name" class="text_pole wide100p" type="text" /></label></div>
+            <div class="bulk_combine_review_section marginTop10"><label class="text_label"><span>Description (merged XML)</span></label><textarea id="bulk_combine_review_description" class="text_pole wide100p" rows="12" readonly></textarea></div>
+            <div class="bulk_combine_review_section marginTop10"><label class="text_label"><span>First Message</span><textarea id="bulk_combine_review_first_mes" class="text_pole wide100p" rows="4"></textarea></label></div>
+            <div class="bulk_combine_review_section marginTop10"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div id="bulk_combine_avatar_offsets"></div><div class="marginTop10" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div></div>
+            <div class="bulk_combine_review_section marginTop10"><small id="bulk_combine_review_source_summary"></small></div>`);
+        content.append(html);
+        content
+            .find('#bulk_combine_review_name')
+            .val(wizardState.config?.groupName ?? '');
+        content.find('#bulk_combine_review_description').val(description);
+        content
+            .find('#bulk_combine_review_first_mes')
+            .val(extractFirstMessage(description));
+        const avatar = wizardState.avatarUrl || wizardState.results?.avatar || '';
+        if (avatar) {
+            content
+                .find('#bulk_combine_avatar_image')
+                .attr(
+                    'src',
+                    String(avatar).startsWith('data:')
+                        ? avatar
+                        : getThumbnailUrl('avatar', avatar),
+                );
+        }
+        const offsets = content.find('#bulk_combine_avatar_offsets');
+        const sourceCharacters =
+            BulkEditOverlay.#getWizardSourceCharacters(wizardState);
+        wizardState.avatarOffsets =
+            wizardState.avatarOffsets?.length === sourceCharacters.length
+                ? wizardState.avatarOffsets
+                : sourceCharacters.map(() => ({ x: 0, y: 0, scale: 100 }));
+        sourceCharacters.forEach((character, index) => {
+            const offset = wizardState.avatarOffsets[index] ?? {
+                x: 0,
+                y: 0,
+                scale: 100,
+            };
+            const card = $('<div></div>')
+                .addClass('bulk_combine_offset_card flex-container alignitemscenter')
+                .attr('data-index', String(index));
+            card.append(
+                $('<img alt="Avatar" />')
+                    .addClass('bulk_combine_offset_avatar')
+                    .attr('src', getThumbnailUrl('avatar', character?.avatar ?? ''))
+                    .css({
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '4px',
+                        objectFit: 'cover',
+                    }),
+            );
+            card.append(
+                $('<span></span>').text(getCoreCharacterField(character, 'name')),
+            );
+            for (const axis of ['x', 'y']) {
+                card.append(
+                    $('<label></label>')
+                        .addClass('text_label')
+                        .css({ margin: '0 0.5em' })
+                        .append(`${axis.toUpperCase()}: `)
+                        .append(
+                            $(
+                                `<input type="range" class="bulk_combine_offset_${axis}" min="-100" max="100" />`,
+                            ).val(String(offset[axis] ?? 0)),
+                        )
+                        .append(
+                            $(`<span class="bulk_combine_offset_${axis}_val"></span>`).text(
+                                String(offset[axis] ?? 0),
+                            ),
+                        ),
+                );
+            }
+            card.append(
+                $('<label></label>')
+                    .addClass('text_label')
+                    .css({ margin: '0 0.5em' })
+                    .append('Scale: ')
+                    .append(
+                        $(
+                            '<input type="range" class="bulk_combine_offset_scale" min="50" max="200" />',
+                        ).val(String(offset.scale ?? 100)),
+                    )
+                    .append(
+                        $('<span class="bulk_combine_offset_scale_val"></span>').text(
+                            `${offset.scale ?? 100}%`,
+                        ),
+                    ),
+            );
+            card.append(
+                $('<div></div>')
+                    .addClass('menu_button bulk_combine_offset_reset')
+                    .text('Reset'),
+            );
+            offsets.append(card);
+        });
+        content
+            .find('#bulk_combine_review_source_summary')
+            .text(
+                `Source: ${sourceCharacters.length} characters | Mode: ${wizardState.config?.processingMode ?? 'parallel'} | Fields: ${(wizardState.config?.fields ?? []).join(', ')}`,
+            );
+        content.find('input[type="range"]').on('input', function () {
+            const card = $(this).closest('.bulk_combine_offset_card');
+            const index = Number(card.data('index'));
+            const x = Number(card.find('.bulk_combine_offset_x').val());
+            const y = Number(card.find('.bulk_combine_offset_y').val());
+            const scale = Number(card.find('.bulk_combine_offset_scale').val());
+            wizardState.avatarOffsets[index] = { x, y, scale };
+            card.find('.bulk_combine_offset_x_val').text(String(x));
+            card.find('.bulk_combine_offset_y_val').text(String(y));
+            card.find('.bulk_combine_offset_scale_val').text(`${scale}%`);
+        });
+        content.find('.bulk_combine_offset_reset').on('click', function () {
+            const card = $(this).closest('.bulk_combine_offset_card');
+            card.find('.bulk_combine_offset_x').val('0').trigger('input');
+            card.find('.bulk_combine_offset_y').val('0').trigger('input');
+            card.find('.bulk_combine_offset_scale').val('100').trigger('input');
+        });
+        content.find('#bulk_combine_regenerate_avatar').on('click', async () => {
+            await BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
+        });
+        BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
+    };
+
+    /**
+	 * Regenerates review avatar preview.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #regenerateWizardAvatar = async (popupContent, wizardState) => {
+        const avatars = BulkEditOverlay.#getWizardSourceCharacters(wizardState)
+            .map((character) => character.avatar)
+            .filter(Boolean);
+        if (!avatars.length) {
+            toastr.warning('No source avatars available.', 'Combine into Group Card');
+            return;
+        }
+        try {
+            const response = await fetch(
+                '/api/characters/generate-voronoi-composite',
+                {
+                    method: 'POST',
+                    headers: {
+                        ...getRequestHeaders(),
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        avatars,
+                        offsets: wizardState.avatarOffsets,
+                        cropStrategy: wizardState.config?.cropStrategy,
+                        cropPadding: wizardState.config?.cropPadding,
+                    }),
+                },
+            );
+            await throwIfNotOk(response, 'Failed to regenerate avatar.');
+            const data = await response.json();
+            if (data?.file) {
+                wizardState.avatarUrl = `/api/characters/generate-voronoi-composite?file=${encodeURIComponent(data.file)}`;
+                popupContent
+                    .find('#bulk_combine_avatar_image')
+                    .attr('src', wizardState.avatarUrl);
+            }
+        } catch (error) {
+            console.error(error);
+            toastr.error(
+                error?.message ?? 'Failed to regenerate avatar.',
+                'Combine into Group Card',
+            );
+        }
+    };
+
+    /**
+	 * Applies regenerated avatar preview to a character avatar file.
+	 * @param {object} wizardState Wizard state.
+	 * @param {string} avatar Avatar filename.
+	 * @returns {Promise<void>}
+	 */
+    static #applyWizardRegeneratedAvatar = async (wizardState, avatar) => {
+        if (!wizardState.avatarUrl || !avatar) {
+            return;
+        }
+
+        const imageResponse = await fetch(wizardState.avatarUrl);
+        await throwIfNotOk(imageResponse, 'Failed to read regenerated avatar.');
+        const imageBlob = await imageResponse.blob();
+        const formData = new FormData();
+        formData.append('avatar_url', avatar);
+        formData.append('avatar', imageBlob, 'avatar.png');
+        const editHeaders = getRequestHeaders();
+        delete editHeaders['Content-Type'];
+        const response = await fetch('/api/characters/edit-avatar', {
+            method: 'POST',
+            headers: editHeaders,
+            body: formData,
+        });
+        await throwIfNotOk(response, 'Failed to apply regenerated avatar.');
+    };
+
+    /**
+	 * Creates or updates final group card from Stage 4.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #handleStage4Create = async (popupContent, wizardState) => {
+        const description = String(
+            popupContent.find('#bulk_combine_review_description').val() ?? '',
+        ).trim();
+        const firstMes = String(
+            popupContent.find('#bulk_combine_review_first_mes').val() ?? '',
+        );
+        const groupName = String(
+            popupContent.find('#bulk_combine_review_name').val() ??
+				wizardState.config?.groupName ??
+				'',
+        ).trim();
+        if (!groupName || !description) {
+            toastr.warning(
+                'Character name and description are required.',
+                'Combine into Group Card',
+            );
+            return false;
+        }
+        BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
+        try {
+            if (wizardState.serverCreated && wizardState.results?.avatar) {
+                const response = await sendJsonRequest(
+                    '/api/characters/merge-attributes',
+                    {
+                        avatar: wizardState.results.avatar,
+                        data: {
+                            name: groupName,
+                            ch_name: groupName,
+                            description,
+                            first_mes: firstMes,
+                        },
+                    },
+                );
+                await throwIfNotOk(response, 'Failed to update generated group card.');
+                await BulkEditOverlay.#applyWizardRegeneratedAvatar(
+                    wizardState,
+                    wizardState.results.avatar,
+                );
+            } else {
+                const result = await createGeneratedGroupCard(
+                    groupName,
+                    description,
+                    BulkEditOverlay.#getWizardSourceCharacters(wizardState),
+                    Boolean(wizardState.config?.createLorebook),
+                    wizardState.config?.fields,
+                );
+                wizardState.results = result;
+                await BulkEditOverlay.#applyWizardRegeneratedAvatar(
+                    wizardState,
+                    result.avatar,
+                );
+            }
+            await getCharacters();
+            toastr.success('Group card saved.', 'Combine into Group Card');
+            return true;
+        } catch (error) {
+            console.error(error);
+            toastr.error(
+                error?.message ?? 'Failed to save group card.',
+                'Combine into Group Card',
+            );
+            return false;
+        } finally {
+            BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
+        }
+    };
+
+    /**
+	 * Saves Stage 2 output without post-processing.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #handleStage2SaveAsIs = async (popupContent, wizardState) => {
+        BulkEditOverlay.#updateWizardMergedXml(wizardState);
+        if (wizardState.serverCreated) {
+            toastr.success('Group card already created.', 'Combine into Group Card');
+            return true;
+        }
+        if (!wizardState.mergedXml) {
+            toastr.warning(
+                'At least one valid output required.',
+                'Combine into Group Card',
+            );
+            return false;
+        }
+        try {
+            const result = await createGeneratedGroupCard(
+                wizardState.config.groupName,
+                wizardState.mergedXml,
+                BulkEditOverlay.#getWizardSourceCharacters(wizardState),
+                Boolean(wizardState.config.createLorebook),
+                wizardState.config.fields,
+            );
+            wizardState.results = result;
+            await getCharacters();
+            toastr.success('Created group card.', 'Combine into Group Card');
+            return true;
+        } catch (error) {
+            console.error(error);
+            toastr.error(
+                error?.message ?? 'Failed to create group card.',
+                'Combine into Group Card',
+            );
+            return false;
+        }
     };
 
     /**
@@ -2145,7 +3300,180 @@ class BulkEditOverlay {
     };
 
     /**
-	 * Opens the combine modal and starts generation when confirmed.
+	 * Handles Stage 1 generation click.
+	 * @param {JQuery<HTMLElement>} popupContent Popup root.
+	 * @param {object} wizardState Wizard state.
+	 * @returns {Promise<void>}
+	 */
+    static #handleCombineWizardStage1Next = async (popupContent, wizardState) => {
+        const promptInput = popupContent.find('#bulk_combine_group_card_prompt');
+        const modeInputs = popupContent.find('input[name="bulk_combine_mode"]');
+        const concurrencyInput = popupContent.find(
+            '#bulk_combine_group_card_concurrency',
+        );
+        const postProcessModeInputs = popupContent.find(
+            'input[name="bulk_combine_post_process_mode"]',
+        );
+        const postProcessPromptInput = popupContent.find(
+            '#bulk_combine_group_card_post_process_prompt',
+        );
+        const cropStrategySelect = popupContent.find(
+            '#bulk_combine_group_card_crop_strategy',
+        );
+        const cropPaddingInput = popupContent.find(
+            '#bulk_combine_group_card_crop_padding',
+        );
+        const lorebookToggle = popupContent.find(
+            '#bulk_combine_group_card_lorebook_toggle',
+        );
+        const fieldToggles = popupContent.find(
+            '#bulk_combine_group_card_field_toggles input[type="checkbox"]',
+        );
+        const groupNameInput = popupContent.find('#bulk_combine_group_card_name');
+        const prompt = String(promptInput.val() ?? '').trim();
+
+        if (!prompt) {
+            toastr.warning('Enter a prompt.', 'Combine into Group Card');
+            return;
+        }
+
+        const selectedMode = String(
+            modeInputs.filter(':checked').val() ?? 'parallel',
+        );
+        const processingMode = ['combined', 'parallel', 'serial'].includes(
+            selectedMode,
+        )
+            ? selectedMode
+            : 'parallel';
+        const parsedConcurrency = Number(concurrencyInput.val());
+        const concurrency = Number.isFinite(parsedConcurrency)
+            ? Math.max(1, Math.min(50, Math.round(parsedConcurrency)))
+            : 10;
+        const selectedPostProcessMode = String(
+            postProcessModeInputs.filter(':checked').val() ?? 'replace',
+        );
+        const postProcessMode = [
+            'disabled',
+            'replace',
+            'prepend',
+            'append',
+        ].includes(selectedPostProcessMode)
+            ? selectedPostProcessMode
+            : 'replace';
+        const postMergeEnabled = postProcessMode !== 'disabled';
+        const postMergePrompt = String(postProcessPromptInput.val() ?? '').trim();
+        const cropStrategyValue = String(cropStrategySelect.val() ?? 'attention');
+        const cropStrategy = [
+            'attention',
+            'entropy',
+            'center',
+            'top',
+            'face',
+        ].includes(cropStrategyValue)
+            ? cropStrategyValue
+            : 'attention';
+        const parsedCropPadding = Number(cropPaddingInput.val());
+        const cropPadding = Number.isFinite(parsedCropPadding)
+            ? Math.max(0, Math.min(50, Math.round(parsedCropPadding)))
+            : 15;
+
+        if (postMergeEnabled && !postMergePrompt) {
+            toastr.warning(
+                'Enter a post-processing prompt or disable post-processing.',
+                'Combine into Group Card',
+            );
+            return;
+        }
+
+        const createLorebook = Boolean(lorebookToggle.prop('checked'));
+        await Promise.all(
+            wizardState.selectedCharacterIds
+                .filter((id) => characters[id]?.shallow)
+                .map((id) => unshallowCharacter(String(id))),
+        );
+        const request = validateGroupCardRequest(
+            String(groupNameInput.val() ?? ''),
+            wizardState.selectedCharacterIds,
+            { createLorebook },
+        );
+
+        if (!request) {
+            return;
+        }
+
+        const selectedOptionalFields = fieldToggles
+            .toArray()
+            .filter((element) => $(element).prop('checked'))
+            .map((element) => String($(element).data('field') ?? ''))
+            .filter((field) => OPTIONAL_CHARACTER_FIELDS.includes(field));
+        const selectedFields = normalizeSelectedFields(selectedOptionalFields);
+
+        power_user.group_card_combine_prompt = prompt;
+        power_user.group_card_combine_included_fields = selectedOptionalFields;
+        power_user.group_card_processing_mode = processingMode;
+        power_user.group_card_parallel_concurrency = concurrency;
+        power_user.group_card_post_merge_enabled = postMergeEnabled;
+        power_user.group_card_post_merge_prompt = postMergePrompt;
+        power_user.group_card_post_process_mode = postProcessMode;
+        power_user.group_card_crop_strategy = cropStrategy;
+        power_user.group_card_crop_padding = cropPadding;
+        saveSettingsDebounced();
+
+        wizardState.config = {
+            groupName: request.groupName,
+            prompt,
+            characters: request.characters,
+            createLorebook,
+            fields: selectedFields,
+            selectedOptionalFields,
+            processingMode,
+            concurrency,
+            postMergeEnabled,
+            postMergePrompt,
+            postProcessMode,
+            cropStrategy,
+            cropPadding,
+        };
+        wizardState.postProcessMode =
+			postProcessMode === 'disabled' ? 'replace' : postProcessMode;
+        wizardState.characterOutputs = [];
+        wizardState.results = null;
+        wizardState.postProcessResult = null;
+        wizardState.serverCreated = false;
+
+        BulkEditOverlay.#wizardGoToStage(popupContent, wizardState, 2);
+        popupContent
+            .find('#bulk_combine_results_content')
+            .html('<p>Generation running… results will appear here.</p>');
+        BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
+
+        try {
+            const result = await BulkEditOverlay.#runCombineWizardStage1Generation(
+                popupContent,
+                wizardState,
+            );
+            wizardState.results = result;
+            BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+            await getCharacters();
+            toastr.success('Generation complete.', 'Combine into Group Card');
+        } catch (error) {
+            console.error(error);
+            popupContent
+                .find('#bulk_combine_results_content')
+                .html(
+                    `<p class="error">Generation failed: ${escapeHtml(error?.message ?? 'Unknown error')}</p>`,
+                );
+            toastr.error(
+                error?.message ?? 'Failed to combine selected characters.',
+                'Combine into Group Card',
+            );
+        } finally {
+            BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
+        }
+    };
+
+    /**
+	 * Opens the combine wizard.
 	 *
 	 * @param {Array<number|object>} selectedCharacters Selected character ids or objects.
 	 * @returns {Promise<void>}
@@ -2172,380 +3500,375 @@ class BulkEditOverlay {
             return;
         }
 
-        const popupContent = $(
-            BulkEditOverlay.#getCombineGroupCardPopupContentHtml(
-                validCharacters.length,
-            ),
+        const wizardHtml = BulkEditOverlay.#getCombineGroupCardWizardHtml(
+            validCharacters.length,
         );
-        const groupNameInput = popupContent.find('#bulk_combine_group_card_name');
-        const promptInput = popupContent.find('#bulk_combine_group_card_prompt');
-        const presetSelect = popupContent.find(
-            '#bulk_combine_group_card_preset_select',
-        );
-        const savePresetButton = popupContent.find(
-            '#bulk_combine_group_card_preset_save',
-        );
-        const deletePresetButton = popupContent.find(
-            '#bulk_combine_group_card_preset_delete',
-        );
-        const restorePresetButton = popupContent.find(
-            '#bulk_combine_group_card_preset_restore',
-        );
-        const fieldToggles = popupContent.find(
-            '#bulk_combine_group_card_field_toggles input[type="checkbox"]',
-        );
-        const lorebookToggle = popupContent.find(
-            '#bulk_combine_group_card_lorebook_toggle',
-        );
-        const modeInputs = popupContent.find('input[name="bulk_combine_mode"]');
-        const concurrencyContainer = popupContent.find(
-            '#bulk_combine_group_card_concurrency_container',
-        );
-        const concurrencyInput = popupContent.find(
-            '#bulk_combine_group_card_concurrency',
-        );
-        const postMergeToggle = popupContent.find(
-            '#bulk_combine_group_card_post_merge_toggle',
-        );
-        const postMergeSection = popupContent.find(
-            '#bulk_combine_group_card_post_merge_section',
-        );
-        const postMergePromptInput = popupContent.find(
-            '#bulk_combine_group_card_post_merge_prompt',
-        );
-        const postMergePresetSelect = popupContent.find(
-            '#bulk_combine_group_card_post_merge_preset_select',
-        );
-        const postMergeSavePresetButton = popupContent.find(
-            '#bulk_combine_group_card_post_merge_preset_save',
-        );
-        const postMergeDeletePresetButton = popupContent.find(
-            '#bulk_combine_group_card_post_merge_preset_delete',
-        );
-        const postMergeRestorePresetButton = popupContent.find(
-            '#bulk_combine_group_card_post_merge_preset_restore',
-        );
-        const cropStrategySelect = popupContent.find(
-            '#bulk_combine_group_card_crop_strategy',
-        );
-        const cropPaddingInput = popupContent.find(
-            '#bulk_combine_group_card_crop_padding',
-        );
-        const cropPaddingValue = popupContent.find(
-            '#bulk_combine_group_card_crop_padding_value',
-        );
-        const characterSearchInput = popupContent.find(
-            '#bulk_combine_group_card_search',
-        );
-        promptInput.val(
-            power_user.group_card_combine_prompt ?? DEFAULT_GROUP_CARD_COMBINE_PROMPT,
-        );
-        const persistedMode = ['combined', 'parallel', 'serial'].includes(
-            power_user.group_card_processing_mode,
-        )
-            ? power_user.group_card_processing_mode
-            : 'parallel';
-        modeInputs.filter(`[value="${persistedMode}"]`).prop('checked', true);
-        concurrencyInput.val(
-            Number.isFinite(Number(power_user.group_card_parallel_concurrency))
-                ? String(power_user.group_card_parallel_concurrency)
-                : '10',
-        );
-        concurrencyContainer.toggle(persistedMode === 'parallel');
-        postMergeToggle.prop(
-            'checked',
-            power_user.group_card_post_merge_enabled ?? true,
-        );
-        postMergeSection.toggle(Boolean(postMergeToggle.prop('checked')));
-        postMergePromptInput.val(
-            power_user.group_card_post_merge_prompt ?? DEFAULT_POST_MERGE_PROMPT,
-        );
-        renderGroupCardPostMergePromptPresetSelect(postMergePresetSelect);
-        cropStrategySelect.val(
-            ['attention', 'entropy', 'center', 'top', 'face'].includes(
-                power_user.group_card_crop_strategy,
-            )
-                ? power_user.group_card_crop_strategy
-                : 'attention',
-        );
-        const persistedCropPadding = Number(power_user.group_card_crop_padding);
-        const cropPadding = Number.isFinite(persistedCropPadding)
-            ? Math.max(0, Math.min(50, Math.round(persistedCropPadding)))
-            : 15;
-        cropPaddingInput.val(String(cropPadding));
-        cropPaddingValue.text(String(cropPadding));
-        lorebookToggle.prop('checked', false);
-        renderGroupCardCombinePromptPresetSelect(presetSelect);
-
-        const persistedFields = Array.isArray(
-            power_user.group_card_combine_included_fields,
-        )
-            ? power_user.group_card_combine_included_fields
-            : ['personality'];
-        const persistedFieldSet = new Set(persistedFields);
-        fieldToggles.each((_, element) => {
-            $(element).prop(
-                'checked',
-                persistedFieldSet.has(String($(element).data('field') ?? '')),
-            );
-        });
-
-        characterSearchInput.on('input', () => {
-            BulkEditOverlay.#renderCombineGroupCardCharacterLists(
-                popupContent,
-                selectedCharacterIds,
-            );
-        });
-        BulkEditOverlay.#renderCombineGroupCardCharacterLists(
-            popupContent,
+        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, characterOutputs:Array<object>, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null}} */
+        const wizardState = {
+            stage: 1,
+            config: {},
             selectedCharacterIds,
-        );
+            results: null,
+            characterOutputs: [],
+            postProcessResult: null,
+            postProcessMode: 'replace',
+            avatarOffsets: [],
+            avatarUrl: null,
+        };
 
-        modeInputs.on('change', () => {
-            const selectedMode = String(
-                modeInputs.filter(':checked').val() ?? 'parallel',
-            );
-            concurrencyContainer.toggle(selectedMode === 'parallel');
-        });
-
-        postMergeToggle.on('change', () => {
-            postMergeSection.toggle(Boolean(postMergeToggle.prop('checked')));
-        });
-
-        cropPaddingInput.on('input', () => {
-            cropPaddingValue.text(String(cropPaddingInput.val() ?? '15'));
-        });
-
-        postMergePresetSelect.on('change', () => {
-            const presetIndex = Number(postMergePresetSelect.val());
-            const preset = getGroupCardPostMergePromptPresets()[presetIndex];
-
-            if (preset) {
-                postMergePromptInput.val(preset.prompt);
-            }
-        });
-
-        postMergeSavePresetButton.on('click', async () => {
-            const currentIndex = Number(postMergePresetSelect.val());
-            const currentPreset = getGroupCardPostMergePromptPresets()[currentIndex];
-            const presetName = await callGenericPopup(
-                'Enter a post-merge prompt preset name:',
-                POPUP_TYPE.INPUT,
-                currentPreset?.name ?? '',
-                {
-                    okButton: 'Save',
-                    cancelButton: 'Cancel',
-                },
-            );
-
-            if (!presetName) {
-                return;
-            }
-
-            const savedPreset = await saveGroupCardPostMergePromptPreset(
-                String(presetName),
-                String(postMergePromptInput.val() ?? ''),
-            );
-
-            if (!savedPreset) {
-                return;
-            }
-
-            const savedIndex = findGroupCardPostMergePromptPresetIndex(
-                savedPreset.name,
-            );
-            renderGroupCardPostMergePromptPresetSelect(
-                postMergePresetSelect,
-                savedIndex,
-            );
-        });
-
-        postMergeDeletePresetButton.on('click', () => {
-            const presetIndex = Number(postMergePresetSelect.val());
-
-            if (deleteGroupCardPostMergePromptPreset(presetIndex)) {
-                renderGroupCardPostMergePromptPresetSelect(postMergePresetSelect);
-            }
-        });
-
-        postMergeRestorePresetButton.on('click', () => {
-            postMergePromptInput.val(DEFAULT_POST_MERGE_PROMPT);
-        });
-
-        presetSelect.on('change', () => {
-            const presetIndex = Number(presetSelect.val());
-            const preset = getGroupCardCombinePromptPresets()[presetIndex];
-
-            if (preset) {
-                promptInput.val(preset.prompt);
-            }
-        });
-
-        savePresetButton.on('click', async () => {
-            const currentIndex = Number(presetSelect.val());
-            const currentPreset = getGroupCardCombinePromptPresets()[currentIndex];
-            const presetName = await callGenericPopup(
-                'Enter a prompt preset name:',
-                POPUP_TYPE.INPUT,
-                currentPreset?.name ?? '',
-                {
-                    okButton: 'Save',
-                    cancelButton: 'Cancel',
-                },
-            );
-
-            if (!presetName) {
-                return;
-            }
-
-            const savedPreset = await saveGroupCardCombinePromptPreset(
-                String(presetName),
-                String(promptInput.val() ?? ''),
-            );
-
-            if (!savedPreset) {
-                return;
-            }
-
-            const savedIndex = findGroupCardCombinePromptPresetIndex(
-                savedPreset.name,
-            );
-            renderGroupCardCombinePromptPresetSelect(presetSelect, savedIndex);
-        });
-
-        deletePresetButton.on('click', () => {
-            const presetIndex = Number(presetSelect.val());
-
-            if (deleteGroupCardCombinePromptPreset(presetIndex)) {
-                renderGroupCardCombinePromptPresetSelect(presetSelect);
-            }
-        });
-
-        restorePresetButton.on('click', () => {
-            promptInput.val(DEFAULT_GROUP_CARD_COMBINE_PROMPT);
-        });
-
-        await callGenericPopup(popupContent, POPUP_TYPE.CONFIRM, '', {
-            okButton: 'Generate',
-            cancelButton: 'Cancel',
+        await callGenericPopup(wizardHtml, POPUP_TYPE.CONFIRM, '', {
+            okButton: false,
+            cancelButton: false,
             wide: true,
             large: true,
             allowVerticalScrolling: true,
-            onClosing: async (popup) => {
-                if (popup.result !== POPUP_RESULT.AFFIRMATIVE) {
-                    return true;
-                }
-
-                const prompt = String(promptInput.val() ?? '').trim();
-
-                if (!prompt) {
-                    toastr.warning('Enter a prompt.', 'Combine into Group Card');
-                    return false;
-                }
-
-                const selectedMode = String(
-                    modeInputs.filter(':checked').val() ?? 'parallel',
+            onOpen: (popup) => {
+                const popupContent = $(popup.dlg);
+                const groupNameInput = popupContent.find(
+                    '#bulk_combine_group_card_name',
                 );
-                const processingMode = ['combined', 'parallel', 'serial'].includes(
-                    selectedMode,
+                const promptInput = popupContent.find(
+                    '#bulk_combine_group_card_prompt',
+                );
+                const presetSelect = popupContent.find(
+                    '#bulk_combine_group_card_preset_select',
+                );
+                const savePresetButton = popupContent.find(
+                    '#bulk_combine_group_card_preset_save',
+                );
+                const deletePresetButton = popupContent.find(
+                    '#bulk_combine_group_card_preset_delete',
+                );
+                const restorePresetButton = popupContent.find(
+                    '#bulk_combine_group_card_preset_restore',
+                );
+                const fieldToggles = popupContent.find(
+                    '#bulk_combine_group_card_field_toggles input[type="checkbox"]',
+                );
+                const lorebookToggle = popupContent.find(
+                    '#bulk_combine_group_card_lorebook_toggle',
+                );
+                const modeInputs = popupContent.find('input[name="bulk_combine_mode"]');
+                const concurrencyContainer = popupContent.find(
+                    '#bulk_combine_group_card_concurrency_container',
+                );
+                const concurrencyInput = popupContent.find(
+                    '#bulk_combine_group_card_concurrency',
+                );
+                const postProcessModeInputs = popupContent.find(
+                    'input[name="bulk_combine_post_process_mode"]',
+                );
+                const postProcessSection = popupContent.find(
+                    '#bulk_combine_group_card_post_process_section',
+                );
+                const postProcessPromptInput = popupContent.find(
+                    '#bulk_combine_group_card_post_process_prompt',
+                );
+                const postProcessPresetSelect = popupContent.find(
+                    '#bulk_combine_group_card_post_process_preset_select',
+                );
+                const postProcessSavePresetButton = popupContent.find(
+                    '#bulk_combine_group_card_post_process_preset_save',
+                );
+                const postProcessDeletePresetButton = popupContent.find(
+                    '#bulk_combine_group_card_post_process_preset_delete',
+                );
+                const postProcessRestorePresetButton = popupContent.find(
+                    '#bulk_combine_group_card_post_process_preset_restore',
+                );
+                const cropStrategySelect = popupContent.find(
+                    '#bulk_combine_group_card_crop_strategy',
+                );
+                const cropPaddingInput = popupContent.find(
+                    '#bulk_combine_group_card_crop_padding',
+                );
+                const cropPaddingValue = popupContent.find(
+                    '#bulk_combine_group_card_crop_padding_value',
+                );
+                const characterSearchInput = popupContent.find(
+                    '#bulk_combine_group_card_search',
+                );
+
+                promptInput.val(
+                    power_user.group_card_combine_prompt ??
+						DEFAULT_GROUP_CARD_COMBINE_PROMPT,
+                );
+                const persistedMode = ['combined', 'parallel', 'serial'].includes(
+                    power_user.group_card_processing_mode,
                 )
-                    ? selectedMode
+                    ? power_user.group_card_processing_mode
                     : 'parallel';
-                const parsedConcurrency = Number(concurrencyInput.val());
-                const concurrency = Number.isFinite(parsedConcurrency)
-                    ? Math.max(1, Math.min(50, Math.round(parsedConcurrency)))
-                    : 10;
-                const postMergeEnabled = Boolean(postMergeToggle.prop('checked'));
-                const postMergePrompt = String(postMergePromptInput.val() ?? '').trim();
-                const cropStrategyValue = String(
-                    cropStrategySelect.val() ?? 'attention',
+                modeInputs.filter(`[value="${persistedMode}"]`).prop('checked', true);
+                concurrencyInput.val(
+                    Number.isFinite(Number(power_user.group_card_parallel_concurrency))
+                        ? String(power_user.group_card_parallel_concurrency)
+                        : '10',
                 );
-                const cropStrategy = [
-                    'attention',
-                    'entropy',
-                    'center',
-                    'top',
-                    'face',
-                ].includes(cropStrategyValue)
-                    ? cropStrategyValue
-                    : 'attention';
-                const parsedCropPadding = Number(cropPaddingInput.val());
-                const cropPadding = Number.isFinite(parsedCropPadding)
-                    ? Math.max(0, Math.min(50, Math.round(parsedCropPadding)))
+                concurrencyContainer.toggle(persistedMode === 'parallel');
+
+                const persistedPostProcessMode = [
+                    'disabled',
+                    'replace',
+                    'prepend',
+                    'append',
+                ].includes(power_user.group_card_post_process_mode)
+                    ? power_user.group_card_post_process_mode
+                    : 'replace';
+                postProcessModeInputs
+                    .filter(`[value="${persistedPostProcessMode}"]`)
+                    .prop('checked', true);
+                postProcessSection.toggle(persistedPostProcessMode !== 'disabled');
+                postProcessPromptInput.val(
+                    power_user.group_card_post_merge_prompt ?? DEFAULT_POST_MERGE_PROMPT,
+                );
+                renderGroupCardPostMergePromptPresetSelect(postProcessPresetSelect);
+
+                cropStrategySelect.val(
+                    ['attention', 'entropy', 'center', 'top', 'face'].includes(
+                        power_user.group_card_crop_strategy,
+                    )
+                        ? power_user.group_card_crop_strategy
+                        : 'attention',
+                );
+                const persistedCropPadding = Number(power_user.group_card_crop_padding);
+                const cropPadding = Number.isFinite(persistedCropPadding)
+                    ? Math.max(0, Math.min(50, Math.round(persistedCropPadding)))
                     : 15;
+                cropPaddingInput.val(String(cropPadding));
+                cropPaddingValue.text(String(cropPadding));
+                lorebookToggle.prop('checked', false);
+                renderGroupCardCombinePromptPresetSelect(presetSelect);
 
-                if (postMergeEnabled && !postMergePrompt) {
-                    toastr.warning(
-                        'Enter a post-merge prompt or disable the post-merge step.',
-                        'Combine into Group Card',
-                    );
-                    return false;
-                }
-
-                const createLorebook = Boolean(lorebookToggle.prop('checked'));
-                await Promise.all(
-                    selectedCharacterIds
-                        .filter((id) => characters[id]?.shallow)
-                        .map((id) => unshallowCharacter(String(id))),
-                );
-                const request = validateGroupCardRequest(
-                    String(groupNameInput.val() ?? ''),
-                    selectedCharacterIds,
-                    { createLorebook },
-                );
-
-                if (!request) {
-                    return false;
-                }
-
-                const selectedOptionalFields = fieldToggles
-                    .toArray()
-                    .filter((element) => $(element).prop('checked'))
-                    .map((element) => String($(element).data('field') ?? ''))
-                    .filter((field) => OPTIONAL_CHARACTER_FIELDS.includes(field));
-                const selectedFields = normalizeSelectedFields(selectedOptionalFields);
-
-                power_user.group_card_combine_prompt = prompt;
-                power_user.group_card_combine_included_fields = selectedOptionalFields;
-                power_user.group_card_processing_mode = processingMode;
-                power_user.group_card_parallel_concurrency = concurrency;
-                power_user.group_card_post_merge_enabled = postMergeEnabled;
-                power_user.group_card_post_merge_prompt = postMergePrompt;
-                power_user.group_card_crop_strategy = cropStrategy;
-                power_user.group_card_crop_padding = cropPadding;
-                saveSettingsDebounced();
-
-                // Fire and forget — popup closes immediately, generation runs in background.
-                BulkEditOverlay.#startGroupCardCombinePipeline(
-                    request.groupName,
-                    prompt,
-                    request.characters,
-                    createLorebook,
-                    selectedFields,
-                    processingMode,
-                    concurrency,
-                    postMergeEnabled,
-                    postMergePrompt,
-                    cropStrategy,
-                    cropPadding,
+                const persistedFields = Array.isArray(
+                    power_user.group_card_combine_included_fields,
                 )
-                    .then(async () => {
-                        await getCharacters();
-                        toastr.success(
-                            createLorebook
-                                ? 'Created group card and linked lorebook.'
-                                : 'Created group card.',
+                    ? power_user.group_card_combine_included_fields
+                    : ['personality'];
+                const persistedFieldSet = new Set(persistedFields);
+                fieldToggles.each((_, element) => {
+                    $(element).prop(
+                        'checked',
+                        persistedFieldSet.has(String($(element).data('field') ?? '')),
+                    );
+                });
+
+                characterSearchInput.on('input', () => {
+                    BulkEditOverlay.#renderCombineGroupCardCharacterLists(
+                        popupContent,
+                        wizardState.selectedCharacterIds,
+                    );
+                });
+                BulkEditOverlay.#renderCombineGroupCardCharacterLists(
+                    popupContent,
+                    wizardState.selectedCharacterIds,
+                );
+
+                modeInputs.on('change', () => {
+                    const selectedMode = String(
+                        modeInputs.filter(':checked').val() ?? 'parallel',
+                    );
+                    concurrencyContainer.toggle(selectedMode === 'parallel');
+                });
+
+                postProcessModeInputs.on('change', () => {
+                    const selectedMode = String(
+                        postProcessModeInputs.filter(':checked').val() ?? 'replace',
+                    );
+                    postProcessSection.toggle(selectedMode !== 'disabled');
+                });
+
+                cropPaddingInput.on('input', () => {
+                    cropPaddingValue.text(String(cropPaddingInput.val() ?? '15'));
+                });
+
+                postProcessPresetSelect.on('change', () => {
+                    const presetIndex = Number(postProcessPresetSelect.val());
+                    const preset = getGroupCardPostMergePromptPresets()[presetIndex];
+
+                    if (preset) {
+                        postProcessPromptInput.val(preset.prompt);
+                    }
+                });
+
+                postProcessSavePresetButton.on('click', async () => {
+                    const currentIndex = Number(postProcessPresetSelect.val());
+                    const currentPreset =
+						getGroupCardPostMergePromptPresets()[currentIndex];
+                    const presetName = await callGenericPopup(
+                        'Enter a post-processing prompt preset name:',
+                        POPUP_TYPE.INPUT,
+                        currentPreset?.name ?? '',
+                        {
+                            okButton: 'Save',
+                            cancelButton: 'Cancel',
+                        },
+                    );
+
+                    if (!presetName) {
+                        return;
+                    }
+
+                    const savedPreset = await saveGroupCardPostMergePromptPreset(
+                        String(presetName),
+                        String(postProcessPromptInput.val() ?? ''),
+                    );
+
+                    if (!savedPreset) {
+                        return;
+                    }
+
+                    const savedIndex = findGroupCardPostMergePromptPresetIndex(
+                        savedPreset.name,
+                    );
+                    renderGroupCardPostMergePromptPresetSelect(
+                        postProcessPresetSelect,
+                        savedIndex,
+                    );
+                });
+
+                postProcessDeletePresetButton.on('click', () => {
+                    const presetIndex = Number(postProcessPresetSelect.val());
+
+                    if (deleteGroupCardPostMergePromptPreset(presetIndex)) {
+                        renderGroupCardPostMergePromptPresetSelect(postProcessPresetSelect);
+                    }
+                });
+
+                postProcessRestorePresetButton.on('click', () => {
+                    postProcessPromptInput.val(DEFAULT_POST_MERGE_PROMPT);
+                });
+
+                presetSelect.on('change', () => {
+                    const presetIndex = Number(presetSelect.val());
+                    const preset = getGroupCardCombinePromptPresets()[presetIndex];
+
+                    if (preset) {
+                        promptInput.val(preset.prompt);
+                    }
+                });
+
+                savePresetButton.on('click', async () => {
+                    const currentIndex = Number(presetSelect.val());
+                    const currentPreset =
+						getGroupCardCombinePromptPresets()[currentIndex];
+                    const presetName = await callGenericPopup(
+                        'Enter a prompt preset name:',
+                        POPUP_TYPE.INPUT,
+                        currentPreset?.name ?? '',
+                        {
+                            okButton: 'Save',
+                            cancelButton: 'Cancel',
+                        },
+                    );
+
+                    if (!presetName) {
+                        return;
+                    }
+
+                    const savedPreset = await saveGroupCardCombinePromptPreset(
+                        String(presetName),
+                        String(promptInput.val() ?? ''),
+                    );
+
+                    if (!savedPreset) {
+                        return;
+                    }
+
+                    const savedIndex = findGroupCardCombinePromptPresetIndex(
+                        savedPreset.name,
+                    );
+                    renderGroupCardCombinePromptPresetSelect(presetSelect, savedIndex);
+                });
+
+                deletePresetButton.on('click', () => {
+                    const presetIndex = Number(presetSelect.val());
+
+                    if (deleteGroupCardCombinePromptPreset(presetIndex)) {
+                        renderGroupCardCombinePromptPresetSelect(presetSelect);
+                    }
+                });
+
+                restorePresetButton.on('click', () => {
+                    promptInput.val(DEFAULT_GROUP_CARD_COMBINE_PROMPT);
+                });
+
+                popupContent.find('#bulk_combine_wizard_back').on('click', () => {
+                    if (wizardState.stage > 1) {
+                        BulkEditOverlay.#wizardGoToStage(
+                            popupContent,
+                            wizardState,
+                            wizardState.stage - 1,
                         );
-                    })
-                    .catch((error) => {
-                        console.error(error);
-                        toastr.error(
-                            error?.message ?? 'Failed to combine selected characters.',
-                            'Combine into Group Card',
-                        );
+                    }
+                });
+
+                popupContent.find('#bulk_combine_wizard_cancel').on('click', () => {
+                    popup.completeCancelled();
+                });
+
+                popupContent
+                    .find('#bulk_combine_wizard_save_as_is')
+                    .on('click', async () => {
+                        if (
+                            await BulkEditOverlay.#handleStage2SaveAsIs(
+                                popupContent,
+                                wizardState,
+                            )
+                        ) {
+                            await popup.completeAffirmative();
+                        }
                     });
 
-                return true;
+                popupContent.find('#bulk_combine_wizard_next').on('click', async () => {
+                    switch (wizardState.stage) {
+                        case 1:
+                            await BulkEditOverlay.#handleCombineWizardStage1Next(
+                                popupContent,
+                                wizardState,
+                            );
+                            break;
+                        case 2:
+                            BulkEditOverlay.#updateWizardMergedXml(wizardState);
+                            if (
+                                !wizardState.characterOutputs.some(
+                                    (output) => output.parseStatus === 'ok',
+                                )
+                            ) {
+                                toastr.warning(
+                                    'At least one valid output required.',
+                                    'Combine into Group Card',
+                                );
+                                return;
+                            }
+                            BulkEditOverlay.#wizardGoToStage(popupContent, wizardState, 3);
+                            BulkEditOverlay.#renderStage3Content(popupContent, wizardState);
+                            break;
+                        case 3:
+                            if (!wizardState.postProcessResult) {
+                                toastr.warning(
+                                    'Apply post-processing first.',
+                                    'Combine into Group Card',
+                                );
+                                return;
+                            }
+                            BulkEditOverlay.#wizardGoToStage(popupContent, wizardState, 4);
+                            BulkEditOverlay.#renderStage4Content(popupContent, wizardState);
+                            break;
+                        case 4:
+                            if (
+                                await BulkEditOverlay.#handleStage4Create(
+                                    popupContent,
+                                    wizardState,
+                                )
+                            ) {
+                                await popup.completeAffirmative();
+                            }
+                            break;
+                    }
+                });
+
+                BulkEditOverlay.#wizardGoToStage(popupContent, wizardState, 1);
+                groupNameInput.trigger('focus');
             },
         });
     };
@@ -2602,6 +3925,7 @@ class BulkEditOverlay {
 	 * @param {string} postMergePrompt Post-merge prompt.
 	 * @param {string} cropStrategy Crop strategy.
 	 * @param {number} cropPadding Crop padding.
+	 * @param {string} [postProcessMode] Post-process mode.
 	 * @returns {object} Job config.
 	 */
     static #buildGroupCardJobConfig = (
@@ -2616,6 +3940,7 @@ class BulkEditOverlay {
         postMergePrompt,
         cropStrategy,
         cropPadding,
+        postProcessMode = 'replace',
     ) => ({
         groupName,
         prompt,
@@ -2633,6 +3958,8 @@ class BulkEditOverlay {
         concurrency,
         postMergeEnabled,
         postMergePrompt,
+        postProcessMode: ['replace', 'prepend', 'append'].includes(postProcessMode) ? postProcessMode : 'replace',
+        avatarOffsets: [],
         createLorebook,
         cropStrategy,
         cropPadding,
@@ -3102,9 +4429,10 @@ class BulkEditOverlay {
                 }),
                 new Promise((_, reject) =>
                     setTimeout(
-                        () => reject(
-                            new Error('Group card generation timed out after 5 minutes.'),
-                        ),
+                        () =>
+                            reject(
+                                new Error('Group card generation timed out after 5 minutes.'),
+                            ),
                         SSE_TIMEOUT_MS,
                     ),
                 ),

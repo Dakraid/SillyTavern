@@ -155,13 +155,138 @@ export function extractTopLevelXmlBlocks(text) {
 }
 
 /**
+ * Counts root-level XML corpus blocks.
+ * Nested blocks do not count.
+ * @param {string} xmlString XML text.
+ * @returns {number} Root-level XML block count.
+ */
+export function countXmlCorpus(xmlString) {
+    const cleaned = String(xmlString ?? '').trim();
+
+    if (!cleaned) {
+        return 0;
+    }
+
+    return extractTopLevelXmlBlocks(cleaned).length;
+}
+
+/**
+ * Removes non-XML trailing text after the last closing tag.
+ * @param {string} text XML-ish text.
+ * @returns {string} Text ending at the last closing tag when present.
+ */
+function trimAfterLastClosingTag(text) {
+    const closeTagRegex = /<\/([a-zA-Z_][\w.-]*)\s*>/g;
+    let lastCloseEnd = -1;
+
+    while (closeTagRegex.exec(text) !== null) {
+        lastCloseEnd = closeTagRegex.lastIndex;
+    }
+
+    if (lastCloseEnd === -1) {
+        return text;
+    }
+
+    return text.slice(0, lastCloseEnd).trim();
+}
+
+/**
+ * Appends closing tags for unclosed XML tags.
+ * @param {string} text XML-ish text.
+ * @returns {string} Text with best-effort appended closing tags.
+ */
+function closeUnclosedTags(text) {
+    const tagRegex = /<\/?([a-zA-Z_][\w.-]*)(?:\s+[^>]*)?>/g;
+    /** @type {string[]} */
+    const stack = [];
+    let fixed = '';
+    let lastIndex = 0;
+    let match;
+
+    while ((match = tagRegex.exec(text)) !== null) {
+        const tagText = match[0];
+        const tagName = match[1];
+        fixed += text.slice(lastIndex, match.index);
+
+        if (tagText.startsWith('</')) {
+            const matchingIndex = stack.lastIndexOf(tagName);
+
+            if (matchingIndex === -1) {
+                fixed += tagText;
+            } else {
+                for (let index = stack.length - 1; index > matchingIndex; index--) {
+                    fixed += `</${stack[index]}>`;
+                }
+
+                stack.length = matchingIndex;
+                fixed += tagText;
+            }
+        } else {
+            fixed += tagText;
+
+            if (!tagText.endsWith('/>')) {
+                stack.push(tagName);
+            }
+        }
+
+        lastIndex = tagRegex.lastIndex;
+    }
+
+    fixed += text.slice(lastIndex);
+
+    if (!stack.length) {
+        return fixed;
+    }
+
+    return `${fixed}${stack
+        .reverse()
+        .map((tagName) => `</${tagName}>`)
+        .join('')}`;
+}
+
+/**
+ * Attempts conservative repair of malformed XML-like LLM output.
+ * @param {string} xmlString XML-ish text.
+ * @returns {{ fixed: string, succeeded: boolean }} Fixed text and parse status.
+ */
+export function autoFixXml(xmlString) {
+    const cleaned = stripNoise(xmlString);
+
+    if (!cleaned) {
+        return { fixed: '', succeeded: false };
+    }
+
+    let fixed = closeUnclosedTags(cleaned).trim();
+    fixed = trimAfterLastClosingTag(fixed);
+
+    if (extractTopLevelXmlBlocks(fixed).length > 0) {
+        return { fixed, succeeded: true };
+    }
+
+    return { fixed, succeeded: false };
+}
+
+/**
+ * Extracts the first message content from the first <first_mes> tag.
+ * @param {string} xmlString XML text.
+ * @returns {string} First message content, or empty string.
+ */
+export function extractFirstMessage(xmlString) {
+    const blocks = extractXmlBlocksByTag(String(xmlString ?? ''), 'first_mes');
+    return blocks[0]?.content ?? '';
+}
+
+/**
  * Validates and cleans generated group card XML output.
  * Falls back to raw text wrapped in <character> block when no XML found.
  * @param {string} output Raw LLM output
  * @param {number} selectedCharacterCount Expected character count
  * @returns {string} Validated description
  */
-export function validateGeneratedGroupCardDescription(output, selectedCharacterCount) {
+export function validateGeneratedGroupCardDescription(
+    output,
+    selectedCharacterCount,
+) {
     const cleaned = stripNoise(output);
 
     if (!cleaned) {
@@ -171,7 +296,9 @@ export function validateGeneratedGroupCardDescription(output, selectedCharacterC
     const blocks = extractTopLevelXmlBlocks(cleaned);
 
     if (blocks.length === 0) {
-        console.warn('Group card generation: No XML blocks found in LLM output. Using raw text as fallback.');
+        console.warn(
+            'Group card generation: No XML blocks found in LLM output. Using raw text as fallback.',
+        );
         return `<character>\n  <description>${escapeXml(cleaned)}</description>\n</character>`;
     }
 
