@@ -19,6 +19,10 @@ import {
     escapeXml,
     validateGeneratedGroupCardDescription,
     countXmlCorpus,
+    extractXmlBlocksByTag,
+    stripSummaryFromCharacterBlock,
+    buildSummaryCharacterBlock,
+    minifyXml,
 } from '../../public/scripts/group-card-xml-parser.js';
 
 const JOB_TTL_MS = 30 * 60 * 1000;
@@ -639,6 +643,138 @@ function buildLorebookData(characters, fields) {
     };
 }
 
+function extractAllTopLevelXmlBlocks(xmlString) {
+    const text = String(xmlString ?? '').trim();
+    const anyOpenRegex = /<([a-zA-Z_][\w.-]*)(?:\s+[^>]*[^/])?>/g;
+    const blocks = [];
+    let consumedUpTo = 0;
+    let match;
+
+    while ((match = anyOpenRegex.exec(text)) !== null) {
+        const blockStart = match.index;
+        if (blockStart < consumedUpTo) {
+            continue;
+        }
+
+        const tagName = match[1];
+        const subBlocks = extractXmlBlocksByTag(text.slice(blockStart), tagName);
+        const block = subBlocks[0];
+        const nextSearchIndex = blockStart + match[0].length;
+
+        if (!block) {
+            consumedUpTo = Math.max(consumedUpTo, nextSearchIndex);
+            anyOpenRegex.lastIndex = consumedUpTo;
+            continue;
+        }
+
+        const blockEnd = blockStart + block.raw.length;
+        blocks.push({
+            tag: block.tag,
+            content: block.content,
+            raw: text.slice(blockStart, blockEnd),
+        });
+        consumedUpTo = blockEnd;
+        anyOpenRegex.lastIndex = Math.max(consumedUpTo, nextSearchIndex);
+    }
+
+    return blocks;
+}
+
+function extractCharacterBlockName(block, index) {
+    const name = String(
+        extractXmlBlocksByTag(block?.content ?? '', 'name')[0]?.content ?? '',
+    ).trim();
+
+    return name || `Character ${index + 1}`;
+}
+
+function buildDynamicLorebookEntry(block, index) {
+    const name = extractCharacterBlockName(block, index);
+
+    return {
+        uid: index,
+        key: [name],
+        keysecondary: [],
+        comment: name,
+        content: stripSummaryFromCharacterBlock(block.raw),
+        constant: false,
+        vectorized: false,
+        selective: true,
+        selectiveLogic: 0,
+        addMemo: true,
+        order: 100 - index,
+        position: 0,
+        disable: false,
+        ignoreBudget: false,
+        excludeRecursion: false,
+        preventRecursion: false,
+        matchPersonaDescription: false,
+        matchCharacterDescription: false,
+        matchCharacterPersonality: false,
+        matchCharacterDepthPrompt: false,
+        matchScenario: false,
+        matchCreatorNotes: false,
+        delayUntilRecursion: 0,
+        probability: 100,
+        useProbability: true,
+        depth: 4,
+        outletName: '',
+        group: '',
+        groupOverride: false,
+        groupWeight: 100,
+        scanDepth: null,
+        caseSensitive: null,
+        matchWholeWords: null,
+        useGroupScoring: null,
+        automationId: '',
+        role: 0,
+        sticky: null,
+        cooldown: null,
+        delay: null,
+        triggers: [],
+    };
+}
+
+function buildDynamicLorebookData(generatedDescription) {
+    const characterBlocks = extractAllTopLevelXmlBlocks(
+        generatedDescription,
+    ).filter((block) => block.tag === 'character');
+
+    return {
+        entries: Object.fromEntries(
+            characterBlocks.map((block, index) => [
+                index,
+                buildDynamicLorebookEntry(block, index),
+            ]),
+        ),
+    };
+}
+
+function buildDynamicSummaryDescription(generatedDescription) {
+    return extractAllTopLevelXmlBlocks(generatedDescription)
+        .map((block) =>
+            block.tag === 'character'
+                ? buildSummaryCharacterBlock(block.raw)
+                : block.raw,
+        )
+        .join('\n\n');
+}
+
+function buildFinalGroupDescription(generatedDescription, config) {
+    let description = config.dynamicLorebook
+        ? buildDynamicSummaryDescription(generatedDescription)
+        : String(generatedDescription ?? '');
+
+    if (config.minify) {
+        description = minifyXml(description, {
+            compact: !config.minifySingleLine,
+            singleLine: config.minifySingleLine,
+        });
+    }
+
+    return description;
+}
+
 function createCharacterData(
     config,
     generatedDescription,
@@ -1021,7 +1157,10 @@ export class GroupCardJobManager {
             postMergeEnabled: Boolean(config.postMergeEnabled),
             postMergePrompt: String(config.postMergePrompt ?? ''),
             postProcessMode: normalizePostProcessMode(config.postProcessMode),
-            createLorebook: Boolean(config.createLorebook),
+            createLorebook: Boolean(config.createLorebook || config.dynamicLorebook),
+            dynamicLorebook: Boolean(config.dynamicLorebook),
+            minify: Boolean(config.minify),
+            minifySingleLine: Boolean(config.minifySingleLine),
             cropStrategy: config.cropStrategy,
             cropPadding: config.cropPadding,
             avatarOffsets: Array.isArray(config.avatarOffsets)
@@ -1232,9 +1371,13 @@ export class GroupCardJobManager {
         const avatarName = `${internalName}.png`;
         const characterPath = path.join(config.directories.characters, avatarName);
         const worldName = config.createLorebook ? config.groupName : '';
+        const finalDescription = buildFinalGroupDescription(
+            generatedDescription,
+            config,
+        );
         const characterData = createCharacterData(
             config,
-            generatedDescription,
+            finalDescription,
             avatarName,
             worldName,
         );
@@ -1259,14 +1402,10 @@ export class GroupCardJobManager {
                 config.directories.worlds,
                 sanitize(`${config.groupName}.json`),
             );
-            writeFileAtomicSync(
-                lorebookPath,
-                JSON.stringify(
-                    buildLorebookData(config.characters, config.fields),
-                    null,
-                    4,
-                ),
-            );
+            const lorebookData = config.dynamicLorebook
+                ? buildDynamicLorebookData(generatedDescription)
+                : buildLorebookData(config.characters, config.fields);
+            writeFileAtomicSync(lorebookPath, JSON.stringify(lorebookData, null, 4));
             createdArtifacts.lorebookPath = lorebookPath;
             this.emitEvent(job.id, 'lorebook_created', { world: config.groupName });
         }

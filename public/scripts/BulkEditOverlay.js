@@ -47,9 +47,13 @@ import { escapeHtml } from './utils.js';
 import {
     validateGeneratedGroupCardDescription,
     extractTopLevelXmlBlocks,
+    extractXmlBlocksByTag,
     countXmlCorpus,
     autoFixXml,
     extractFirstMessage,
+    stripSummaryFromCharacterBlock,
+    buildSummaryCharacterBlock,
+    minifyXml,
 } from './group-card-xml-parser.js';
 import { oai_settings } from './openai.js';
 import { textgenerationwebui_settings } from './textgen-settings.js';
@@ -310,6 +314,99 @@ function buildLorebookData(selectedCharacters, fields) {
     );
 
     return { entries };
+}
+
+/**
+ * Extracts all top-level XML blocks without preferring character blocks.
+ *
+ * @param {string} xmlString XML text.
+ * @returns {Array<{tag: string, content: string, raw: string}>} Top-level XML blocks.
+ */
+function extractAllTopLevelXmlBlocks(xmlString) {
+    const text = String(xmlString ?? '').trim();
+    const anyOpenRegex = /<([a-zA-Z_][\w.-]*)(?:\s+[^>]*[^/])?>/g;
+    const blocks = [];
+    let consumedUpTo = 0;
+    let match;
+
+    while ((match = anyOpenRegex.exec(text)) !== null) {
+        const blockStart = match.index;
+        if (blockStart < consumedUpTo) {
+            continue;
+        }
+
+        const tagName = match[1];
+        const subBlocks = extractXmlBlocksByTag(text.slice(blockStart), tagName);
+        const block = subBlocks[0];
+        const nextSearchIndex = blockStart + match[0].length;
+
+        if (!block) {
+            consumedUpTo = Math.max(consumedUpTo, nextSearchIndex);
+            anyOpenRegex.lastIndex = consumedUpTo;
+            continue;
+        }
+
+        const blockEnd = blockStart + block.raw.length;
+        blocks.push({
+            tag: block.tag,
+            content: block.content,
+            raw: text.slice(blockStart, blockEnd),
+        });
+        consumedUpTo = blockEnd;
+        anyOpenRegex.lastIndex = Math.max(consumedUpTo, nextSearchIndex);
+    }
+
+    return blocks;
+}
+
+/**
+ * Dynamic lorebook: builds lorebook entries from generated XML blocks.
+ * Each character's full XML (minus summary) becomes a lorebook entry.
+ *
+ * @param {string} generatedXml Generated XML text.
+ * @returns {{ entries: object }} World info data.
+ */
+function buildDynamicLorebookData(generatedXml) {
+    const characterBlocks = extractAllTopLevelXmlBlocks(
+        String(generatedXml ?? ''),
+    ).filter((block) => block.tag === 'character');
+    const entries = Object.fromEntries(
+        characterBlocks.map((block, index) => {
+            const uid = Number.isInteger(index) && index >= 0 ? index : 0;
+            const characterName = String(
+                extractXmlBlocksByTag(block.content, 'name')[0]?.content ?? '',
+            ).trim();
+            const entry = {
+                uid,
+                ...structuredClone(newWorldInfoEntryTemplate),
+                key: [characterName],
+                comment: characterName,
+                content: stripSummaryFromCharacterBlock(block.raw),
+                addMemo: true,
+                order: 100 - uid,
+            };
+            return [entry.uid, entry];
+        }),
+    );
+
+    return { entries };
+}
+
+/**
+ * Builds a summary-only XML description for dynamic lorebook cards.
+ * Character blocks become name + summary blocks; non-character blocks stay intact.
+ *
+ * @param {string} generatedXml Generated XML text.
+ * @returns {string} Main card description XML.
+ */
+function buildDynamicSummaryDescription(generatedXml) {
+    return extractAllTopLevelXmlBlocks(String(generatedXml ?? ''))
+        .map((block) =>
+            block.tag === 'character'
+                ? buildSummaryCharacterBlock(block.raw)
+                : block.raw,
+        )
+        .join('\n\n');
 }
 
 /**
@@ -690,6 +787,8 @@ async function readCreatedCharacterAvatar(response, groupName) {
  * @param {Array<object>} selectedChars Selected character objects.
  * @param {boolean} [createLorebook] Whether to create and link a lorebook.
  * @param {Array<string>} [fields] Included core fields.
+ * @param {boolean} [dynamicLorebook] Whether to create lorebook entries from generated XML.
+ * @param {string} [dynamicLorebookSourceXml] Full generated XML used for dynamic lorebook entries.
  * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
  */
 async function createGeneratedGroupCard(
@@ -698,6 +797,8 @@ async function createGeneratedGroupCard(
     selectedChars,
     createLorebook = true,
     fields,
+    dynamicLorebook = false,
+    dynamicLorebookSourceXml = generatedDescription,
 ) {
     const request = validateGroupCardRequest(groupName, selectedChars, {
         createLorebook,
@@ -714,7 +815,9 @@ async function createGeneratedGroupCard(
     if (createLorebook) {
         const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
             name: request.groupName,
-            data: buildLorebookData(request.characters, fields),
+            data: dynamicLorebook
+                ? buildDynamicLorebookData(dynamicLorebookSourceXml)
+                : buildLorebookData(request.characters, fields),
         });
         await throwIfNotOk(
             worldResponse,
@@ -1944,6 +2047,20 @@ class BulkEditOverlay {
                             <input type="checkbox" id="bulk_combine_group_card_lorebook_toggle" />
                             <span>Create lorebook with original character data</span>
                         </label>
+                        <label for="bulk_combine_group_card_dynamic_lorebook_toggle" class="checkbox_label">
+                            <input type="checkbox" id="bulk_combine_group_card_dynamic_lorebook_toggle" />
+                            <span>Use dynamic lorebook</span>
+                        </label>
+                        <div id="bulk_combine_minify_section" class="field-group">
+                            <label for="bulk_combine_group_card_minify_toggle" class="checkbox_label">
+                                <input type="checkbox" id="bulk_combine_group_card_minify_toggle" />
+                                <span>Minify XML output</span>
+                            </label>
+                            <label for="bulk_combine_group_card_minify_single_line" class="checkbox_label" id="bulk_combine_minify_single_line_label">
+                                <input type="checkbox" id="bulk_combine_group_card_minify_single_line" />
+                                <span>Single line</span>
+                            </label>
+                        </div>
                     </div>
                     <div id="bulk_combine_stage_2" class="stage" style="display:none;">
                         <h4>Generation Results</h4>
@@ -2087,7 +2204,7 @@ class BulkEditOverlay {
             config.groupName,
             config.prompt,
             selectedCharacters,
-            config.createLorebook,
+            Boolean(config.createLorebook || config.dynamicLorebook),
             config.fields,
             config.processingMode,
             config.concurrency,
@@ -2098,6 +2215,9 @@ class BulkEditOverlay {
             config.cropStrategy,
             config.cropPadding,
             config.postProcessMode,
+            config.dynamicLorebook,
+            config.minify,
+            config.minifySingleLine,
         );
         let jobEventSource = null;
         let jobId = '';
@@ -2861,9 +2981,21 @@ class BulkEditOverlay {
 	 * @param {object} wizardState Wizard state.
 	 */
     static #renderStage4Content = (popupContent, wizardState) => {
-        const description = String(
+        let description = String(
             wizardState.postProcessResult || wizardState.mergedXml || '',
         );
+
+        if (wizardState.config?.dynamicLorebook) {
+            description = buildDynamicSummaryDescription(description);
+        }
+
+        if (wizardState.config?.minify) {
+            description = minifyXml(description, {
+                compact: !wizardState.config?.minifySingleLine,
+                singleLine: wizardState.config?.minifySingleLine,
+            });
+        }
+
         const content = popupContent.find('#bulk_combine_review_content');
         content.empty();
         const html = $(`
@@ -2873,6 +3005,18 @@ class BulkEditOverlay {
             <div class="review-section"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div id="bulk_combine_avatar_offsets"></div><div class="field-group" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div><div class="field-group" style="display:flex;align-items:center;gap:0.5em;justify-content:center;"><label class="text_label"><span>Voronoi Seed:</span> <input id="bulk_combine_voronoi_seed" class="text_pole" type="number" style="width:8em;" /></label><div id="bulk_combine_shuffle_seed" class="menu_button" title="Randomize pattern"><i class="fa-solid fa-shuffle"></i></div></div></div>
             <div class="review-section"><small id="bulk_combine_review_source_summary"></small></div>`);
         content.append(html);
+        if (wizardState.config?.dynamicLorebook) {
+            content
+                .find('#bulk_combine_review_description')
+                .closest('.review-section')
+                .append(
+                    $('<small></small>')
+                        .addClass('dynamic-lorebook-info')
+                        .text(
+                            'Dynamic lorebook active: character summaries in card, full definitions in lorebook.',
+                        ),
+                );
+        }
         content
             .find('#bulk_combine_review_name')
             .val(wizardState.config?.groupName ?? '');
@@ -3074,6 +3218,9 @@ class BulkEditOverlay {
 	 * @param {object} wizardState Wizard state.
 	 */
     static #handleStage4Create = async (popupContent, wizardState) => {
+        const dynamicLorebookSourceXml = String(
+            wizardState.postProcessResult || wizardState.mergedXml || '',
+        );
         const description = String(
             popupContent.find('#bulk_combine_review_description').val() ?? '',
         ).trim();
@@ -3095,6 +3242,14 @@ class BulkEditOverlay {
         BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
         try {
             if (wizardState.serverCreated && wizardState.results?.avatar) {
+                let finalDescription = description;
+                if (wizardState.config?.minify) {
+                    finalDescription = minifyXml(finalDescription, {
+                        compact: !wizardState.config?.minifySingleLine,
+                        singleLine: wizardState.config?.minifySingleLine,
+                    });
+                }
+
                 const response = await sendJsonRequest(
                     '/api/characters/merge-attributes',
                     {
@@ -3102,7 +3257,7 @@ class BulkEditOverlay {
                         data: {
                             name: groupName,
                             ch_name: groupName,
-                            description,
+                            description: finalDescription,
                             first_mes: firstMes,
                         },
                     },
@@ -3113,12 +3268,27 @@ class BulkEditOverlay {
                     wizardState.results.avatar,
                 );
             } else {
+                let finalDescription = wizardState.config?.dynamicLorebook
+                    ? buildDynamicSummaryDescription(dynamicLorebookSourceXml)
+                    : description;
+                if (wizardState.config?.minify) {
+                    finalDescription = minifyXml(finalDescription, {
+                        compact: !wizardState.config?.minifySingleLine,
+                        singleLine: wizardState.config?.minifySingleLine,
+                    });
+                }
+
                 const result = await createGeneratedGroupCard(
                     groupName,
-                    description,
+                    finalDescription,
                     BulkEditOverlay.#getWizardSourceCharacters(wizardState),
-                    Boolean(wizardState.config?.createLorebook),
+                    Boolean(
+                        wizardState.config?.createLorebook ||
+							wizardState.config?.dynamicLorebook,
+                    ),
                     wizardState.config?.fields,
+                    Boolean(wizardState.config?.dynamicLorebook),
+                    dynamicLorebookSourceXml,
                 );
                 wizardState.results = result;
                 await BulkEditOverlay.#applyWizardRegeneratedAvatar(
@@ -3160,12 +3330,29 @@ class BulkEditOverlay {
             return false;
         }
         try {
+            const sourceXml = wizardState.mergedXml;
+            let description = wizardState.config?.dynamicLorebook
+                ? buildDynamicSummaryDescription(sourceXml)
+                : sourceXml;
+
+            if (wizardState.config?.minify) {
+                description = minifyXml(description, {
+                    compact: !wizardState.config?.minifySingleLine,
+                    singleLine: wizardState.config?.minifySingleLine,
+                });
+            }
+
             const result = await createGeneratedGroupCard(
                 wizardState.config.groupName,
-                wizardState.mergedXml,
+                description,
                 BulkEditOverlay.#getWizardSourceCharacters(wizardState),
-                Boolean(wizardState.config.createLorebook),
+                Boolean(
+                    wizardState.config.createLorebook ||
+						wizardState.config?.dynamicLorebook,
+                ),
                 wizardState.config.fields,
+                Boolean(wizardState.config?.dynamicLorebook),
+                sourceXml,
             );
             wizardState.results = result;
             await getCharacters();
@@ -3385,6 +3572,15 @@ class BulkEditOverlay {
         const lorebookToggle = popupContent.find(
             '#bulk_combine_group_card_lorebook_toggle',
         );
+        const dynamicLorebookToggle = popupContent.find(
+            '#bulk_combine_group_card_dynamic_lorebook_toggle',
+        );
+        const minifyToggle = popupContent.find(
+            '#bulk_combine_group_card_minify_toggle',
+        );
+        const minifySingleLineToggle = popupContent.find(
+            '#bulk_combine_group_card_minify_single_line',
+        );
         const fieldToggles = popupContent.find(
             '#bulk_combine_group_card_field_toggles input[type="checkbox"]',
         );
@@ -3437,6 +3633,9 @@ class BulkEditOverlay {
         }
 
         const createLorebook = Boolean(lorebookToggle.prop('checked'));
+        const dynamicLorebook = Boolean(dynamicLorebookToggle.prop('checked'));
+        const minify = Boolean(minifyToggle.prop('checked'));
+        const minifySingleLine = Boolean(minifySingleLineToggle.prop('checked'));
         await Promise.all(
             wizardState.selectedCharacterIds
                 .filter((id) => characters[id]?.shallow)
@@ -3445,7 +3644,7 @@ class BulkEditOverlay {
         const request = validateGroupCardRequest(
             String(groupNameInput.val() ?? ''),
             wizardState.selectedCharacterIds,
-            { createLorebook },
+            { createLorebook: createLorebook || dynamicLorebook },
         );
 
         if (!request) {
@@ -3472,6 +3671,9 @@ class BulkEditOverlay {
             prompt,
             characters: request.characters,
             createLorebook,
+            dynamicLorebook,
+            minify,
+            minifySingleLine,
             fields: selectedFields,
             selectedOptionalFields,
             processingMode,
@@ -3600,6 +3802,18 @@ class BulkEditOverlay {
                 const lorebookToggle = popupContent.find(
                     '#bulk_combine_group_card_lorebook_toggle',
                 );
+                const dynamicLorebookToggle = popupContent.find(
+                    '#bulk_combine_group_card_dynamic_lorebook_toggle',
+                );
+                const minifyToggle = popupContent.find(
+                    '#bulk_combine_group_card_minify_toggle',
+                );
+                const minifySingleLineToggle = popupContent.find(
+                    '#bulk_combine_group_card_minify_single_line',
+                );
+                const minifySingleLineLabel = popupContent.find(
+                    '#bulk_combine_minify_single_line_label',
+                );
                 const modeInputs = popupContent.find('input[name="bulk_combine_mode"]');
                 const concurrencyContainer = popupContent.find(
                     '#bulk_combine_group_card_concurrency_container',
@@ -3650,7 +3864,11 @@ class BulkEditOverlay {
                     : 15;
                 cropPaddingInput.val(String(cropPadding));
                 cropPaddingValue.text(String(cropPadding));
-                lorebookToggle.prop('checked', false);
+                lorebookToggle.prop('checked', false).prop('disabled', false);
+                dynamicLorebookToggle.prop('checked', false).prop('disabled', false);
+                minifyToggle.prop('checked', false);
+                minifySingleLineToggle.prop('checked', false);
+                minifySingleLineLabel.hide();
                 renderGroupCardCombinePromptPresetSelect(presetSelect);
 
                 const persistedFields = Array.isArray(
@@ -3686,6 +3904,30 @@ class BulkEditOverlay {
 
                 cropPaddingInput.on('input', () => {
                     cropPaddingValue.text(String(cropPaddingInput.val() ?? '15'));
+                });
+
+                dynamicLorebookToggle.on('change', function () {
+                    if ($(this).prop('checked')) {
+                        lorebookToggle.prop('checked', false).prop('disabled', true);
+                    } else {
+                        lorebookToggle.prop('disabled', false);
+                    }
+                });
+
+                lorebookToggle.on('change', function () {
+                    if ($(this).prop('checked')) {
+                        dynamicLorebookToggle.prop('checked', false).prop('disabled', true);
+                    } else {
+                        dynamicLorebookToggle.prop('disabled', false);
+                    }
+                });
+
+                minifyToggle.on('change', function () {
+                    const enabled = Boolean($(this).prop('checked'));
+                    minifySingleLineLabel.toggle(enabled);
+                    if (!enabled) {
+                        minifySingleLineToggle.prop('checked', false);
+                    }
                 });
 
                 presetSelect.on('change', () => {
@@ -3887,6 +4129,9 @@ class BulkEditOverlay {
 	 * @param {string} cropStrategy Crop strategy.
 	 * @param {number} cropPadding Crop padding.
 	 * @param {string} [postProcessMode] Post-process mode.
+	 * @param {boolean} [dynamicLorebook] Whether to use dynamic lorebook output.
+	 * @param {boolean} [minify] Whether to minify final XML output.
+	 * @param {boolean} [minifySingleLine] Whether to minify final XML to one line.
 	 * @returns {object} Job config.
 	 */
     static #buildGroupCardJobConfig = (
@@ -3902,6 +4147,9 @@ class BulkEditOverlay {
         cropStrategy,
         cropPadding,
         postProcessMode = 'replace',
+        dynamicLorebook = false,
+        minify = false,
+        minifySingleLine = false,
     ) => ({
         groupName,
         prompt,
@@ -3924,6 +4172,9 @@ class BulkEditOverlay {
             : 'replace',
         avatarOffsets: [],
         createLorebook,
+        dynamicLorebook: Boolean(dynamicLorebook),
+        minify: Boolean(minify),
+        minifySingleLine: Boolean(minifySingleLine),
         cropStrategy,
         cropPadding,
         llm: BulkEditOverlay.#getGroupCardJobLlmConfig(),
@@ -4641,6 +4892,8 @@ export {
     buildLorebookEntryContent,
     buildLorebookEntry,
     buildLorebookData,
+    buildDynamicLorebookData,
+    buildDynamicSummaryDescription,
     getGroupCardCombinePromptPresets,
     findGroupCardCombinePromptPresetIndex,
     saveGroupCardCombinePromptPreset,

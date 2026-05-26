@@ -316,3 +316,127 @@ export function validateGeneratedGroupCardDescription(
 
     return blocks.map((block) => block.raw).join('\n\n');
 }
+
+/**
+ * Gets inner character content from a character block when possible.
+ * @param {string} xmlString XML text.
+ * @returns {string} Character content, or original text when no character block is found.
+ */
+function getCharacterBlockContent(xmlString) {
+    const text = String(xmlString ?? '');
+    const characterBlocks = extractXmlBlocksByTag(text, 'character');
+    return characterBlocks[0]?.content ?? text;
+}
+
+/**
+ * Extracts summary content from the first <summary> tag inside a character block.
+ * @param {string} xmlString Character XML block.
+ * @returns {string} Summary content, or empty string.
+ */
+export function extractSummaryFromCharacterBlock(xmlString) {
+    const summaryBlocks = extractXmlBlocksByTag(
+        getCharacterBlockContent(xmlString),
+        'summary',
+    );
+    return summaryBlocks[0]?.content ?? '';
+}
+
+/**
+ * Removes the first <summary> block from a character block.
+ * @param {string} xmlString Character XML block.
+ * @returns {string} Character XML block without summary, or original input when absent.
+ */
+export function stripSummaryFromCharacterBlock(xmlString) {
+    const text = String(xmlString ?? '');
+    const summaryRegex =
+		/(?:[ \t]*\r?\n)?[ \t]*<summary(?:\s+[^>]*)?>[\s\S]*?<\/summary>[ \t]*(?:\r?\n)?/;
+
+    if (!summaryRegex.test(text)) {
+        return text;
+    }
+
+    return text
+        .replace(summaryRegex, (match) => (match.includes('\n') ? '\n' : ''))
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+/**
+ * Builds a compact character block containing only name and summary.
+ * @param {string} xmlString Character XML block.
+ * @returns {string} Summary-only character XML block.
+ */
+export function buildSummaryCharacterBlock(xmlString) {
+    const characterContent = getCharacterBlockContent(xmlString);
+    const name =
+		extractXmlBlocksByTag(characterContent, 'name')[0]?.content ?? '';
+    const summary = extractSummaryFromCharacterBlock(xmlString);
+    const lines = ['<character>'];
+
+    if (name) {
+        lines.push(`  <name>${name}</name>`);
+    }
+
+    lines.push(`  <summary>${summary}</summary>`);
+    lines.push('</character>');
+
+    return lines.join('\n');
+}
+
+/**
+ * Collapses whitespace in XML text nodes without changing tag contents.
+ * @param {string} text XML text.
+ * @returns {string} XML text with compact text nodes.
+ */
+function collapseXmlTextNodeWhitespace(text) {
+    return text
+        .split(/(<[^>]+>)/g)
+        .map((part) => {
+            if (!part || part.startsWith('<')) {
+                return part;
+            }
+
+            return part.replace(/[\t\r\n ]+/g, ' ').trim();
+        })
+        .join('');
+}
+
+/**
+ * Compacts XML-ish text by removing comments, blank lines, and redundant whitespace.
+ * @param {string} xmlString XML text.
+ * @param {{ compact?: boolean, singleLine?: boolean }} [options] Minify options.
+ * @returns {string} Minified XML text.
+ */
+export function minifyXml(xmlString, options = {}) {
+    const input = String(xmlString ?? '');
+
+    if (!input.trim()) {
+        return '';
+    }
+
+    const { compact = false, singleLine = false } = options ?? {};
+    let text = input.replace(/<!--[\s\S]*?-->/g, '');
+    text = collapseXmlTextNodeWhitespace(text);
+
+    if (compact || singleLine) {
+        text = text.replace(/>\s*</g, '>\n<');
+    }
+
+    let lines = text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+    if (compact || singleLine) {
+        lines = lines.map((line) => line.replace(/^\s+/, ''));
+    }
+
+    if (singleLine) {
+        return lines
+            .join(' ')
+            .replace(/[\t ]+/g, ' ')
+            .trim();
+    }
+
+    return lines.join('\n');
+}
