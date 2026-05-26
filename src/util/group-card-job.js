@@ -173,11 +173,30 @@ function buildLlmUrl(apiUrl) {
     return `${baseUrl}/chat/completions`;
 }
 
+function toFiniteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+}
+
+function resolveOpenAiGenerationParams(settings) {
+    return {
+        max_tokens: toFiniteNumber(settings.openai_max_tokens),
+        temperature: toFiniteNumber(settings.temp_openai),
+        top_p: toFiniteNumber(settings.top_p_openai),
+        frequency_penalty: toFiniteNumber(settings.freq_pen_openai),
+        presence_penalty: toFiniteNumber(settings.pres_pen_openai),
+        top_k: toFiniteNumber(settings.top_k_openai),
+        min_p: toFiniteNumber(settings.min_p_openai),
+        repetition_penalty: toFiniteNumber(settings.repetition_penalty_openai),
+    };
+}
+
 function resolveOpenAiLikeConfig(llmConfig) {
     const settings = llmConfig.openai ?? {};
     const directories = llmConfig.directories;
     const source = settings.chat_completion_source;
     const reverseProxy = String(settings.reverse_proxy ?? '').trim();
+    const generationParams = resolveOpenAiGenerationParams(settings);
 
     if (reverseProxy) {
         return {
@@ -185,6 +204,7 @@ function resolveOpenAiLikeConfig(llmConfig) {
             apiKey: settings.proxy_password ?? '',
             model: getOpenAiLikeModel(settings, source),
             headers: {},
+            ...generationParams,
         };
     }
 
@@ -203,6 +223,7 @@ function resolveOpenAiLikeConfig(llmConfig) {
             : '',
         model: sourceConfig.model,
         headers: sourceConfig.headers ?? {},
+        ...generationParams,
     };
 }
 
@@ -318,6 +339,30 @@ function getOpenAiLikeModel(settings, source) {
     return sourceConfig?.model ?? settings.openai_model ?? settings.custom_model;
 }
 
+function resolveTextGenGenerationParams(settings) {
+    const dynatemp = Boolean(settings.dynatemp);
+    const minTemp = toFiniteNumber(settings.min_temp);
+    const maxTemp = toFiniteNumber(settings.max_temp);
+    const dynamicTemperature =
+		dynatemp && minTemp !== undefined && maxTemp !== undefined;
+
+    return {
+        max_tokens:
+			toFiniteNumber(settings.max_tokens) ??
+			toFiniteNumber(settings.max_length) ??
+			toFiniteNumber(settings.max_new_tokens),
+        temperature: dynamicTemperature
+            ? (minTemp + maxTemp) / 2
+            : toFiniteNumber(settings.temp),
+        top_p: toFiniteNumber(settings.top_p),
+        frequency_penalty: toFiniteNumber(settings.freq_pen),
+        presence_penalty: toFiniteNumber(settings.presence_pen),
+        top_k: toFiniteNumber(settings.top_k),
+        min_p: toFiniteNumber(settings.min_p),
+        repetition_penalty: toFiniteNumber(settings.rep_pen),
+    };
+}
+
 function resolveTextGenOpenAiConfig(llmConfig) {
     const settings = llmConfig.textgenerationwebui ?? {};
     const type = settings.type;
@@ -332,7 +377,13 @@ function resolveTextGenOpenAiConfig(llmConfig) {
         );
     }
 
-    return { apiUrl, apiKey, model, headers: {} };
+    return {
+        apiUrl,
+        apiKey,
+        model,
+        headers: {},
+        ...resolveTextGenGenerationParams(settings),
+    };
 }
 
 function getTextGenModel(settings, type) {
@@ -380,6 +431,14 @@ function resolveLlmConfig(llmConfig) {
             apiKey: llmConfig.apiKey ?? '',
             model: llmConfig.model,
             headers: llmConfig.headers ?? {},
+            max_tokens: toFiniteNumber(llmConfig.max_tokens),
+            temperature: toFiniteNumber(llmConfig.temperature),
+            top_p: toFiniteNumber(llmConfig.top_p),
+            frequency_penalty: toFiniteNumber(llmConfig.frequency_penalty),
+            presence_penalty: toFiniteNumber(llmConfig.presence_penalty),
+            top_k: toFiniteNumber(llmConfig.top_k),
+            min_p: toFiniteNumber(llmConfig.min_p),
+            repetition_penalty: toFiniteNumber(llmConfig.repetition_penalty),
         };
     }
 
@@ -428,10 +487,28 @@ async function callLlmApi(llmConfig, prompt, signal) {
             body: JSON.stringify({
                 model: resolvedConfig.model,
                 messages: [{ role: 'user', content: prompt }],
-                max_tokens: llmConfig.amount_gen ?? llmConfig.max_tokens ?? 4096,
-                temperature: llmConfig.temperature ?? 0.7,
-                top_p: llmConfig.top_p ?? 1,
+                max_tokens:
+					resolvedConfig.max_tokens ??
+					llmConfig.amount_gen ??
+					llmConfig.max_tokens ??
+					4096,
+                temperature: resolvedConfig.temperature ?? llmConfig.temperature ?? 0.7,
+                top_p: resolvedConfig.top_p ?? llmConfig.top_p ?? 1,
                 stream: false,
+                ...(resolvedConfig.frequency_penalty != null && {
+                    frequency_penalty: resolvedConfig.frequency_penalty,
+                }),
+                ...(resolvedConfig.presence_penalty != null && {
+                    presence_penalty: resolvedConfig.presence_penalty,
+                }),
+                ...(resolvedConfig.top_k != null &&
+					resolvedConfig.top_k > 0 && { top_k: resolvedConfig.top_k }),
+                ...(resolvedConfig.min_p != null &&
+					resolvedConfig.min_p > 0 && { min_p: resolvedConfig.min_p }),
+                ...(resolvedConfig.repetition_penalty != null &&
+					resolvedConfig.repetition_penalty !== 1 && {
+                    repetition_penalty: resolvedConfig.repetition_penalty,
+                }),
             }),
             signal: timeoutController.signal,
         });
