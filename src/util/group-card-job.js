@@ -49,6 +49,8 @@ const CHARACTER_OPEN_TAG = '<character>';
 const CHARACTER_CLOSE_TAG = '</character>';
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_EVENT_TYPES = new Set(['job_completed', 'job_failed']);
+const TERMINAL_SSE_RETRY_MS = 24 * 60 * 60 * 1000;
 
 function normalizeSelectedFields(fields) {
     const includedFields = new Set(Array.isArray(fields) ? fields : []);
@@ -173,30 +175,11 @@ function buildLlmUrl(apiUrl) {
     return `${baseUrl}/chat/completions`;
 }
 
-function toFiniteNumber(value) {
-    const number = Number(value);
-    return Number.isFinite(number) ? number : undefined;
-}
-
-function resolveOpenAiGenerationParams(settings) {
-    return {
-        max_tokens: toFiniteNumber(settings.openai_max_tokens),
-        temperature: toFiniteNumber(settings.temp_openai),
-        top_p: toFiniteNumber(settings.top_p_openai),
-        frequency_penalty: toFiniteNumber(settings.freq_pen_openai),
-        presence_penalty: toFiniteNumber(settings.pres_pen_openai),
-        top_k: toFiniteNumber(settings.top_k_openai),
-        min_p: toFiniteNumber(settings.min_p_openai),
-        repetition_penalty: toFiniteNumber(settings.repetition_penalty_openai),
-    };
-}
-
 function resolveOpenAiLikeConfig(llmConfig) {
     const settings = llmConfig.openai ?? {};
     const directories = llmConfig.directories;
     const source = settings.chat_completion_source;
     const reverseProxy = String(settings.reverse_proxy ?? '').trim();
-    const generationParams = resolveOpenAiGenerationParams(settings);
 
     if (reverseProxy) {
         return {
@@ -204,7 +187,7 @@ function resolveOpenAiLikeConfig(llmConfig) {
             apiKey: settings.proxy_password ?? '',
             model: getOpenAiLikeModel(settings, source),
             headers: {},
-            ...generationParams,
+            generationSettings: settings,
         };
     }
 
@@ -223,7 +206,7 @@ function resolveOpenAiLikeConfig(llmConfig) {
             : '',
         model: sourceConfig.model,
         headers: sourceConfig.headers ?? {},
-        ...generationParams,
+        generationSettings: settings,
     };
 }
 
@@ -339,30 +322,6 @@ function getOpenAiLikeModel(settings, source) {
     return sourceConfig?.model ?? settings.openai_model ?? settings.custom_model;
 }
 
-function resolveTextGenGenerationParams(settings) {
-    const dynatemp = Boolean(settings.dynatemp);
-    const minTemp = toFiniteNumber(settings.min_temp);
-    const maxTemp = toFiniteNumber(settings.max_temp);
-    const dynamicTemperature =
-		dynatemp && minTemp !== undefined && maxTemp !== undefined;
-
-    return {
-        max_tokens:
-			toFiniteNumber(settings.max_tokens) ??
-			toFiniteNumber(settings.max_length) ??
-			toFiniteNumber(settings.max_new_tokens),
-        temperature: dynamicTemperature
-            ? (minTemp + maxTemp) / 2
-            : toFiniteNumber(settings.temp),
-        top_p: toFiniteNumber(settings.top_p),
-        frequency_penalty: toFiniteNumber(settings.freq_pen),
-        presence_penalty: toFiniteNumber(settings.presence_pen),
-        top_k: toFiniteNumber(settings.top_k),
-        min_p: toFiniteNumber(settings.min_p),
-        repetition_penalty: toFiniteNumber(settings.rep_pen),
-    };
-}
-
 function resolveTextGenOpenAiConfig(llmConfig) {
     const settings = llmConfig.textgenerationwebui ?? {};
     const type = settings.type;
@@ -382,7 +341,7 @@ function resolveTextGenOpenAiConfig(llmConfig) {
         apiKey,
         model,
         headers: {},
-        ...resolveTextGenGenerationParams(settings),
+        generationSettings: settings,
     };
 }
 
@@ -431,14 +390,7 @@ function resolveLlmConfig(llmConfig) {
             apiKey: llmConfig.apiKey ?? '',
             model: llmConfig.model,
             headers: llmConfig.headers ?? {},
-            max_tokens: toFiniteNumber(llmConfig.max_tokens),
-            temperature: toFiniteNumber(llmConfig.temperature),
-            top_p: toFiniteNumber(llmConfig.top_p),
-            frequency_penalty: toFiniteNumber(llmConfig.frequency_penalty),
-            presence_penalty: toFiniteNumber(llmConfig.presence_penalty),
-            top_k: toFiniteNumber(llmConfig.top_k),
-            min_p: toFiniteNumber(llmConfig.min_p),
-            repetition_penalty: toFiniteNumber(llmConfig.repetition_penalty),
+            generationSettings: {},
         };
     }
 
@@ -481,35 +433,66 @@ async function callLlmApi(llmConfig, prompt, signal) {
             headers.Authorization = `Bearer ${resolvedConfig.apiKey}`;
         }
 
+        const settings = resolvedConfig.generationSettings ?? {};
+
+        // Read ALL generation params directly from chat preset settings.
+        // No legacy fallbacks. Preset is source.
+        const body = {
+            model: resolvedConfig.model,
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens:
+				settings.openai_max_tokens ??
+				settings.max_tokens ??
+				settings.max_length ??
+				settings.max_new_tokens ??
+				4096,
+            temperature: settings.temp_openai ?? settings.temp ?? 0.7,
+            top_p: settings.top_p_openai ?? settings.top_p ?? 1,
+            stream: false,
+        };
+
+        // Add frequency_penalty if set in preset
+        if (settings.freq_pen_openai != null) {
+            body.frequency_penalty = Number(settings.freq_pen_openai);
+        } else if (settings.freq_pen != null) {
+            body.frequency_penalty = Number(settings.freq_pen);
+        }
+
+        // Add presence_penalty if set in preset
+        if (settings.pres_pen_openai != null) {
+            body.presence_penalty = Number(settings.pres_pen_openai);
+        } else if (settings.presence_pen != null) {
+            body.presence_penalty = Number(settings.presence_pen);
+        }
+
+        // Add top_k if set and > 0
+        if (Number(settings.top_k_openai) > 0) {
+            body.top_k = Number(settings.top_k_openai);
+        } else if (Number(settings.top_k) > 0) {
+            body.top_k = Number(settings.top_k);
+        }
+
+        // Add min_p if set and > 0
+        if (Number(settings.min_p_openai) > 0) {
+            body.min_p = Number(settings.min_p_openai);
+        } else if (Number(settings.min_p) > 0) {
+            body.min_p = Number(settings.min_p);
+        }
+
+        // Add repetition_penalty if set and not default 1.0
+        if (
+            settings.repetition_penalty_openai != null &&
+			Number(settings.repetition_penalty_openai) !== 1
+        ) {
+            body.repetition_penalty = Number(settings.repetition_penalty_openai);
+        } else if (settings.rep_pen != null && Number(settings.rep_pen) !== 1) {
+            body.repetition_penalty = Number(settings.rep_pen);
+        }
+
         const response = await fetch(buildLlmUrl(resolvedConfig.apiUrl), {
             method: 'POST',
             headers,
-            body: JSON.stringify({
-                model: resolvedConfig.model,
-                messages: [{ role: 'user', content: prompt }],
-                max_tokens:
-					resolvedConfig.max_tokens ??
-					llmConfig.amount_gen ??
-					llmConfig.max_tokens ??
-					4096,
-                temperature: resolvedConfig.temperature ?? llmConfig.temperature ?? 0.7,
-                top_p: resolvedConfig.top_p ?? llmConfig.top_p ?? 1,
-                stream: false,
-                ...(resolvedConfig.frequency_penalty != null && {
-                    frequency_penalty: resolvedConfig.frequency_penalty,
-                }),
-                ...(resolvedConfig.presence_penalty != null && {
-                    presence_penalty: resolvedConfig.presence_penalty,
-                }),
-                ...(resolvedConfig.top_k != null &&
-					resolvedConfig.top_k > 0 && { top_k: resolvedConfig.top_k }),
-                ...(resolvedConfig.min_p != null &&
-					resolvedConfig.min_p > 0 && { min_p: resolvedConfig.min_p }),
-                ...(resolvedConfig.repetition_penalty != null &&
-					resolvedConfig.repetition_penalty !== 1 && {
-                    repetition_penalty: resolvedConfig.repetition_penalty,
-                }),
-            }),
+            body: JSON.stringify(body),
             signal: timeoutController.signal,
         });
 
@@ -828,21 +811,23 @@ export class GroupCardJobManager {
             return false;
         }
 
-        job.sseClients.add(response);
-
         for (const event of job.eventLog) {
             if (event.id > lastEventId) {
                 this.writeSseEvent(response, event.id, event.eventType, event.data);
             }
         }
 
+        if (TERMINAL_STATUSES.has(job.status)) {
+            response.flush?.();
+            setImmediate(() => this.closeSseClient(response));
+            return true;
+        }
+
+        job.sseClients.add(response);
+
         response.on('close', () => {
             job.sseClients.delete(response);
         });
-
-        if (TERMINAL_STATUSES.has(job.status)) {
-            setImmediate(() => this.closeSseClient(response));
-        }
 
         return true;
     }
@@ -1009,8 +994,6 @@ export class GroupCardJobManager {
             llm: {
                 ...(config.llm && typeof config.llm === 'object' ? config.llm : {}),
                 directories: config.directories,
-                amount_gen: config.llm?.amount_gen,
-                max_context: config.llm?.max_context,
             },
         };
     }
@@ -1333,6 +1316,9 @@ export class GroupCardJobManager {
 
         response.write(`id: ${id}\n`);
         response.write(`event: ${eventType}\n`);
+        if (TERMINAL_EVENT_TYPES.has(eventType)) {
+            response.write(`retry: ${TERMINAL_SSE_RETRY_MS}\n`);
+        }
         response.write(`data: ${JSON.stringify(data)}\n\n`);
         response.flush?.();
     }
