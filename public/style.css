@@ -6944,7 +6944,7 @@ body:not(.movingUI) .drawer-content.maximized {
 
 .bcw .offset-card {
 	display: grid;
-	grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 	gap: 0.6em 0.75em;
 	align-items: center;
 	padding: 0.75em;
@@ -6978,12 +6978,71 @@ body:not(.movingUI) .drawer-content.maximized {
 	text-align: right;
 }
 
-/* Layout helpers - replace ST utility classes */
-.bcw .flex-row {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.5em;
-	align-items: center;
+.bcw .avatar-editor {
+    position: relative;
+    display: inline-block;
+    line-height: 0;
+    touch-action: none;
+}
+
+.bcw .avatar-editor > #bulk_combine_avatar_image {
+    max-width: 200px;
+    max-height: 300px;
+    border-radius: 8px;
+    display: block;
+}
+
+.bcw .avatar-editor .avatar-editor-cell {
+    position: absolute;
+    overflow: hidden;
+    box-sizing: border-box;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.bcw .avatar-editor .avatar-editor-cell:hover {
+    border-color: rgba(255, 255, 255, 0.4);
+}
+
+.bcw .avatar-editor .avatar-editor-cell.selected {
+    z-index: 2;
+    cursor: grab;
+    border-color: rgba(255, 255, 255, 0.8);
+    border-width: 2px;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
+}
+
+.bcw .avatar-editor .avatar-editor-cell.selected:active {
+    cursor: grabbing;
+}
+
+.bcw .avatar-editor .avatar-editor-cell img {
+    position: absolute;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-drag: none;
+    transform-origin: center center;
+}
+
+.bcw .avatar-editor .avatar-editor-cell-image-rect {
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* Component-specific replacements for ST utility classes */
+.bcw .preset-controls,
+.bcw .layout-controls,
+.bcw .crop-controls,
+.bcw .mode-selector,
+.bcw .postprocess-mode-selector,
+.bcw .postprocess-preset-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    align-items: center;
 }
 
 .bcw .desc {
@@ -7014,14 +7073,16 @@ body:not(.movingUI) .drawer-content.maximized {
 }
 
 .bcw .char-lists-row .char-list-panel h4 {
+    --SmartThemeBodyColor: rgba(10,10,10,1);
 	position: sticky;
 	top: 0;
 	z-index: 1;
 	margin: 0 0 0.25em 0;
-	padding: 2px 0;
+    padding: 5px;
+    border-radius: 0.3rem;
 	background: var(--SmartThemeBodyColor);
 	font-size: 0.9em;
-	opacity: 0.8;
+    opacity: 1;
 }
 
 .bcw .add-section {
@@ -7087,6 +7148,20 @@ body:not(.movingUI) .drawer-content.maximized {
 	flex-wrap: wrap;
 	gap: 0.5em;
 	margin-top: 0.75em;
+}
+
+.bcw > .footer > div,
+.bcw .results-actions > div {
+    flex-grow: 1;
+}
+
+#bulk_combine_regenerate_avatar,
+#bulk_combine_apply_postprocess {
+    width: 100%;
+}
+
+#bulk_group_card_job_indicator {
+    --SmartThemeBodyColor: rgba(0,0,0,0.4);
 }
 
 @media screen and (max-width: 600px) {

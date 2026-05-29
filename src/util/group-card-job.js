@@ -1356,11 +1356,15 @@ export class GroupCardJobManager {
             `group-card-${crypto.randomUUID()}.png`,
         );
         createdArtifacts.tempAvatarPath = tempAvatarPath;
-        await generateVoronoiComposite(avatarPaths, tempAvatarPath, {
-            cropStrategy: config.cropStrategy,
-            cropPadding: config.cropPadding,
-            offsets: config.avatarOffsets,
-        });
+        const { path: compositePath } = await generateVoronoiComposite(
+            avatarPaths,
+            tempAvatarPath,
+            {
+                cropStrategy: config.cropStrategy,
+                cropPadding: config.cropPadding,
+                offsets: config.avatarOffsets,
+            },
+        );
         this.emitEvent(job.id, 'avatar_completed', {});
         throwIfAborted(signal);
 
@@ -1381,7 +1385,7 @@ export class GroupCardJobManager {
             avatarName,
             worldName,
         );
-        const avatarBuffer = fs.readFileSync(tempAvatarPath);
+        const avatarBuffer = fs.readFileSync(compositePath);
         const outputImage = writeCharacterPngData(
             avatarBuffer,
             JSON.stringify(characterData),

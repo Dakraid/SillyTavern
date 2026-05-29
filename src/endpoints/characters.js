@@ -45,8 +45,16 @@ import { getChatInfo } from './chats.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { generateVoronoiComposite } from '../util/voronoi-composite.js';
+import {
+    generateGridComposite,
+    generateVoronoiComposite,
+} from '../util/voronoi-composite.js';
 import { groupCardJobManager } from '../util/group-card-job.js';
+import {
+    createBackup as createGroupCardBackup,
+    listBackups as listGroupCardBackups,
+    restoreBackup as restoreGroupCardBackup,
+} from '../util/group-card-backup.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue(
@@ -2219,6 +2227,95 @@ router.post('/group-card-job/:id/cancel', function (request, response) {
     return response.send({ cancelled: true });
 });
 
+function validateGroupCardBackupAvatar(avatar) {
+    return (
+        typeof avatar === 'string' &&
+		!forbiddenRegExp.test(avatar) &&
+		!avatar.includes('/') &&
+		!avatar.includes('\\') &&
+		path.extname(avatar).toLowerCase() === '.png' &&
+		path.basename(avatar) === avatar
+    );
+}
+
+router.post('/group-card-backup', async function (request, response) {
+    try {
+        const avatar = request.body?.avatar;
+        if (!validateGroupCardBackupAvatar(avatar)) {
+            return response.status(400).send({ message: 'Invalid avatar filename.' });
+        }
+
+        const fullPath = path.join(request.user.directories.characters, avatar);
+        if (!fs.existsSync(fullPath)) {
+            return response
+                .status(404)
+                .send({ message: `Avatar not found: ${avatar}` });
+        }
+
+        const backup = createGroupCardBackup(
+            request.user.directories.characters,
+            avatar,
+        );
+        const backups = listGroupCardBackups(
+            request.user.directories.characters,
+            avatar,
+        );
+        return response.send({ ...backup, backups });
+    } catch (error) {
+        console.error('Group card backup failed:', error);
+        return response.status(500).send({ message: 'Failed to create backup.' });
+    }
+});
+
+router.post(
+    '/group-card-backup/:avatar/restore',
+    async function (request, response) {
+        try {
+            const avatar = request.params.avatar;
+            const timestamp = String(request.body?.timestamp ?? '');
+            if (!validateGroupCardBackupAvatar(avatar)) {
+                return response
+                    .status(400)
+                    .send({ message: 'Invalid avatar filename.' });
+            }
+            if (!timestamp) {
+                return response.status(400).send({ message: 'timestamp is required.' });
+            }
+
+            restoreGroupCardBackup(
+                request.user.directories.characters,
+                avatar,
+                timestamp,
+            );
+            return response.send({ restored: true });
+        } catch (error) {
+            console.error('Group card backup restore failed:', error);
+            return response
+                .status(500)
+                .send({ message: 'Failed to restore backup.' });
+        }
+    },
+);
+
+router.get('/group-card-backup/:avatar', async function (request, response) {
+    try {
+        const avatar = request.params.avatar;
+        if (!validateGroupCardBackupAvatar(avatar)) {
+            return response.status(400).send({ message: 'Invalid avatar filename.' });
+        }
+
+        return response.send({
+            backups: listGroupCardBackups(
+                request.user.directories.characters,
+                avatar,
+            ),
+        });
+    } catch (error) {
+        console.error('Group card backup list failed:', error);
+        return response.status(500).send({ message: 'Failed to list backups.' });
+    }
+});
+
 router.post('/generate-voronoi-composite', async function (request, response) {
     try {
         if (!request.body || !Array.isArray(request.body.avatars)) {
@@ -2270,21 +2367,33 @@ router.post('/generate-voronoi-composite', async function (request, response) {
         const offsets = Array.isArray(request.body.offsets)
             ? request.body.offsets.map(normalizeVoronoiOffset).filter(Boolean)
             : undefined;
-        const seed = typeof request.body.seed === 'number' && Number.isFinite(request.body.seed)
-            ? Math.round(request.body.seed)
-            : undefined;
+        const seed =
+			typeof request.body.seed === 'number' &&
+			Number.isFinite(request.body.seed)
+			    ? Math.round(request.body.seed)
+			    : undefined;
+        const layout = normalizeVoronoiLayout(request.body.layout);
+        const gap = normalizeVoronoiGap(request.body.gap);
+        const result =
+			layout === 'grid-portrait' || layout === 'grid-square'
+			    ? await generateGridComposite(avatarPaths, outputPath, {
+			        cropStrategy,
+			        cropPadding,
+			        offsets,
+			        cellAspect: layout,
+			        gap,
+			    })
+			    : await generateVoronoiComposite(avatarPaths, outputPath, {
+			        cropStrategy,
+			        cropPadding,
+			        offsets,
+			        seed,
+			    });
 
-        await generateVoronoiComposite(avatarPaths, outputPath, {
-            cropStrategy,
-            cropPadding,
-            offsets,
-            seed,
-        });
-
-        const imageBuffer = fs.readFileSync(outputPath);
-        fs.unlinkSync(outputPath); // clean up temp file immediately
+        const imageBuffer = fs.readFileSync(result.path);
+        fs.unlinkSync(result.path); // clean up temp file immediately
         const image = `data:image/png;base64,${imageBuffer.toString('base64')}`;
-        return response.send({ image });
+        return response.send({ image, cells: result.cells });
     } catch (err) {
         console.error('Voronoi composite generation failed:', err);
         return response
@@ -2307,6 +2416,22 @@ function normalizeVoronoiCropPadding(value) {
     }
 
     return padding;
+}
+
+function normalizeVoronoiLayout(value) {
+    return ['voronoi', 'grid-portrait', 'grid-square'].includes(value)
+        ? value
+        : 'voronoi';
+}
+
+function normalizeVoronoiGap(value) {
+    const gap = typeof value === 'number' ? value : Number(value);
+
+    if (!Number.isFinite(gap) || gap < 0 || gap > 10) {
+        return 2;
+    }
+
+    return Math.round(gap);
 }
 
 function normalizeVoronoiOffset(offset) {
