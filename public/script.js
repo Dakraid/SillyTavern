@@ -589,6 +589,7 @@ export let characters = [];
 export let this_chid;
 /** @type {VirtualCharacterList|null} */
 let virtualCharacterList = null;
+let saveCharactersPage = 0;
 export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
 export const comment_avatar = 'img/quill.png';
@@ -1262,7 +1263,12 @@ export async function printCharacters(fullRefresh = false) {
  * @param {string} listId Character list selector.
  * @param {string} storageKey Pagination size storage key.
  */
-async function printCharactersPaginated(entities, fullRefresh, listId, storageKey) {
+async function printCharactersPaginated(
+    entities,
+    fullRefresh,
+    listId,
+    storageKey,
+) {
     let currentScrollTop = $(listId).scrollTop();
 
     if (fullRefresh) {
@@ -1279,7 +1285,8 @@ async function printCharactersPaginated(entities, fullRefresh, listId, storageKe
     $(listId).off('scroll.savePosition');
     $('#rm_print_characters_block_count').text('');
 
-    const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
+    const pageSize =
+		Number(accountStorage.getItem(storageKey)) || per_page_default;
     const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
     $('#rm_print_characters_pagination').pagination({
         dataSource: entities,
@@ -1315,12 +1322,14 @@ async function printCharactersPaginated(entities, fullRefresh, listId, storageKe
                         displayCount++;
                         break;
                     case 'tag':
-                        $(listId).append(getTagBlock(i.item, i.entities, i.hidden, i.isUseless));
+                        $(listId).append(
+                            getTagBlock(i.item, i.entities, i.hidden, i.isUseless),
+                        );
                         break;
                 }
             }
 
-            const hidden = (characters.length + groups.length) - displayCount;
+            const hidden = characters.length + groups.length - displayCount;
             if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
                 const hiddenBlock = await getHiddenBlock(hidden);
                 $(listId).append(hiddenBlock);
@@ -1355,9 +1364,9 @@ async function printCharactersInfiniteScroll(entities, fullRefresh, listId) {
     const container = document.querySelector(listId);
 
     let currentScrollTop =
-        (virtualCharacterList?.getScrollPosition() ??
-            Number(accountStorage.getItem('Characters_ScrollTop'))) ||
-        0;
+		(virtualCharacterList?.getScrollPosition() ??
+			Number(accountStorage.getItem('Characters_ScrollTop'))) ||
+		0;
 
     if (fullRefresh) {
         currentScrollTop = 0;
@@ -11265,8 +11274,8 @@ export function select_rm_info(type, charId, previousCharId = null) {
                     virtualCharacterList.scrollToEntity(charIndex);
                 } else {
                     const perPage =
-                        Number(accountStorage.getItem('Characters_PerPage')) ||
-                        per_page_default;
+						Number(accountStorage.getItem('Characters_PerPage')) ||
+						per_page_default;
                     const page = Math.floor(charIndex / perPage) + 1;
                     $('#rm_print_characters_pagination').pagination('go', page);
                 }
@@ -11307,8 +11316,8 @@ export function select_rm_info(type, charId, previousCharId = null) {
                 virtualCharacterList.scrollToEntity(charIndex);
             } else {
                 const perPage =
-                    Number(accountStorage.getItem('Characters_PerPage')) ||
-                    per_page_default;
+					Number(accountStorage.getItem('Characters_PerPage')) ||
+					per_page_default;
                 const page = Math.floor(charIndex / perPage) + 1;
                 $('#rm_print_characters_pagination').pagination('go', page);
             }
