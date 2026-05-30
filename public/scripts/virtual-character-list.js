@@ -26,6 +26,7 @@ export class VirtualCharacterList {
     #removedCount = 0;
     #loadingNextChunk = false;
     #allLoadedEmitted = false;
+    #lastSelectionState = null;
 
     /**
 	 * @param {HTMLElement} container Scroll container element.
@@ -234,6 +235,8 @@ export class VirtualCharacterList {
                 checkbox.checked = selected;
             }
         }
+
+        this.#lastSelectionState = { selectedIds: selectedSet, className };
     }
 
     #setupObserver() {
@@ -395,6 +398,24 @@ export class VirtualCharacterList {
         this.#appendRange(desiredEnd);
         this.#trimWindow(desiredStart, desiredEnd, firstVisible, lastVisible);
         this.#syncWindowBounds();
+        this.#reapplySelectionState();
+    }
+
+    #reapplySelectionState() {
+        if (!this.#lastSelectionState) {
+            return;
+        }
+
+        const { selectedIds, className } = this.#lastSelectionState;
+        for (const item of this.#rendered) {
+            const chid = this.#entities[item.index]?.id ?? Number(item.node.getAttribute('data-chid'));
+            const selected = selectedIds.has(chid);
+            item.node.classList.toggle(className, selected);
+            const checkbox = item.node.querySelector('.bulk_select_checkbox');
+            if (checkbox instanceof HTMLInputElement) {
+                checkbox.checked = selected;
+            }
+        }
     }
 
     #prependRange(desiredStart) {
