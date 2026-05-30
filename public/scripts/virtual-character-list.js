@@ -93,6 +93,7 @@ export class VirtualCharacterList {
         this.#container.scrollTop = 0;
         this.#updateVisibleRange(true);
         this.#observeSentinel();
+        this.#options.onChunkLoaded?.();
     }
 
     /**
@@ -304,7 +305,6 @@ export class VirtualCharacterList {
         this.#lastRenderedIndex = lastIndex;
         this.#updateSpacers(firstIndex, lastIndex);
         this.#scheduleMeasurement();
-        this.#options.onChunkLoaded?.();
     }
 
     #scheduleMeasurement() {
@@ -426,37 +426,27 @@ export class VirtualCharacterList {
 
             if (averageChanged) {
                 this.#averageItemHeight = newAverage;
-                if (this.#firstRenderedIndex >= 0 && this.#lastRenderedIndex >= 0) {
-                    this.#updateSpacers(
-                        this.#firstRenderedIndex,
-                        this.#lastRenderedIndex,
-                    );
-                }
             }
         }
     }
 
     #updateSpacers(firstIndex, lastIndex) {
-        const savedScrollTop = this.#container.scrollTop;
-        const topHeight = this.#getEstimatedHeight(0, firstIndex);
-        const bottomHeight = this.#getEstimatedHeight(
+        const oldTopHeight = parseFloat(this.#topSpacer.style.height) || 0;
+        const newTopHeight = this.#getEstimatedHeight(0, firstIndex);
+        const newBottomHeight = this.#getEstimatedHeight(
             lastIndex + 1,
             this.#entities.length,
         );
-        const currentTopHeight = parseFloat(this.#topSpacer.style.height) || 0;
         const currentBottomHeight =
 			parseFloat(this.#bottomSpacer.style.height) || 0;
 
-        if (Math.abs(topHeight - currentTopHeight) > 1) {
-            this.#topSpacer.style.height = `${topHeight}px`;
+        if (Math.abs(newTopHeight - oldTopHeight) > 1) {
+            this.#topSpacer.style.height = `${newTopHeight}px`;
+            this.#container.scrollTop += newTopHeight - oldTopHeight;
         }
 
-        if (Math.abs(bottomHeight - currentBottomHeight) > 1) {
-            this.#bottomSpacer.style.height = `${bottomHeight}px`;
-        }
-
-        if (this.#container.scrollTop !== savedScrollTop) {
-            this.#container.scrollTop = savedScrollTop;
+        if (Math.abs(newBottomHeight - currentBottomHeight) > 1) {
+            this.#bottomSpacer.style.height = `${newBottomHeight}px`;
         }
     }
 
