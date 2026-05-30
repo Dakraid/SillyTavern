@@ -2589,6 +2589,31 @@ class BulkEditOverlay {
                     }
                 }
             }
+            // Fallback: Combined mode doesn't emit character_completed events.
+            // Parse the combined output into per-character blocks.
+            if (!wizardState.characterOutputs.filter(Boolean).length) {
+                const combinedSource = String(
+                    result?.combinedOutput ??
+						result?.description ??
+						wizardState.mergedXml ??
+						'',
+                ).trim();
+                if (combinedSource) {
+                    const blocks = extractTopLevelXmlBlocks(combinedSource);
+                    wizardState.characterOutputs = blocks.map((block, index) =>
+                        BulkEditOverlay.#normalizeWizardCharacterOutput({
+                            characterIndex: index,
+                            characterName:
+								getCoreCharacterField(
+								    selectedCharacters[index] ?? {},
+								    'name',
+								) || `Character ${index + 1}`,
+                            xmlOutput: block.raw,
+                            parseStatus: 'ok',
+                        }),
+                    );
+                }
+            }
             wizardState.characterOutputs = wizardState.characterOutputs
                 .filter(Boolean)
                 .sort((a, b) => (a.characterIndex ?? 0) - (b.characterIndex ?? 0));
