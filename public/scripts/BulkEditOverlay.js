@@ -801,6 +801,8 @@ async function readCreatedCharacterAvatar(response, groupName) {
  * @param {boolean} [dynamicLorebook] Whether to create lorebook entries from generated XML.
  * @param {string} [dynamicLorebookSourceXml] Full generated XML used for dynamic lorebook entries.
  * @param {object|null} [wizardMeta] Group card wizard metadata for future re-runs.
+ * @param {boolean} [minify] Whether to minify lorebook entry content.
+ * @param {boolean} [minifySingleLine] Whether minified lorebook entry content should be single-line.
  * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
  */
 async function createGeneratedGroupCard(
@@ -812,6 +814,8 @@ async function createGeneratedGroupCard(
     dynamicLorebook = false,
     dynamicLorebookSourceXml = generatedDescription,
     wizardMeta = null,
+    minify = false,
+    minifySingleLine = false,
 ) {
     const request = validateGroupCardRequest(groupName, selectedChars, {
         createLorebook,
@@ -826,11 +830,25 @@ async function createGeneratedGroupCard(
         .join(', ');
 
     if (createLorebook) {
+        const lorebookData = dynamicLorebook
+            ? buildDynamicLorebookData(dynamicLorebookSourceXml)
+            : buildLorebookData(request.characters, fields);
+
+        if (minify) {
+            const minifyOptions = {
+                compact: !minifySingleLine,
+                singleLine: minifySingleLine,
+            };
+            for (const entry of Object.values(lorebookData.entries)) {
+                if (entry.content) {
+                    entry.content = minifyXml(entry.content, minifyOptions);
+                }
+            }
+        }
+
         const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
             name: request.groupName,
-            data: dynamicLorebook
-                ? buildDynamicLorebookData(dynamicLorebookSourceXml)
-                : buildLorebookData(request.characters, fields),
+            data: lorebookData,
         });
         await throwIfNotOk(
             worldResponse,
@@ -3889,6 +3907,8 @@ class BulkEditOverlay {
                     Boolean(wizardState.config?.dynamicLorebook),
                     dynamicLorebookSourceXml,
                     wizardMeta,
+                    wizardState.config?.minify,
+                    wizardState.config?.minifySingleLine,
                 );
                 wizardState.results = result;
                 await BulkEditOverlay.#applyWizardRegeneratedAvatar(
@@ -3975,6 +3995,8 @@ class BulkEditOverlay {
                 Boolean(wizardState.config?.dynamicLorebook),
                 sourceXml,
                 wizardMeta,
+                wizardState.config?.minify,
+                wizardState.config?.minifySingleLine,
             );
             wizardState.results = result;
             await getCharacters();
@@ -5328,6 +5350,11 @@ class BulkEditOverlay {
             selectedCharacters,
             createLorebook,
             fields,
+            false,
+            validatedDescription,
+            null,
+            false,
+            false,
         );
 
         try {
