@@ -1409,6 +1409,9 @@ async function printCharactersInfiniteScroll(entities, fullRefresh, listId) {
         onChunkLoaded: () => {
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
         },
+        onWindowUpdate: () => {
+            eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
+        },
         chunkSize: per_page_default,
         bufferSize: 20,
     });

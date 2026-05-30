@@ -33,6 +33,7 @@ export class VirtualCharacterList {
 	 * @param {object} options Renderer options.
 	 * @param {(entity: object, index: number, recycledNode?: HTMLElement) => HTMLElement|JQuery} [options.renderItem] Item renderer.
 	 * @param {() => void} [options.onChunkLoaded] Called after a chunk renders.
+	 * @param {() => void} [options.onWindowUpdate] Called after virtual window nodes update.
 	 * @param {() => void} [options.onAllLoaded] Called when all entities are loaded.
 	 * @param {number} [options.chunkSize=50] Incremental loading chunk size.
 	 * @param {number} [options.maxDOMNodes=200] Maximum rendered nodes before top windowing.
@@ -53,6 +54,7 @@ export class VirtualCharacterList {
             chunkSize: 50,
             maxDOMNodes: 200,
             onChunkLoaded: null,
+            onWindowUpdate: null,
             onAllLoaded: null,
             ...options,
         };
@@ -399,6 +401,7 @@ export class VirtualCharacterList {
         this.#trimWindow(desiredStart, desiredEnd, firstVisible, lastVisible);
         this.#syncWindowBounds();
         this.#reapplySelectionState();
+        this.#options.onWindowUpdate?.();
     }
 
     #reapplySelectionState() {
