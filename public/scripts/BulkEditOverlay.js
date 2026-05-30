@@ -19,6 +19,8 @@ import {
     main_api,
     amount_gen,
     max_context,
+    getVirtualCharacterList,
+    getEntitiesList,
 } from '../script.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
@@ -81,6 +83,15 @@ const OPTIONAL_CHARACTER_FIELDS = [
     'first_mes',
     'mes_example',
 ];
+const GROUP_CARD_WIZARD_METADATA_KEY = 'group_card_wizard';
+
+function getGroupCardWizardMetadata(character) {
+    return character?.data?.extensions?.[GROUP_CARD_WIZARD_METADATA_KEY] ?? null;
+}
+
+function isGroupCardWizardCharacter(character) {
+    return Boolean(getGroupCardWizardMetadata(character));
+}
 const CHARACTER_OPEN_TAG = '<character>';
 const CHARACTER_CLOSE_TAG = '</character>';
 
@@ -789,6 +800,7 @@ async function readCreatedCharacterAvatar(response, groupName) {
  * @param {Array<string>} [fields] Included core fields.
  * @param {boolean} [dynamicLorebook] Whether to create lorebook entries from generated XML.
  * @param {string} [dynamicLorebookSourceXml] Full generated XML used for dynamic lorebook entries.
+ * @param {object|null} [wizardMeta] Group card wizard metadata for future re-runs.
  * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
  */
 async function createGeneratedGroupCard(
@@ -796,9 +808,10 @@ async function createGeneratedGroupCard(
     generatedDescription,
     selectedChars,
     createLorebook = true,
-    fields,
+    fields = undefined,
     dynamicLorebook = false,
     dynamicLorebookSourceXml = generatedDescription,
+    wizardMeta = null,
 ) {
     const request = validateGroupCardRequest(groupName, selectedChars, {
         createLorebook,
@@ -833,7 +846,9 @@ async function createGeneratedGroupCard(
         scenario: '',
         first_mes: '',
         mes_example: '',
-        creator_notes: `Generated group card from: ${sourceNames}`,
+        creator_notes: wizardMeta
+            ? `Generated group card from: ${sourceNames}\n[group_card_wizard]`
+            : `Generated group card from: ${sourceNames}`,
         system_prompt: '',
         post_history_instructions: '',
         creator: '',
@@ -846,7 +861,10 @@ async function createGeneratedGroupCard(
         depth_prompt_role: 'system',
         fav: 'false',
         alternate_greetings: [],
-        extensions: createLorebook ? {} : { world: '' },
+        extensions: {
+            ...(createLorebook ? {} : { world: '' }),
+            ...(wizardMeta ? { [GROUP_CARD_WIZARD_METADATA_KEY]: wizardMeta } : {}),
+        },
     });
 
     if (!characterResponse.ok) {
@@ -1088,6 +1106,23 @@ class CharacterContextMenu {
 
     static #getCharacter = (characterId) => characters[characterId] ?? null;
 
+    static setRerunVisibility = (selectedCharacters) => {
+        const button = document.getElementById('bulk_select_rerun_group_card');
+        if (!button) {
+            return;
+        }
+
+        const selectedIds = Array.isArray(selectedCharacters)
+            ? selectedCharacters
+            : [];
+        const wizardCharacterIds = selectedIds.filter((characterId) =>
+            isGroupCardWizardCharacter(
+                CharacterContextMenu.#getCharacter(characterId),
+            ),
+        );
+        button.style.display = wizardCharacterIds.length === 1 ? '' : 'none';
+    };
+
     /**
 	 * Show the context menu at the given position
 	 *
@@ -1143,6 +1178,10 @@ class CharacterContextMenu {
             {
                 id: 'bulk_select_combine_group_card',
                 callback: characterGroupOverlay.handleContextMenuCombineGroupCard,
+            },
+            {
+                id: 'bulk_select_rerun_group_card',
+                callback: characterGroupOverlay.handleContextMenuRerunGroupCard,
             },
             {
                 id: 'character_context_menu_delete',
@@ -1242,7 +1281,9 @@ class BulkTagPopupHandler {
             return;
         }
 
-        document.body.insertAdjacentHTML('beforeend', this.#getHtml());
+        document.body.append(
+            document.createRange().createContextualFragment(this.#getHtml()),
+        );
 
         const entities = this.characterIds
             .map((id) => characterToEntity(characters[id], id))
@@ -1415,6 +1456,11 @@ class BulkEditOverlay {
     #stateChangeCallbacks = [];
     #selectedCharacters = [];
     #bulkTagPopupHandler = new BulkTagPopupHandler();
+    #chunkLoadHandler = () => {
+        if (this.state === BulkEditOverlayState.select) {
+            this.#rebindVisibleElements();
+        }
+    };
 
     /**
 	 * @typedef {object} LastSelected - An object noting the last selected character and its state.
@@ -1503,6 +1549,7 @@ class BulkEditOverlay {
             event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER,
             this.handleStateChange,
         );
+        eventSource.on(event_types.CHARACTER_PAGE_LOADED, this.#chunkLoadHandler);
         bulkEditOverlayInstance = Object.freeze(this);
     }
 
@@ -1520,7 +1567,9 @@ class BulkEditOverlay {
 	 * Set up a Sortable grid for the loaded page
 	 */
     onPageLoad = () => {
-        this.browseState();
+        if (this.state !== BulkEditOverlayState.select) {
+            this.browseState();
+        }
 
         const elements = this.#getEnabledElements();
         elements.forEach((element) =>
@@ -1715,6 +1764,43 @@ class BulkEditOverlay {
         ...this.container.getElementsByClassName(BulkEditOverlay.bogusFolderClass),
     ];
 
+    #rebindVisibleElements() {
+        const elements = this.#getEnabledElements();
+        elements.forEach((element) => {
+            if (!element._bulkEditBound) {
+                element._bulkEditBound = true;
+                element.addEventListener('click', this.toggleCharacterSelected);
+                element.addEventListener('touchstart', this.handleHold);
+                element.addEventListener('mousedown', this.handleHold);
+                element.addEventListener('contextmenu', this.handleDefaultContextMenu);
+                element.addEventListener('touchend', this.handleLongPressEnd);
+                element.addEventListener('mouseup', this.handleLongPressEnd);
+                element.addEventListener('dragend', this.handleLongPressEnd);
+                element.addEventListener('touchmove', this.handleLongPressEnd);
+            }
+        });
+
+        this.container.querySelectorAll('.character_select').forEach((element) => {
+            if (!element.querySelector('.bulk_select_checkbox')) {
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.className = 'bulk_select_checkbox';
+                checkbox.addEventListener('click', (event) =>
+                    event.stopImmediatePropagation(),
+                );
+                element.prepend(checkbox);
+            }
+        });
+
+        const vcl = getVirtualCharacterList();
+        if (vcl) {
+            vcl.applySelectionState(
+                this.selectedCharacters,
+                BulkEditOverlay.selectedClass,
+            );
+        }
+    }
+
     toggleCharacterSelected = (event) => {
         event.stopPropagation();
 
@@ -1816,49 +1902,69 @@ class BulkEditOverlay {
         const currentCharacterId = Number(
             currentCharacter.getAttribute('data-chid'),
         );
-        const characters = Array.from(
-            document.querySelectorAll(
-                '#' +
-					BulkEditOverlay.containerId +
-					' .' +
-					BulkEditOverlay.characterClass,
-            ),
+        const vcl = getVirtualCharacterList();
+        const entities = vcl
+            ? vcl.getEntities()
+            : getEntitiesList({ doFilter: true });
+
+        const lastIndex = entities.findIndex(
+            (entity) =>
+                entity.type === 'character' &&
+				entity.id === this.lastSelected.characterId,
+        );
+        const currentIndex = entities.findIndex(
+            (entity) =>
+                entity.type === 'character' && entity.id === currentCharacterId,
         );
 
-        const startIndex = characters.findIndex(
-            (c) =>
-                Number(c.getAttribute('data-chid')) ===
-				Number(this.lastSelected.characterId),
-        );
-        const endIndex = characters.findIndex(
-            (c) => Number(c.getAttribute('data-chid')) === currentCharacterId,
-        );
+        if (lastIndex === -1 || currentIndex === -1) return;
 
-        for (
-            let i = Math.min(startIndex, endIndex);
-            i <= Math.max(startIndex, endIndex);
-            i++
-        ) {
-            const character = characters[i];
-            const characterId = Number(character.getAttribute('data-chid'));
+        const [start, end] = [
+            Math.min(lastIndex, currentIndex),
+            Math.max(lastIndex, currentIndex),
+        ];
+
+        for (let i = start; i <= end; i++) {
+            const entity = entities[i];
+            if (entity.type !== 'character') continue;
+
+            const characterId = entity.id;
             const isCharacterSelected = this.selectedCharacters.includes(characterId);
 
-            // Only toggle the character if it wasn't on the state we have are toggling towards.
-            // Also doing a weird type check, because typescript checker doesn't like the return of 'querySelectorAll'.
             if (
-                ((select && !isCharacterSelected) ||
-					(!select && isCharacterSelected)) &&
-				character instanceof HTMLElement
+                (select && !isCharacterSelected) ||
+				(!select && isCharacterSelected)
             ) {
-                this.toggleSingleCharacter(character, {
-                    markState: currentCharacterId == characterId,
-                });
+                const character = this.container.querySelector(
+                    `[data-chid="${characterId}"]`,
+                );
+                if (character instanceof HTMLElement) {
+                    this.toggleSingleCharacter(character, {
+                        markState: currentCharacterId === characterId,
+                    });
+                } else if (select) {
+                    this.#selectedCharacters.push(characterId);
+                } else {
+                    this.#selectedCharacters = this.#selectedCharacters.filter(
+                        (id) => id !== characterId,
+                    );
+                }
             }
+        }
+
+        this.updateSelectedCount();
+
+        if (vcl) {
+            vcl.applySelectionState(
+                this.selectedCharacters,
+                BulkEditOverlay.selectedClass,
+            );
         }
     };
 
     handleContextMenuShow = (event) => {
         event.preventDefault();
+        CharacterContextMenu.setRerunVisibility(this.selectedCharacters);
         const [x, y] = this.#getContextMenuPosition(event);
         CharacterContextMenu.show(x, y);
         this.#contextMenuOpen = true;
@@ -1936,6 +2042,25 @@ class BulkEditOverlay {
         }
     };
 
+    handleContextMenuRerunGroupCard = async () => {
+        const wizardCharacterIds = this.selectedCharacters.filter((characterId) =>
+            isGroupCardWizardCharacter(characters[characterId]),
+        );
+        if (wizardCharacterIds.length !== 1) {
+            toastr.warning(
+                'Select one wizard-generated group card.',
+                'Combine into Group Card',
+            );
+            return;
+        }
+
+        try {
+            await BulkEditOverlay.rerunGroupCardWizard(wizardCharacterIds[0]);
+        } finally {
+            this.browseState();
+        }
+    };
+
     /**
 	 * Gets the HTML as a string that is displayed inside the group card combine wizard.
 	 *
@@ -1978,7 +2103,7 @@ class BulkEditOverlay {
                             <span>Prompt</span>
                             <textarea id="bulk_combine_group_card_prompt" class="text_pole" rows="12"></textarea>
                         </label>
-                        <div id="bulk_combine_group_card_preset_controls" class="flex-row">
+                        <div id="bulk_combine_group_card_preset_controls" class="preset-controls">
                             <select id="bulk_combine_group_card_preset_select" class="text_pole">
                                 <option value="">— Load preset —</option>
                             </select>
@@ -1994,7 +2119,7 @@ class BulkEditOverlay {
                         </div>
                         <div class="field-group">
                             <small>Processing mode</small>
-                            <div id="bulk_combine_group_card_mode" class="flex-row">
+                            <div id="bulk_combine_group_card_mode" class="mode-selector">
                                 <label class="checkbox_label">
                                     <input type="radio" name="bulk_combine_mode" value="combined" />
                                     <span>Combined</span>
@@ -2016,8 +2141,22 @@ class BulkEditOverlay {
                             </div>
                         </div>
                         <div class="field-group">
-                            <small>Avatar crop settings</small>
-                            <div id="bulk_combine_group_card_crop" class="flex-row">
+                            <small>Avatar layout & crop</small>
+                            <div class="layout-controls">
+                                <label class="text_label">
+                                    <span>Layout mode</span>
+                                    <select id="bulk_combine_group_card_layout" class="text_pole">
+                                        <option value="voronoi">Voronoi (organic)</option>
+                                        <option value="grid-portrait">Grid (9:16 portrait)</option>
+                                        <option value="grid-square">Grid (1:1 square)</option>
+                                    </select>
+                                </label>
+                                <label id="bulk_combine_gap_container" class="text_label" style="display:none;">
+                                    <span>Cell gap: <span id="bulk_combine_gap_value">2</span>px</span>
+                                    <input id="bulk_combine_gap" type="range" min="0" max="10" value="2" />
+                                </label>
+                            </div>
+                            <div id="bulk_combine_group_card_crop" class="crop-controls">
                                 <label class="text_label">
                                     <span>Focus strategy</span>
                                     <select id="bulk_combine_group_card_crop_strategy" class="text_pole">
@@ -2754,7 +2893,7 @@ class BulkEditOverlay {
         const html = $(`
             <div class="postprocess-mode">
               <small>Post-processing mode</small>
-              <div id="bulk_combine_postprocess_mode_select" class="flex-row">
+              <div id="bulk_combine_postprocess_mode_select" class="postprocess-mode-selector">
                 <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="replace" /><span>Replace</span></label>
                 <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="prepend" /><span>Prepend</span></label>
                 <label class="checkbox_label"><input type="radio" name="bulk_combine_postprocess_mode" value="append" /><span>Append</span></label>
@@ -2762,7 +2901,7 @@ class BulkEditOverlay {
             </div>
             <div class="field-group">
               <label class="text_label"><span>Post-processing prompt</span><textarea id="bulk_combine_postprocess_prompt" class="text_pole" rows="8"></textarea></label>
-              <div id="bulk_combine_postprocess_preset_controls" class="flex-row">
+              <div id="bulk_combine_postprocess_preset_controls" class="postprocess-preset-controls">
                 <select id="bulk_combine_postprocess_preset_select" class="text_pole"><option value="">— Load preset —</option></select>
                 <div id="bulk_combine_postprocess_preset_save" class="menu_button" title="Save post-processing prompt as preset"><i class="fa-solid fa-floppy-disk"></i></div>
                 <div id="bulk_combine_postprocess_preset_delete" class="menu_button" title="Delete selected preset"><i class="fa-solid fa-trash-can"></i></div>
@@ -3002,7 +3141,7 @@ class BulkEditOverlay {
             <div class="review-section"><label class="text_label"><span>Character Name</span><input id="bulk_combine_review_name" class="text_pole" type="text" /></label></div>
             <div class="review-section"><label class="text_label"><span>Description (merged XML)</span></label><textarea id="bulk_combine_review_description" class="text_pole" rows="12" readonly></textarea></div>
             <div class="review-section"><label class="text_label"><span>First Message</span><textarea id="bulk_combine_review_first_mes" class="text_pole" rows="4"></textarea></label></div>
-            <div class="review-section"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div id="bulk_combine_avatar_offsets"></div><div class="field-group" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div><div class="field-group" style="display:flex;align-items:center;gap:0.5em;justify-content:center;"><label class="text_label"><span>Voronoi Seed:</span> <input id="bulk_combine_voronoi_seed" class="text_pole" type="number" style="width:8em;" /></label><div id="bulk_combine_shuffle_seed" class="menu_button" title="Randomize pattern"><i class="fa-solid fa-shuffle"></i></div></div></div>
+            <div class="review-section"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div class="field-group layout-controls"><label class="text_label"><span>Layout mode</span><select id="bulk_combine_review_layout" class="text_pole"><option value="voronoi">Voronoi (organic)</option><option value="grid-portrait">Grid (9:16 portrait)</option><option value="grid-square">Grid (1:1 square)</option></select></label><label id="bulk_combine_review_gap_container" class="text_label" style="display:none;"><span>Cell gap: <span id="bulk_combine_review_gap_value">2</span>px</span><input id="bulk_combine_review_gap" type="range" min="0" max="10" value="2" /></label></div><div id="bulk_combine_avatar_offsets"></div><div class="field-group" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div><div class="field-group" style="display:flex;align-items:center;gap:0.5em;justify-content:center;"><label class="text_label"><span>Voronoi Seed:</span> <input id="bulk_combine_voronoi_seed" class="text_pole" type="number" style="width:8em;" /></label><div id="bulk_combine_shuffle_seed" class="menu_button" title="Randomize pattern"><i class="fa-solid fa-shuffle"></i></div></div></div>
             <div class="review-section"><small id="bulk_combine_review_source_summary"></small></div>`);
         content.append(html);
         if (wizardState.config?.dynamicLorebook) {
@@ -3026,15 +3165,57 @@ class BulkEditOverlay {
             .val(extractFirstMessage(description));
         const avatar = wizardState.avatarUrl || wizardState.results?.avatar || '';
         if (avatar) {
-            content
-                .find('#bulk_combine_avatar_image')
-                .attr(
-                    'src',
-                    String(avatar).startsWith('data:')
-                        ? avatar
-                        : getThumbnailUrl('avatar', avatar),
-                );
+            const avatarImage = content.find('#bulk_combine_avatar_image');
+            avatarImage.attr(
+                'src',
+                String(avatar).startsWith('data:')
+                    ? avatar
+                    : getThumbnailUrl('avatar', avatar),
+            );
+            avatarImage.off('load.bcwAvatarEditor').on('load.bcwAvatarEditor', () => {
+                BulkEditOverlay.#setupInteractiveEditor(popupContent, wizardState);
+            });
         }
+        const layout = ['voronoi', 'grid-portrait', 'grid-square'].includes(
+            wizardState.config?.layout,
+        )
+            ? wizardState.config.layout
+            : 'voronoi';
+        const gap = Number.isFinite(Number(wizardState.config?.gap))
+            ? Math.max(0, Math.min(10, Math.round(Number(wizardState.config.gap))))
+            : 2;
+        wizardState.config.layout = layout;
+        wizardState.config.gap = gap;
+        content.find('#bulk_combine_review_layout').val(layout);
+        content.find('#bulk_combine_review_gap').val(String(gap));
+        content.find('#bulk_combine_review_gap_value').text(String(gap));
+        content
+            .find('#bulk_combine_review_gap_container')
+            .toggle(layout !== 'voronoi');
+        content.find('#bulk_combine_review_layout').on('change', async function () {
+            const nextLayout = String($(this).val() ?? 'voronoi');
+            wizardState.config.layout = [
+                'voronoi',
+                'grid-portrait',
+                'grid-square',
+            ].includes(nextLayout)
+                ? nextLayout
+                : 'voronoi';
+            content
+                .find('#bulk_combine_review_gap_container')
+                .toggle(wizardState.config.layout !== 'voronoi');
+            await BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
+        });
+        content.find('#bulk_combine_review_gap').on('input', async function () {
+            const nextGap = Number($(this).val());
+            wizardState.config.gap = Number.isFinite(nextGap)
+                ? Math.max(0, Math.min(10, Math.round(nextGap)))
+                : 2;
+            content
+                .find('#bulk_combine_review_gap_value')
+                .text(String(wizardState.config.gap));
+            await BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
+        });
         const offsets = content.find('#bulk_combine_avatar_offsets');
         const sourceCharacters =
 			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
@@ -3101,17 +3282,24 @@ class BulkEditOverlay {
             .text(
                 `Source: ${sourceCharacters.length} characters | Mode: ${wizardState.config?.processingMode ?? 'parallel'} | Fields: ${(wizardState.config?.fields ?? []).join(', ')}`,
             );
-        content.find('input[type="range"]').on('input', function () {
-            const card = $(this).closest('.offset-card');
-            const index = Number(card.data('index'));
-            const x = Number(card.find('.offset-x').val());
-            const y = Number(card.find('.offset-y').val());
-            const scale = Number(card.find('.offset-scale').val());
-            wizardState.avatarOffsets[index] = { x, y, scale };
-            card.find('.offset-x-val').text(String(x));
-            card.find('.offset-y-val').text(String(y));
-            card.find('.offset-scale-val').text(`${scale}%`);
-        });
+        content
+            .find('#bulk_combine_avatar_offsets input[type="range"]')
+            .on('input', function () {
+                const card = $(this).closest('.offset-card');
+                const index = Number(card.data('index'));
+                const x = Number(card.find('.offset-x').val());
+                const y = Number(card.find('.offset-y').val());
+                const scale = Number(card.find('.offset-scale').val());
+                wizardState.avatarOffsets[index] = { x, y, scale };
+                card.find('.offset-x-val').text(String(x));
+                card.find('.offset-y-val').text(String(y));
+                card.find('.offset-scale-val').text(`${scale}%`);
+                BulkEditOverlay.#updateAvatarEditorCellTransform(
+                    popupContent,
+                    wizardState,
+                    index,
+                );
+            });
         content.find('.offset-reset').on('click', function () {
             const card = $(this).closest('.offset-card');
             card.find('.offset-x').val('0').trigger('input');
@@ -3134,7 +3322,405 @@ class BulkEditOverlay {
                 .val(String(wizardState.voronoiSeed));
             BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
         });
+        BulkEditOverlay.#setupInteractiveEditor(popupContent, wizardState);
         BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
+    };
+
+    /**
+	 * Sets up interactive per-cell avatar editor in review stage.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {object} wizardState Wizard state.
+	 */
+    static #setupInteractiveEditor = (popupContent, wizardState) => {
+        const preview = popupContent.find('#bulk_combine_avatar_preview');
+        const image = preview.find('#bulk_combine_avatar_image');
+        const imageElement = /** @type {HTMLImageElement | undefined} */ (image[0]);
+        const cells = Array.isArray(wizardState.cells) ? wizardState.cells : [];
+        const sourceCharacters =
+			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
+
+        if (wizardState.avatarEditorAbortController) {
+            wizardState.avatarEditorAbortController.abort();
+            wizardState.avatarEditorAbortController = null;
+        }
+
+        if (!imageElement || !cells.length || !sourceCharacters.length) {
+            preview.find('.avatar-editor-cell').remove();
+            return;
+        }
+
+        if (!imageElement.complete || !imageElement.naturalWidth) {
+            image.one('load.bcwAvatarEditorSetup', () => {
+                BulkEditOverlay.#setupInteractiveEditor(popupContent, wizardState);
+            });
+            return;
+        }
+
+        if (!image.parent().hasClass('avatar-editor')) {
+            image.wrap('<div class="avatar-editor"></div>');
+        }
+
+        const editor = preview.find('.avatar-editor');
+        editor.find('.avatar-editor-cell').remove();
+
+        const imageRect = imageElement.getBoundingClientRect();
+        const previewWidth = imageRect.width;
+        const previewHeight = imageRect.height;
+
+        if (!previewWidth || !previewHeight) {
+            return;
+        }
+
+        editor.css({ width: `${previewWidth}px`, height: `${previewHeight}px` });
+
+        const scaleX = previewWidth / 1024;
+        const scaleY = previewHeight / 1536;
+        const abortController = new AbortController();
+        wizardState.avatarEditorAbortController = abortController;
+        let dragState = null;
+        let pinchState = null;
+
+        const selectCell = (index) => {
+            wizardState.avatarEditorSelectedIndex = index;
+            editor
+                .find('.avatar-editor-cell')
+                .removeClass('selected')
+                .filter(`[data-index="${index}"]`)
+                .addClass('selected');
+        };
+
+        const startDrag = (event, index, clientX, clientY) => {
+            selectCell(index);
+            const offset = BulkEditOverlay.#normalizeAvatarOffset(
+                wizardState.avatarOffsets?.[index],
+            );
+            const cell = editor.find(`.avatar-editor-cell[data-index="${index}"]`);
+            dragState = {
+                index,
+                startX: clientX,
+                startY: clientY,
+                offsetX: offset.x,
+                offsetY: offset.y,
+                scaleX: Number(cell.attr('data-output-scale-x')) || scaleX,
+                scaleY: Number(cell.attr('data-output-scale-y')) || scaleY,
+            };
+            event.preventDefault();
+        };
+
+        const updateDrag = (clientX, clientY) => {
+            if (!dragState) {
+                return;
+            }
+
+            const offset = BulkEditOverlay.#normalizeAvatarOffset(
+                wizardState.avatarOffsets?.[dragState.index],
+            );
+            const x = BulkEditOverlay.#clampNumber(
+                dragState.offsetX + (clientX - dragState.startX) / dragState.scaleX,
+                -100,
+                100,
+                0,
+            );
+            const y = BulkEditOverlay.#clampNumber(
+                dragState.offsetY + (clientY - dragState.startY) / dragState.scaleY,
+                -100,
+                100,
+                0,
+            );
+            wizardState.avatarOffsets[dragState.index] = {
+                x,
+                y,
+                scale: offset.scale,
+            };
+            BulkEditOverlay.#updateAvatarEditorCellTransform(
+                popupContent,
+                wizardState,
+                dragState.index,
+            );
+        };
+
+        const finishInteraction = () => {
+            if (dragState) {
+                BulkEditOverlay.#syncAvatarOffsetSliders(
+                    popupContent,
+                    wizardState,
+                    dragState.index,
+                );
+            }
+            dragState = null;
+            pinchState = null;
+        };
+
+        cells.slice(0, sourceCharacters.length).forEach((cell, index) => {
+            const bounds = BulkEditOverlay.#getAvatarEditorCellBounds(cell);
+            if (!bounds) {
+                return;
+            }
+
+            const overlay = $('<div></div>')
+                .addClass('avatar-editor-cell')
+                .attr('data-index', String(index))
+                .attr('data-cell-type', cell.type === 'rect' ? 'rect' : 'polygon')
+                .attr('data-output-scale-x', String((bounds.w * scaleX) / bounds.w))
+                .attr('data-output-scale-y', String((bounds.h * scaleY) / bounds.h))
+                .css({
+                    left: `${bounds.x * scaleX}px`,
+                    top: `${bounds.y * scaleY}px`,
+                    width: `${bounds.w * scaleX}px`,
+                    height: `${bounds.h * scaleY}px`,
+                });
+
+            if (cell.type !== 'rect' && Array.isArray(cell.points)) {
+                const polygon = cell.points
+                    .map(
+                        ([x, y]) =>
+                            `${((x - bounds.x) / bounds.w) * 100}% ${((y - bounds.y) / bounds.h) * 100}%`,
+                    )
+                    .join(', ');
+                overlay.css('clip-path', `polygon(${polygon})`);
+            }
+
+            const character = sourceCharacters[index];
+            const cellImage = $('<img alt="Avatar cell" />').attr(
+                'src',
+                getThumbnailUrl('avatar', character?.avatar ?? ''),
+            );
+
+            if (cell.type === 'rect') {
+                cellImage.addClass('avatar-editor-cell-image-rect');
+            } else {
+                cellImage.addClass('avatar-editor-cell-image-polygon').css({
+                    width: `${previewWidth}px`,
+                    height: `${previewHeight}px`,
+                    left: `${-bounds.x * scaleX}px`,
+                    top: `${-bounds.y * scaleY}px`,
+                });
+            }
+
+            overlay.append(cellImage);
+            editor.append(overlay);
+            BulkEditOverlay.#updateAvatarEditorCellTransform(
+                popupContent,
+                wizardState,
+                index,
+            );
+
+            const overlayElement = /** @type {HTMLElement} */ (overlay[0]);
+            overlayElement.addEventListener(
+                'mousedown',
+                (event) => startDrag(event, index, event.clientX, event.clientY),
+                { signal: abortController.signal },
+            );
+            overlayElement.addEventListener(
+                'wheel',
+                (event) => {
+                    if (wizardState.avatarEditorSelectedIndex !== index) {
+                        selectCell(index);
+                    }
+                    event.preventDefault();
+                    const offset = BulkEditOverlay.#normalizeAvatarOffset(
+                        wizardState.avatarOffsets?.[index],
+                    );
+                    const nextScale = BulkEditOverlay.#clampNumber(
+                        offset.scale + (event.deltaY > 0 ? -5 : 5),
+                        50,
+                        200,
+                        100,
+                    );
+                    wizardState.avatarOffsets[index] = {
+                        ...offset,
+                        scale: nextScale,
+                    };
+                    BulkEditOverlay.#updateAvatarEditorCellTransform(
+                        popupContent,
+                        wizardState,
+                        index,
+                    );
+                    BulkEditOverlay.#syncAvatarOffsetSliders(
+                        popupContent,
+                        wizardState,
+                        index,
+                    );
+                },
+                { passive: false, signal: abortController.signal },
+            );
+            overlayElement.addEventListener(
+                'touchstart',
+                (event) => {
+                    selectCell(index);
+                    if (event.touches.length === 2) {
+                        const [first, second] = event.touches;
+                        const offset = BulkEditOverlay.#normalizeAvatarOffset(
+                            wizardState.avatarOffsets?.[index],
+                        );
+                        pinchState = {
+                            index,
+                            distance: Math.hypot(
+                                first.clientX - second.clientX,
+                                first.clientY - second.clientY,
+                            ),
+                            scale: offset.scale,
+                        };
+                        event.preventDefault();
+                        return;
+                    }
+
+                    const touch = event.touches[0];
+                    if (touch) {
+                        startDrag(event, index, touch.clientX, touch.clientY);
+                    }
+                },
+                { passive: false, signal: abortController.signal },
+            );
+        });
+
+        document.addEventListener(
+            'mousemove',
+            (event) => updateDrag(event.clientX, event.clientY),
+            { signal: abortController.signal },
+        );
+        document.addEventListener('mouseup', finishInteraction, {
+            signal: abortController.signal,
+        });
+        document.addEventListener(
+            'touchmove',
+            (event) => {
+                if (pinchState && event.touches.length === 2) {
+                    const [first, second] = event.touches;
+                    const distance = Math.hypot(
+                        first.clientX - second.clientX,
+                        first.clientY - second.clientY,
+                    );
+                    const nextScale = BulkEditOverlay.#clampNumber(
+                        pinchState.scale + (distance - pinchState.distance) / 2,
+                        50,
+                        200,
+                        100,
+                    );
+                    const offset = BulkEditOverlay.#normalizeAvatarOffset(
+                        wizardState.avatarOffsets?.[pinchState.index],
+                    );
+                    wizardState.avatarOffsets[pinchState.index] = {
+                        ...offset,
+                        scale: nextScale,
+                    };
+                    BulkEditOverlay.#updateAvatarEditorCellTransform(
+                        popupContent,
+                        wizardState,
+                        pinchState.index,
+                    );
+                    BulkEditOverlay.#syncAvatarOffsetSliders(
+                        popupContent,
+                        wizardState,
+                        pinchState.index,
+                    );
+                    event.preventDefault();
+                    return;
+                }
+
+                if (dragState && event.touches.length === 1) {
+                    const touch = event.touches[0];
+                    updateDrag(touch.clientX, touch.clientY);
+                    event.preventDefault();
+                }
+            },
+            { passive: false, signal: abortController.signal },
+        );
+        document.addEventListener('touchend', finishInteraction, {
+            signal: abortController.signal,
+        });
+
+        if (Number.isInteger(wizardState.avatarEditorSelectedIndex)) {
+            selectCell(wizardState.avatarEditorSelectedIndex);
+        }
+    };
+
+    static #getAvatarEditorCellBounds = (cell) => {
+        if (cell?.type === 'rect') {
+            const x = Number(cell.x);
+            const y = Number(cell.y);
+            const w = Number(cell.w);
+            const h = Number(cell.h);
+            if ([x, y, w, h].every(Number.isFinite) && w > 0 && h > 0) {
+                return { x, y, w, h };
+            }
+            return null;
+        }
+
+        if (!Array.isArray(cell?.points) || cell.points.length < 3) {
+            return null;
+        }
+
+        const xs = cell.points
+            .map((point) => Number(point?.[0]))
+            .filter(Number.isFinite);
+        const ys = cell.points
+            .map((point) => Number(point?.[1]))
+            .filter(Number.isFinite);
+        if (!xs.length || !ys.length) {
+            return null;
+        }
+
+        const x = Math.min(...xs);
+        const y = Math.min(...ys);
+        const w = Math.max(...xs) - x;
+        const h = Math.max(...ys) - y;
+        return w > 0 && h > 0 ? { x, y, w, h } : null;
+    };
+
+    static #normalizeAvatarOffset = (offset) => {
+        return {
+            x: BulkEditOverlay.#clampNumber(Number(offset?.x), -100, 100, 0),
+            y: BulkEditOverlay.#clampNumber(Number(offset?.y), -100, 100, 0),
+            scale: BulkEditOverlay.#clampNumber(Number(offset?.scale), 50, 200, 100),
+        };
+    };
+
+    static #updateAvatarEditorCellTransform = (
+        popupContent,
+        wizardState,
+        index,
+    ) => {
+        const cell = popupContent.find(
+            `.avatar-editor-cell[data-index="${index}"]`,
+        );
+        const image = cell.find('img');
+        if (!cell.length || !image.length) {
+            return;
+        }
+
+        const offset = BulkEditOverlay.#normalizeAvatarOffset(
+            wizardState.avatarOffsets?.[index],
+        );
+        wizardState.avatarOffsets[index] = offset;
+        const scaleX = Number(cell.attr('data-output-scale-x')) || 1;
+        const scaleY = Number(cell.attr('data-output-scale-y')) || 1;
+        image.css(
+            'transform',
+            `translate(${offset.x * scaleX}px, ${offset.y * scaleY}px) scale(${offset.scale / 100})`,
+        );
+    };
+
+    static #syncAvatarOffsetSliders = (popupContent, wizardState, index) => {
+        const offset = BulkEditOverlay.#normalizeAvatarOffset(
+            wizardState.avatarOffsets?.[index],
+        );
+        const card = popupContent.find(`.offset-card[data-index="${index}"]`);
+        card.find('.offset-x').val(String(offset.x));
+        card.find('.offset-y').val(String(offset.y));
+        card.find('.offset-scale').val(String(offset.scale));
+        card.find('.offset-x-val').text(String(offset.x));
+        card.find('.offset-y-val').text(String(offset.y));
+        card.find('.offset-scale-val').text(`${offset.scale}%`);
+    };
+
+    static #clampNumber = (value, min, max, fallback) => {
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+            return fallback;
+        }
+
+        return Math.min(max, Math.max(min, Math.round(number)));
     };
 
     /**
@@ -3164,6 +3750,8 @@ class BulkEditOverlay {
                         offsets: wizardState.avatarOffsets,
                         cropStrategy: wizardState.config?.cropStrategy,
                         cropPadding: wizardState.config?.cropPadding,
+                        layout: wizardState.config?.layout,
+                        gap: wizardState.config?.gap,
                         seed: wizardState.voronoiSeed,
                     }),
                 },
@@ -3172,9 +3760,17 @@ class BulkEditOverlay {
             const data = await response.json();
             if (data?.image) {
                 wizardState.avatarUrl = data.image;
-                popupContent
-                    .find('#bulk_combine_avatar_image')
+                wizardState.cells = Array.isArray(data.cells) ? data.cells : [];
+                const avatarImage = popupContent.find('#bulk_combine_avatar_image');
+                avatarImage
+                    .off('load.bcwAvatarEditor')
+                    .on('load.bcwAvatarEditor', () => {
+                        BulkEditOverlay.#setupInteractiveEditor(popupContent, wizardState);
+                    })
                     .attr('src', wizardState.avatarUrl);
+                if (avatarImage[0]?.complete) {
+                    BulkEditOverlay.#setupInteractiveEditor(popupContent, wizardState);
+                }
             }
         } catch (error) {
             console.error(error);
@@ -3241,43 +3837,46 @@ class BulkEditOverlay {
         }
         BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
         try {
-            if (wizardState.serverCreated && wizardState.results?.avatar) {
-                let finalDescription = description;
-                if (wizardState.config?.minify) {
-                    finalDescription = minifyXml(finalDescription, {
-                        compact: !wizardState.config?.minifySingleLine,
-                        singleLine: wizardState.config?.minifySingleLine,
-                    });
-                }
+            let finalDescription = wizardState.config?.dynamicLorebook
+                ? buildDynamicSummaryDescription(dynamicLorebookSourceXml)
+                : description;
+            if (wizardState.config?.minify) {
+                finalDescription = minifyXml(finalDescription, {
+                    compact: !wizardState.config?.minifySingleLine,
+                    singleLine: wizardState.config?.minifySingleLine,
+                });
+            }
+            const wizardMeta =
+				BulkEditOverlay.#buildGroupCardWizardMetadata(wizardState);
+            const updateAvatar =
+				wizardState.rerunConfig?.rerunAvatar ??
+				(wizardState.serverCreated && wizardState.results?.avatar
+				    ? wizardState.results.avatar
+				    : null);
 
+            if (updateAvatar) {
                 const response = await sendJsonRequest(
                     '/api/characters/merge-attributes',
                     {
-                        avatar: wizardState.results.avatar,
+                        avatar: updateAvatar,
                         data: {
                             name: groupName,
                             ch_name: groupName,
                             description: finalDescription,
                             first_mes: firstMes,
+                            creator_notes: `Generated group card from: ${wizardMeta.sourceCharacterNames.join(', ')}\n[group_card_wizard]`,
+                            extensions: {
+                                [GROUP_CARD_WIZARD_METADATA_KEY]: wizardMeta,
+                            },
                         },
                     },
                 );
                 await throwIfNotOk(response, 'Failed to update generated group card.');
                 await BulkEditOverlay.#applyWizardRegeneratedAvatar(
                     wizardState,
-                    wizardState.results.avatar,
+                    updateAvatar,
                 );
             } else {
-                let finalDescription = wizardState.config?.dynamicLorebook
-                    ? buildDynamicSummaryDescription(dynamicLorebookSourceXml)
-                    : description;
-                if (wizardState.config?.minify) {
-                    finalDescription = minifyXml(finalDescription, {
-                        compact: !wizardState.config?.minifySingleLine,
-                        singleLine: wizardState.config?.minifySingleLine,
-                    });
-                }
-
                 const result = await createGeneratedGroupCard(
                     groupName,
                     finalDescription,
@@ -3289,6 +3888,7 @@ class BulkEditOverlay {
                     wizardState.config?.fields,
                     Boolean(wizardState.config?.dynamicLorebook),
                     dynamicLorebookSourceXml,
+                    wizardMeta,
                 );
                 wizardState.results = result;
                 await BulkEditOverlay.#applyWizardRegeneratedAvatar(
@@ -3318,7 +3918,26 @@ class BulkEditOverlay {
 	 */
     static #handleStage2SaveAsIs = async (popupContent, wizardState) => {
         BulkEditOverlay.#updateWizardMergedXml(wizardState);
-        if (wizardState.serverCreated) {
+        if (
+            wizardState.rerunConfig?.rerunAvatar ||
+			(wizardState.serverCreated && wizardState.results?.avatar)
+        ) {
+            const wizardMeta =
+				BulkEditOverlay.#buildGroupCardWizardMetadata(wizardState);
+            const targetAvatar =
+				wizardState.rerunConfig?.rerunAvatar ?? wizardState.results.avatar;
+            const response = await sendJsonRequest(
+                '/api/characters/merge-attributes',
+                {
+                    avatar: targetAvatar,
+                    data: {
+                        extensions: {
+                            [GROUP_CARD_WIZARD_METADATA_KEY]: wizardMeta,
+                        },
+                    },
+                },
+            );
+            await throwIfNotOk(response, 'Failed to update generated group card.');
             toastr.success('Group card already created.', 'Combine into Group Card');
             return true;
         }
@@ -3342,6 +3961,8 @@ class BulkEditOverlay {
                 });
             }
 
+            const wizardMeta =
+				BulkEditOverlay.#buildGroupCardWizardMetadata(wizardState);
             const result = await createGeneratedGroupCard(
                 wizardState.config.groupName,
                 description,
@@ -3353,6 +3974,7 @@ class BulkEditOverlay {
                 wizardState.config.fields,
                 Boolean(wizardState.config?.dynamicLorebook),
                 sourceXml,
+                wizardMeta,
             );
             wizardState.results = result;
             await getCharacters();
@@ -3569,6 +4191,8 @@ class BulkEditOverlay {
         const cropPaddingInput = popupContent.find(
             '#bulk_combine_group_card_crop_padding',
         );
+        const layoutSelect = popupContent.find('#bulk_combine_group_card_layout');
+        const gapInput = popupContent.find('#bulk_combine_gap');
         const lorebookToggle = popupContent.find(
             '#bulk_combine_group_card_lorebook_toggle',
         );
@@ -3623,6 +4247,16 @@ class BulkEditOverlay {
         const cropPadding = Number.isFinite(parsedCropPadding)
             ? Math.max(0, Math.min(50, Math.round(parsedCropPadding)))
             : 15;
+        const layoutValue = String(layoutSelect.val() ?? 'voronoi');
+        const layout = ['voronoi', 'grid-portrait', 'grid-square'].includes(
+            layoutValue,
+        )
+            ? layoutValue
+            : 'voronoi';
+        const parsedGap = Number(gapInput.val());
+        const gap = Number.isFinite(parsedGap)
+            ? Math.max(0, Math.min(10, Math.round(parsedGap)))
+            : 2;
 
         if (postMergeEnabled && !postMergePrompt) {
             toastr.warning(
@@ -3664,6 +4298,8 @@ class BulkEditOverlay {
         power_user.group_card_parallel_concurrency = concurrency;
         power_user.group_card_crop_strategy = cropStrategy;
         power_user.group_card_crop_padding = cropPadding;
+        power_user.group_card_layout = layout;
+        power_user.group_card_gap = gap;
         saveSettingsDebounced();
 
         wizardState.config = {
@@ -3683,6 +4319,8 @@ class BulkEditOverlay {
             postProcessMode,
             cropStrategy,
             cropPadding,
+            layout,
+            gap,
         };
         wizardState.postProcessMode = postProcessMode;
         wizardState.characterOutputs = [];
@@ -3724,13 +4362,136 @@ class BulkEditOverlay {
         }
     };
 
+    static #buildGroupCardWizardMetadata = (wizardState) => {
+        const sourceCharacters =
+			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
+        const existingMeta = wizardState.rerunConfig?.rerunMeta ?? null;
+
+        return {
+            version: 1,
+            sourceCharacterNames: sourceCharacters
+                .map((character) => getCoreCharacterField(character, 'name').trim())
+                .filter(Boolean),
+            sourceCharacterAvatars: sourceCharacters
+                .map((character) => character.avatar)
+                .filter(Boolean),
+            config: {
+                groupName: wizardState.config?.groupName,
+                prompt: wizardState.config?.prompt,
+                processingMode: wizardState.config?.processingMode,
+                concurrency: wizardState.config?.concurrency,
+                cropStrategy: wizardState.config?.cropStrategy,
+                cropPadding: wizardState.config?.cropPadding,
+                layout: wizardState.config?.layout,
+                gap: wizardState.config?.gap,
+                fields: wizardState.config?.fields,
+                selectedOptionalFields: wizardState.config?.selectedOptionalFields,
+                createLorebook: Boolean(wizardState.config?.createLorebook),
+                dynamicLorebook: Boolean(wizardState.config?.dynamicLorebook),
+                minify: Boolean(wizardState.config?.minify),
+                minifySingleLine: Boolean(wizardState.config?.minifySingleLine),
+                postMergeEnabled: Boolean(wizardState.config?.postMergeEnabled),
+                postMergePrompt: wizardState.config?.postMergePrompt,
+                postProcessMode: wizardState.config?.postProcessMode,
+                avatarOffsets: wizardState.avatarOffsets ?? [],
+                voronoiSeed: wizardState.voronoiSeed,
+            },
+            createdAt: existingMeta?.createdAt ?? new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            runCount: Number(existingMeta?.runCount ?? 0) + 1,
+        };
+    };
+
+    static updateGroupCardWizardEditButton = (characterId) => {
+        const button = document.getElementById('group_card_wizard_edit_button');
+        if (!button) {
+            return;
+        }
+
+        const character = characters[characterId];
+        const hasMetadata = isGroupCardWizardCharacter(character);
+        button.style.display = hasMetadata ? '' : 'none';
+        button.dataset.characterId = hasMetadata ? String(characterId) : '';
+        button.onclick = hasMetadata
+            ? async () => {
+                await BulkEditOverlay.rerunGroupCardWizard(characterId);
+            }
+            : null;
+    };
+
+    static rerunGroupCardWizard = async (characterId) => {
+        const character = characters[characterId];
+        const meta = getGroupCardWizardMetadata(character);
+        if (!character || !meta) {
+            toastr.error(
+                'This character was not created by the Group Card Wizard.',
+                'Combine into Group Card',
+            );
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/characters/group-card-backup', {
+                method: 'POST',
+                headers: { ...getRequestHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ avatar: character.avatar }),
+            });
+            await throwIfNotOk(response, 'Failed to back up group card.');
+        } catch (error) {
+            console.warn('Group card backup failed; continuing re-run:', error);
+            toastr.warning(
+                'Could not back up the current card. Continuing anyway.',
+                'Combine into Group Card',
+            );
+        }
+
+        const sourceCharacterIds = [];
+        const sourceAvatars = Array.isArray(meta.sourceCharacterAvatars)
+            ? meta.sourceCharacterAvatars
+            : [];
+        const sourceNames = Array.isArray(meta.sourceCharacterNames)
+            ? meta.sourceCharacterNames
+            : [];
+
+        for (const avatar of sourceAvatars) {
+            const id = characters.findIndex(
+                (candidate) => candidate?.avatar === avatar,
+            );
+            if (id >= 0 && !sourceCharacterIds.includes(id)) {
+                sourceCharacterIds.push(id);
+            }
+        }
+
+        for (const name of sourceNames) {
+            const normalizedName = normalizeName(String(name ?? ''));
+            const id = characters.findIndex(
+                (candidate) =>
+                    normalizeName(getCoreCharacterField(candidate, 'name')) ===
+					normalizedName,
+            );
+            if (id >= 0 && !sourceCharacterIds.includes(id)) {
+                sourceCharacterIds.push(id);
+            }
+        }
+
+        await BulkEditOverlay.combineIntoGroupCard(sourceCharacterIds, {
+            rerunAvatar: character.avatar,
+            rerunMeta: meta,
+            groupName: getCoreCharacterField(character, 'name'),
+        });
+    };
+
     /**
 	 * Opens the combine wizard.
 	 *
 	 * @param {Array<number|object>} selectedCharacters Selected character ids or objects.
+	 * @param {object|null} [rerunConfig] Existing wizard card re-run config.
 	 * @returns {Promise<void>}
 	 */
-    static combineIntoGroupCard = async (selectedCharacters) => {
+    static combineIntoGroupCard = async (
+        selectedCharacters,
+        rerunConfig = null,
+    ) => {
         const selectedCharacterIds =
 			BulkEditOverlay.#resolveCombineGroupCardCharacterIds(selectedCharacters);
 
@@ -3755,19 +4516,46 @@ class BulkEditOverlay {
         const wizardHtml = BulkEditOverlay.#getCombineGroupCardWizardHtml(
             validCharacters.length,
         );
-        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, characterOutputs:Array<object>, mergedXml:string, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null, voronoiSeed:number}} */
+        const rerunStoredConfig = rerunConfig?.rerunMeta?.config ?? {};
+        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, characterOutputs:Array<object>, mergedXml:string, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null, voronoiSeed:number, rerunConfig?:object|null}} */
         const wizardState = {
             stage: 1,
-            config: {},
+            config: {
+                ...rerunStoredConfig,
+                groupName: rerunConfig?.groupName ?? rerunStoredConfig.groupName,
+                layout: ['voronoi', 'grid-portrait', 'grid-square'].includes(
+                    rerunStoredConfig.layout ?? power_user.group_card_layout,
+                )
+                    ? (rerunStoredConfig.layout ?? power_user.group_card_layout)
+                    : 'voronoi',
+                gap: Number.isFinite(
+                    Number(rerunStoredConfig.gap ?? power_user.group_card_gap),
+                )
+                    ? Math.max(
+                        0,
+                        Math.min(
+                            10,
+                            Math.round(
+                                Number(rerunStoredConfig.gap ?? power_user.group_card_gap),
+                            ),
+                        ),
+                    )
+                    : 2,
+            },
             selectedCharacterIds,
             results: null,
             characterOutputs: [],
             mergedXml: '',
             postProcessResult: null,
             postProcessMode: 'replace',
-            avatarOffsets: [],
+            avatarOffsets: Array.isArray(rerunStoredConfig.avatarOffsets)
+                ? rerunStoredConfig.avatarOffsets
+                : [],
             avatarUrl: null,
-            voronoiSeed: Math.floor(Math.random() * 2147483647),
+            voronoiSeed: Number.isFinite(Number(rerunStoredConfig.voronoiSeed))
+                ? Number(rerunStoredConfig.voronoiSeed)
+                : Math.floor(Math.random() * 2147483647),
+            rerunConfig,
         };
 
         await callGenericPopup(wizardHtml, POPUP_TYPE.CONFIRM, '', {
@@ -3830,52 +4618,106 @@ class BulkEditOverlay {
                 const cropPaddingValue = popupContent.find(
                     '#bulk_combine_group_card_crop_padding_value',
                 );
+                const layoutSelect = popupContent.find(
+                    '#bulk_combine_group_card_layout',
+                );
+                const gapContainer = popupContent.find('#bulk_combine_gap_container');
+                const gapInput = popupContent.find('#bulk_combine_gap');
+                const gapValue = popupContent.find('#bulk_combine_gap_value');
                 const characterSearchInput = popupContent.find(
                     '#bulk_combine_group_card_search',
                 );
 
+                groupNameInput.val(wizardState.config?.groupName ?? '');
                 promptInput.val(
-                    power_user.group_card_combine_prompt ??
+                    wizardState.config?.prompt ??
+						power_user.group_card_combine_prompt ??
 						DEFAULT_GROUP_CARD_COMBINE_PROMPT,
                 );
                 const persistedMode = ['combined', 'parallel', 'serial'].includes(
-                    power_user.group_card_processing_mode,
+                    wizardState.config?.processingMode ??
+						power_user.group_card_processing_mode,
                 )
-                    ? power_user.group_card_processing_mode
+                    ? (wizardState.config?.processingMode ??
+						power_user.group_card_processing_mode)
                     : 'parallel';
                 modeInputs.filter(`[value="${persistedMode}"]`).prop('checked', true);
                 concurrencyInput.val(
-                    Number.isFinite(Number(power_user.group_card_parallel_concurrency))
-                        ? String(power_user.group_card_parallel_concurrency)
+                    Number.isFinite(
+                        Number(
+                            wizardState.config?.concurrency ??
+								power_user.group_card_parallel_concurrency,
+                        ),
+                    )
+                        ? String(
+                            wizardState.config?.concurrency ??
+									power_user.group_card_parallel_concurrency,
+                        )
                         : '10',
                 );
                 concurrencyContainer.toggle(persistedMode === 'parallel');
 
                 cropStrategySelect.val(
                     ['attention', 'entropy', 'center', 'top', 'face'].includes(
-                        power_user.group_card_crop_strategy,
+                        wizardState.config?.cropStrategy ??
+							power_user.group_card_crop_strategy,
                     )
-                        ? power_user.group_card_crop_strategy
+                        ? (wizardState.config?.cropStrategy ??
+								power_user.group_card_crop_strategy)
                         : 'attention',
                 );
-                const persistedCropPadding = Number(power_user.group_card_crop_padding);
+                const persistedCropPadding = Number(
+                    wizardState.config?.cropPadding ?? power_user.group_card_crop_padding,
+                );
                 const cropPadding = Number.isFinite(persistedCropPadding)
                     ? Math.max(0, Math.min(50, Math.round(persistedCropPadding)))
                     : 15;
                 cropPaddingInput.val(String(cropPadding));
                 cropPaddingValue.text(String(cropPadding));
-                lorebookToggle.prop('checked', false).prop('disabled', false);
-                dynamicLorebookToggle.prop('checked', false).prop('disabled', false);
-                minifyToggle.prop('checked', false);
-                minifySingleLineToggle.prop('checked', false);
-                minifySingleLineLabel.hide();
+                const persistedLayout = [
+                    'voronoi',
+                    'grid-portrait',
+                    'grid-square',
+                ].includes(wizardState.config?.layout ?? power_user.group_card_layout)
+                    ? (wizardState.config?.layout ?? power_user.group_card_layout)
+                    : 'voronoi';
+                const persistedGap = Number(
+                    wizardState.config?.gap ?? power_user.group_card_gap,
+                );
+                const gap = Number.isFinite(persistedGap)
+                    ? Math.max(0, Math.min(10, Math.round(persistedGap)))
+                    : 2;
+                layoutSelect.val(persistedLayout);
+                gapInput.val(String(gap));
+                gapValue.text(String(gap));
+                gapContainer.toggle(persistedLayout !== 'voronoi');
+                wizardState.config.layout = persistedLayout;
+                wizardState.config.gap = gap;
+                lorebookToggle
+                    .prop('checked', Boolean(wizardState.config?.createLorebook))
+                    .prop('disabled', Boolean(wizardState.config?.dynamicLorebook));
+                dynamicLorebookToggle
+                    .prop('checked', Boolean(wizardState.config?.dynamicLorebook))
+                    .prop('disabled', Boolean(wizardState.config?.createLorebook));
+                minifyToggle.prop('checked', Boolean(wizardState.config?.minify));
+                minifySingleLineToggle.prop(
+                    'checked',
+                    Boolean(wizardState.config?.minifySingleLine),
+                );
+                minifySingleLineLabel.toggle(Boolean(wizardState.config?.minify));
                 renderGroupCardCombinePromptPresetSelect(presetSelect);
 
                 const persistedFields = Array.isArray(
-                    power_user.group_card_combine_included_fields,
+                    wizardState.config?.selectedOptionalFields,
                 )
-                    ? power_user.group_card_combine_included_fields
-                    : ['personality'];
+                    ? wizardState.config.selectedOptionalFields
+                    : Array.isArray(wizardState.config?.fields)
+                        ? wizardState.config.fields.filter((field) =>
+                            OPTIONAL_CHARACTER_FIELDS.includes(field),
+                        )
+                        : Array.isArray(power_user.group_card_combine_included_fields)
+                            ? power_user.group_card_combine_included_fields
+                            : ['personality'];
                 const persistedFieldSet = new Set(persistedFields);
                 fieldToggles.each((_, element) => {
                     $(element).prop(
@@ -3904,6 +4746,16 @@ class BulkEditOverlay {
 
                 cropPaddingInput.on('input', () => {
                     cropPaddingValue.text(String(cropPaddingInput.val() ?? '15'));
+                });
+
+                layoutSelect.on('change', () => {
+                    gapContainer.toggle(
+                        String(layoutSelect.val() ?? 'voronoi') !== 'voronoi',
+                    );
+                });
+
+                gapInput.on('input', () => {
+                    gapValue.text(String(gapInput.val() ?? '2'));
                 });
 
                 dynamicLorebookToggle.on('change', function () {
@@ -4223,29 +5075,21 @@ class BulkEditOverlay {
             indicator = document.createElement('div');
             indicator.id = 'bulk_group_card_job_indicator';
             indicator.style.cssText =
-				'position:fixed;bottom:1em;right:1em;z-index:9999;background:var(--SmartThemeBodyColor);border:1px solid var(--SmartThemeBorderColor);border-radius:8px;padding:0.5em 1em;cursor:pointer;display:flex;align-items:center;gap:0.5em;font-size:0.85em;';
+				'position:fixed;bottom:1em;right:1em;z-index:9999;background:var(--SmartThemeBodyColor);border:1px solid var(--SmartThemeBorderColor);border-radius:8px;padding:0.5em 1em;cursor:pointer;display:none;align-items:center;gap:0.5em;font-size:0.85em;';
             document.body.appendChild(indicator);
 
             indicator.addEventListener('click', async () => {
                 if (groupCardJobs.size > 0) {
                     BulkEditOverlay.#showGroupCardJobPopup();
-                    return;
                 }
-
-                const selectedCharacters =
-					bulkEditOverlayInstance?.selectedCharacters?.slice?.() ?? [];
-                await BulkEditOverlay.combineIntoGroupCard(selectedCharacters);
             });
         }
 
+        indicator.style.display = 'flex';
         const icon = document.createElement('i');
 
         if (!count) {
-            icon.className = 'fa-solid fa-layer-group';
-            indicator.replaceChildren(icon);
-            const label = document.createElement('span');
-            label.textContent = 'New Group Card';
-            indicator.appendChild(label);
+            indicator.style.display = 'none';
             return;
         }
 
@@ -4869,6 +5713,10 @@ class BulkEditOverlay {
         this.selectedCharacters.length = 0;
     };
 }
+
+eventSource.on(event_types.CHARACTER_EDITOR_OPENED, (characterId) => {
+    BulkEditOverlay.updateGroupCardWizardEditButton(characterId);
+});
 
 setTimeout(() => {
     BulkEditOverlay.reconnectGroupCardJob().catch((error) =>

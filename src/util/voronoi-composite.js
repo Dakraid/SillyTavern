@@ -25,7 +25,7 @@ const BORDER_RADIUS = 1;
  * @param {string[]} avatarPaths Absolute paths to character avatar PNGs.
  * @param {string} outputPath Where to write the composite PNG.
  * @param {{width?: number, height?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>, seed?: number}} options Output dimensions, crop options, per-avatar offsets, and optional seed.
- * @returns {Promise<string>} The output path.
+ * @returns {Promise<{path: string, cells: Array<{type: string, points: Array<[number, number]>}>}>} The output path and Voronoi cells.
  */
 export async function generateVoronoiComposite(
     avatarPaths,
@@ -79,7 +79,20 @@ export async function generateVoronoiComposite(
             offsets[0],
         );
         await sharp(offsetBuffer).png().toFile(outputPath);
-        return outputPath;
+        return {
+            path: outputPath,
+            cells: [
+                {
+                    type: 'polygon',
+                    points: [
+                        [0, 0],
+                        [width, 0],
+                        [width, height],
+                        [0, height],
+                    ],
+                },
+            ],
+        };
     }
 
     const points = generateSeedPoints(avatarPaths.length, width, height, seed);
@@ -87,6 +100,8 @@ export async function generateVoronoiComposite(
     const voronoi = delaunay.voronoi([0, 0, width, height]);
     /** @type {Array<Array<[number, number]>>} */
     const polygons = [];
+    /** @type {Array<{type: string, points: Array<[number, number]>}>} */
+    const cells = [];
     /** @type {Array<{ input: Buffer, blend: 'over' }>} */
     const composites = [];
 
@@ -99,6 +114,7 @@ export async function generateVoronoiComposite(
         /** @type {Array<[number, number]>} */
         const normalizedPolygon = polygon.map((point) => [point[0], point[1]]);
         polygons.push(normalizedPolygon);
+        cells.push({ type: 'polygon', points: normalizedPolygon });
 
         const imageBuffer = await readAvatarBuffer(
             avatarPaths[i],
@@ -150,7 +166,116 @@ export async function generateVoronoiComposite(
         .png()
         .toFile(outputPath);
 
-    return outputPath;
+    return { path: outputPath, cells };
+}
+
+/**
+ * Generate a grid-based composite from character avatar images.
+ * @param {string[]} avatarPaths Absolute paths to character avatar PNGs.
+ * @param {string} outputPath Where to write the composite PNG.
+ * @param {{width?: number, height?: number, cellAspect?: number|string, gap?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>}} options
+ * @returns {Promise<{path: string, cells: Array<{type: string, x: number, y: number, w: number, h: number}>}>}
+ */
+export async function generateGridComposite(
+    avatarPaths,
+    outputPath,
+    options = {},
+) {
+    if (!Array.isArray(avatarPaths)) {
+        throw new TypeError('avatarPaths must be an array');
+    }
+
+    if (!avatarPaths.length) {
+        throw new Error('At least one avatar path is required');
+    }
+
+    if (!outputPath || typeof outputPath !== 'string') {
+        throw new TypeError('outputPath must be a string');
+    }
+
+    const width =
+		typeof options.width === 'number' &&
+		Number.isFinite(options.width) &&
+		options.width > 0
+		    ? Math.round(options.width)
+		    : DEFAULT_WIDTH;
+    const height =
+		typeof options.height === 'number' &&
+		Number.isFinite(options.height) &&
+		options.height > 0
+		    ? Math.round(options.height)
+		    : DEFAULT_HEIGHT;
+    const cropOptions = normalizeCropOptions(options);
+    const offsets = normalizeOffsets(options.offsets, avatarPaths.length);
+    const cellAspect = normalizeCellAspect(options.cellAspect);
+    const gap = normalizeGap(options.gap);
+    const grid = calculateGrid(avatarPaths.length, width / height / cellAspect);
+    const availableWidth = width - gap * (grid.cols - 1);
+    const availableHeight = height - gap * (grid.rows - 1);
+    const slotWidth = availableWidth / grid.cols;
+    const slotHeight = availableHeight / grid.rows;
+    let cellWidth;
+    let cellHeight;
+
+    if (slotWidth / slotHeight > cellAspect) {
+        cellHeight = Math.max(1, Math.floor(slotHeight));
+        cellWidth = Math.max(1, Math.floor(cellHeight * cellAspect));
+    } else {
+        cellWidth = Math.max(1, Math.floor(slotWidth));
+        cellHeight = Math.max(1, Math.floor(cellWidth / cellAspect));
+    }
+
+    const totalGridWidth = cellWidth * grid.cols + gap * (grid.cols - 1);
+    const totalGridHeight = cellHeight * grid.rows + gap * (grid.rows - 1);
+    const startX = Math.floor((width - totalGridWidth) / 2);
+    const startY = Math.floor((height - totalGridHeight) / 2);
+    /** @type {Array<{ input: Buffer, left: number, top: number, blend: 'over' }>} */
+    const composites = [];
+    /** @type {Array<{type: string, x: number, y: number, w: number, h: number}>} */
+    const cells = [];
+
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+    for (let i = 0; i < avatarPaths.length; i++) {
+        const col = i % grid.cols;
+        const row = Math.floor(i / grid.cols);
+        const x = startX + col * (cellWidth + gap);
+        const y = startY + row * (cellHeight + gap);
+        const imageBuffer = await readAvatarBuffer(
+            avatarPaths[i],
+            cellWidth,
+            cellHeight,
+            cropOptions,
+        );
+        const offsetImageBuffer = await applyAvatarOffset(
+            imageBuffer,
+            cellWidth,
+            cellHeight,
+            offsets[i],
+        );
+
+        composites.push({
+            input: offsetImageBuffer,
+            left: x,
+            top: y,
+            blend: 'over',
+        });
+        cells.push({ type: 'rect', x, y, w: cellWidth, h: cellHeight });
+    }
+
+    await sharp({
+        create: {
+            width,
+            height,
+            channels: 4,
+            background: { r: 0, g: 0, b: 0, alpha: 1 },
+        },
+    })
+        .composite(composites)
+        .png()
+        .toFile(outputPath);
+
+    return { path: outputPath, cells };
 }
 
 async function readAvatarBuffer(avatarPath, width, height, cropOptions = {}) {
@@ -216,6 +341,48 @@ function normalizeOffset(offset) {
         y: Number.isFinite(y) ? clamp(Math.round(y), -100, 100) : 0,
         scale: Number.isFinite(scale) ? clamp(Math.round(scale), 50, 200) : 100,
     };
+}
+
+function normalizeCellAspect(cellAspect) {
+    if (cellAspect === 'grid-square') {
+        return 1;
+    }
+
+    if (cellAspect === 'grid-portrait') {
+        return 9 / 16;
+    }
+
+    return typeof cellAspect === 'number' &&
+		Number.isFinite(cellAspect) &&
+		cellAspect > 0
+        ? cellAspect
+        : 9 / 16;
+}
+
+function normalizeGap(gap) {
+    const value = typeof gap === 'number' ? gap : Number(gap);
+
+    return Number.isFinite(value) ? clamp(Math.round(value), 0, 10) : 2;
+}
+
+function calculateGrid(count, canvasAspect) {
+    let bestCols = 1;
+    let bestRows = count;
+    let bestDiff = Infinity;
+
+    for (let cols = 1; cols <= count; cols++) {
+        const rows = Math.ceil(count / cols);
+        const gridAspect = cols / rows;
+        const diff = Math.abs(gridAspect - canvasAspect);
+
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            bestCols = cols;
+            bestRows = rows;
+        }
+    }
+
+    return { cols: bestCols, rows: bestRows };
 }
 
 async function applyAvatarOffset(imageBuffer, width, height, offset) {

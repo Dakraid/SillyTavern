@@ -182,6 +182,7 @@ export const persona_description_positions = _persona_description_positions;
 
 export const power_user = {
     charListGrid: false,
+    infiniteScroll: false,
     tokenizer: tokenizers.BEST_MATCH,
     token_padding: 64,
     custom_tokenizer_source: 'url',
@@ -379,6 +380,8 @@ export const power_user = {
     group_card_post_process_mode: 'replace',
     group_card_crop_strategy: 'attention',
     group_card_crop_padding: 15,
+    group_card_layout: 'voronoi',
+    group_card_gap: 2,
     fuzzy_search: false,
     encode_tags: false,
     experimental_macro_engine: true,
@@ -1465,7 +1468,7 @@ function applyCustomCSS() {
         style.setAttribute('id', styleId);
         document.head.appendChild(style);
     }
-    style.innerHTML = power_user.custom_css;
+    style.textContent = power_user.custom_css;
 }
 
 function applyBlurStrength() {
@@ -1894,8 +1897,9 @@ export function applyStylePins() {
             {},
             false,
         );
-        const htmlElement = document.createElement('div');
-        htmlElement.innerHTML = formattedMessage;
+        const htmlElement = document
+            .createRange()
+            .createContextualFragment(formattedMessage);
 
         const styleTags = htmlElement.querySelectorAll('style');
         if (styleTags.length === 0) {
@@ -2414,6 +2418,7 @@ function toggleMDHotkeyIconDisplay() {
 
 function loadCharListState() {
     document.body.classList.toggle('charListGrid', power_user.charListGrid);
+    document.body.classList.toggle('infiniteScroll', power_user.infiniteScroll);
 }
 
 export function loadMovingUIState() {
