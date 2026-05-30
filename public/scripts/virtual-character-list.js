@@ -18,6 +18,8 @@ export class VirtualCharacterList {
     #observer = null;
     #scrollRafPending = false;
     #loadedUntil = -1;
+    #windowStart = 0;
+    #windowEnd = -1;
     #maxDOMNodes = 200;
     #knownHeights = new Map();
     #totalRemovedHeight = 0;
@@ -89,6 +91,8 @@ export class VirtualCharacterList {
         );
         this.#totalRemovedHeight = 0;
         this.#removedCount = 0;
+        this.#windowStart = 0;
+        this.#windowEnd = -1;
         this.#knownHeights.clear();
         this.#loadingNextChunk = false;
         this.#allLoadedEmitted = false;
@@ -260,7 +264,7 @@ export class VirtualCharacterList {
         this.#scrollRafPending = true;
         requestAnimationFrame(() => {
             this.#scrollRafPending = false;
-            this.#maybeWindow();
+            this.#updateWindow();
         });
     };
 
@@ -284,7 +288,7 @@ export class VirtualCharacterList {
             this.#loadedUntil + this.#options.chunkSize,
         );
         this.#renderChunk(previousLoaded + 1, this.#loadedUntil);
-        this.#maybeWindow();
+        this.#updateWindow();
         this.#options.onChunkLoaded?.();
 
         if (this.#loadedUntil >= this.#entities.length - 1) {
@@ -337,6 +341,7 @@ export class VirtualCharacterList {
 
         this.#container.insertBefore(fragment, this.#sentinel);
         this.#measureRenderedRange(firstIndex, lastIndex);
+        this.#syncWindowBounds();
     }
 
     #createNode(index, recycledNode = this.#acquireNode()) {
@@ -373,51 +378,149 @@ export class VirtualCharacterList {
         );
     }
 
-    #maybeWindow() {
-        if (this.#rendered.length <= this.#maxDOMNodes) {
+    #updateWindow() {
+        if (!this.#rendered.length) {
             return;
         }
 
-        const scrollDirectionDown =
-			this.#container.scrollTop > this.#totalRemovedHeight;
-        if (!scrollDirectionDown) {
+        const viewTop = this.#container.scrollTop;
+        const viewBottom = viewTop + this.#container.clientHeight;
+        const bufferItems = Math.max(1, Math.floor(this.#maxDOMNodes / 4));
+        const firstVisible = this.#findIndexAtOffset(viewTop);
+        const lastVisible = this.#findIndexAtOffset(viewBottom);
+        const desiredStart = Math.max(0, firstVisible - bufferItems);
+        const desiredEnd = Math.min(this.#loadedUntil, lastVisible + bufferItems);
+
+        this.#prependRange(desiredStart);
+        this.#appendRange(desiredEnd);
+        this.#trimWindow(desiredStart, desiredEnd, firstVisible, lastVisible);
+        this.#syncWindowBounds();
+    }
+
+    #prependRange(desiredStart) {
+        const firstRendered = this.#rendered[0];
+        if (!firstRendered || desiredStart >= firstRendered.index) {
             return;
         }
 
-        const removeCount = Math.min(
-            this.#rendered.length - this.#maxDOMNodes + this.#options.chunkSize,
-            this.#rendered.length - this.#options.chunkSize,
-        );
-
-        if (removeCount <= 0) {
-            return;
-        }
-
-        const anchor = this.#rendered[removeCount];
-        const oldAnchorTop = anchor?.node.getBoundingClientRect().top ?? 0;
-        let removedHeight = 0;
-
-        for (let i = 0; i < removeCount; i++) {
-            const item = this.#rendered.shift();
-            if (!item) {
-                break;
+        const fragment = document.createDocumentFragment();
+        const newItems = [];
+        for (let index = desiredStart; index < firstRendered.index; index++) {
+            if (this.#renderedIndices.has(index)) {
+                continue;
             }
 
-            const height = this.#measureItem(item.index, item.node);
-            removedHeight += height;
-            this.#renderedIndices.delete(item.index);
-            item.node.remove();
-            this.#releaseNode(item.node);
+            const node = this.#createNode(index);
+            newItems.push({ index, node });
+            this.#renderedIndices.add(index);
+            fragment.append(node);
         }
 
-        this.#totalRemovedHeight += removedHeight;
-        this.#removedCount += removeCount;
+        if (!newItems.length) {
+            return;
+        }
+
+        this.#container.insertBefore(fragment, firstRendered.node);
+
+        let addedHeight = 0;
+        for (const item of newItems) {
+            addedHeight += this.#measureItem(item.index, item.node);
+        }
+
+        this.#totalRemovedHeight = Math.max(0, this.#totalRemovedHeight - addedHeight);
+        this.#removedCount = Math.max(0, this.#removedCount - newItems.length);
         this.#topSpacer.style.height = `${this.#totalRemovedHeight}px`;
+        this.#rendered.unshift(...newItems);
+    }
 
-        if (anchor) {
-            const newAnchorTop = anchor.node.getBoundingClientRect().top;
-            this.#container.scrollTop += newAnchorTop - oldAnchorTop;
+    #appendRange(desiredEnd) {
+        const lastRendered = this.#rendered.at(-1);
+        if (!lastRendered || desiredEnd <= lastRendered.index) {
+            return;
         }
+
+        this.#renderChunk(lastRendered.index + 1, desiredEnd);
+    }
+
+    #trimWindow(desiredStart, desiredEnd, firstVisible, lastVisible) {
+        while (
+            this.#rendered.length > 0 &&
+			this.#rendered[0].index < desiredStart
+        ) {
+            this.#removeTopItem();
+        }
+
+        while (
+            this.#rendered.length > 0 &&
+			this.#rendered.at(-1).index > desiredEnd
+        ) {
+            this.#removeBottomItem();
+        }
+
+        while (this.#rendered.length > this.#maxDOMNodes) {
+            const topDistance = Math.max(0, firstVisible - this.#rendered[0].index);
+            const bottomDistance = Math.max(
+                0,
+                this.#rendered.at(-1).index - lastVisible,
+            );
+
+            if (topDistance >= bottomDistance) {
+                this.#removeTopItem();
+            } else {
+                this.#removeBottomItem();
+            }
+        }
+
+        this.#topSpacer.style.height = `${this.#totalRemovedHeight}px`;
+    }
+
+    #removeTopItem() {
+        const item = this.#rendered.shift();
+        if (!item) {
+            return;
+        }
+
+        const height = this.#measureItem(item.index, item.node);
+        this.#totalRemovedHeight += height;
+        this.#removedCount++;
+        this.#renderedIndices.delete(item.index);
+        item.node.remove();
+        this.#releaseNode(item.node);
+    }
+
+    #removeBottomItem() {
+        const item = this.#rendered.pop();
+        if (!item) {
+            return;
+        }
+
+        this.#measureItem(item.index, item.node);
+        this.#renderedIndices.delete(item.index);
+        item.node.remove();
+        this.#releaseNode(item.node);
+    }
+
+    #syncWindowBounds() {
+        this.#windowStart = this.#rendered[0]?.index ?? 0;
+        this.#windowEnd = this.#rendered.at(-1)?.index ?? -1;
+    }
+
+    #findIndexAtOffset(offset) {
+        if (!this.#entities.length) {
+            return 0;
+        }
+
+        let cumulativeHeight = 0;
+        const maxIndex = Math.max(0, this.#loadedUntil);
+        for (let index = 0; index <= maxIndex; index++) {
+            const height = this.#knownHeights.get(index) || 80;
+            if (cumulativeHeight + height >= offset) {
+                return index;
+            }
+            cumulativeHeight += height;
+        }
+
+        return maxIndex;
     }
 
     #releaseAll() {
