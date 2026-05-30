@@ -88,12 +88,16 @@ function buildCharacterXmlBlock(character, fields) {
     return `${CHARACTER_OPEN_TAG}\n${fieldXml}\n${CHARACTER_CLOSE_TAG}`;
 }
 
-function buildCombinePrompt(prompt, characters, fields) {
+function buildCombinePrompt(prompt, characters, fields, nudge) {
     const payload = characters
         .map((character) => buildCharacterXmlBlock(character, fields))
         .join('\n\n');
 
-    return `${String(prompt ?? '').trim()}\n\nInput characters:\n${payload}`;
+    let result = `${String(prompt ?? '').trim()}\n\nInput characters:\n${payload}`;
+    if (nudge && String(nudge).trim()) {
+        result += `\n\nAdditional guidance: ${String(nudge).trim()}`;
+    }
+    return result;
 }
 
 function buildPostMergePrompt(prompt, mergedOutput) {
@@ -110,10 +114,8 @@ function normalizeConcurrency(value) {
     return Math.min(Math.floor(concurrency), MAX_CONCURRENCY);
 }
 
-function normalizeProcessingMode(value) {
-    return ['combined', 'parallel', 'serial'].includes(value)
-        ? value
-        : 'combined';
+function normalizeProcessingMode(_value) {
+    return 'parallel';
 }
 
 function normalizePostProcessMode(value) {
@@ -882,11 +884,12 @@ export class GroupCardJobManager {
     }
 
     /**
-	 * Creates a group card generation job and starts the placeholder runner.
+	 * Creates a group card generation job and optionally starts the runner.
 	 * @param {object} config Full job config from client.
+	 * @param {{autoStart?: boolean}} [options] Job creation options.
 	 * @returns {GroupCardJob}
 	 */
-    createJob(config) {
+    createJob(config, options = {}) {
         /** @type {GroupCardJob} */
         const job = {
             id: crypto.randomUUID(),
@@ -903,8 +906,78 @@ export class GroupCardJobManager {
         };
 
         this.jobs.set(job.id, job);
-        setImmediate(() => this.runJob(job.id));
+        if (options.autoStart !== false) {
+            setImmediate(() => this.runJob(job.id));
+        }
         return job;
+    }
+
+    /**
+	 * Creates and starts a regen job for a subset of characters.
+	 * @param {object} config Job config with characters, prompt, nudges, fields, concurrency, llm.
+	 * @returns {Promise<{ jobId: string, job: GroupCardJob }>} Created job.
+	 */
+    async createRegenJob(config) {
+        const validatedConfig = {
+            ...(config && typeof config === 'object' ? config : {}),
+            processingMode: 'parallel',
+            concurrency: normalizeConcurrency(config?.concurrency),
+            characters: Array.isArray(config?.characters)
+                ? config.characters.filter(
+                    (character) => character && typeof character === 'object',
+                )
+                : [],
+            fields: normalizeSelectedFields(config?.fields),
+            llm: config?.llm ?? {},
+            nudges: config?.nudges ?? {},
+        };
+
+        const job = this.createJob(validatedConfig, { autoStart: false });
+
+        // Run in background — don't await.
+        this.runRegenJob(job.id, validatedConfig).catch((error) => {
+            if (job.abortController?.signal.aborted) return;
+            job.status = 'failed';
+            job.error = error?.message ?? String(error);
+            this.emitEvent(job.id, 'job_failed', { error: job.error });
+            setTimeout(() => this.closeSseClients(job), 50);
+        });
+
+        return { jobId: job.id, job };
+    }
+
+    /**
+	 * Runs a regen job — generates only the requested characters.
+	 * @param {string} jobId Job ID.
+	 * @param {object} config Validated config.
+	 * @returns {Promise<void>}
+	 */
+    async runRegenJob(jobId, config) {
+        const job = this.getJob(jobId);
+        if (!job || job.status !== 'pending') return;
+
+        job.status = 'running';
+        job.progress = { step: 'started' };
+        this.emitEvent(jobId, 'job_started', { id: jobId });
+
+        try {
+            await this.generateIndividualMode(job, config, config.concurrency);
+
+            job.progress = { step: 'completed' };
+            job.status = 'completed';
+            this.emitEvent(jobId, 'job_completed', job.results);
+            setTimeout(() => this.closeSseClients(job), 50);
+        } catch (error) {
+            if (job.abortController?.signal.aborted) {
+                this.closeSseClients(job);
+                return;
+            }
+
+            job.status = 'failed';
+            job.error = error?.message ?? String(error);
+            this.emitEvent(jobId, 'job_failed', { error: job.error });
+            setTimeout(() => this.closeSseClients(job), 50);
+        }
     }
 
     /**
@@ -1180,43 +1253,7 @@ export class GroupCardJobManager {
 	 * @returns {Promise<string>} Generated and validated description.
 	 */
     async generateDescription(job, config) {
-        switch (config.processingMode) {
-            case 'parallel':
-                return this.generateIndividualMode(job, config, config.concurrency);
-            case 'serial':
-                return this.generateIndividualMode(job, config, 1);
-            case 'combined':
-            default:
-                return this.generateCombinedMode(job, config);
-        }
-    }
-
-    /**
-	 * @param {GroupCardJob} job Job object.
-	 * @param {object} config Validated config.
-	 * @returns {Promise<string>} Generated description.
-	 */
-    async generateCombinedMode(job, config) {
-        job.progress = { step: 'merge' };
-        this.emitEvent(job.id, 'merge_started', { mode: 'combined' });
-
-        const output = await withRetries(
-            () =>
-                callLlmApi(
-                    config.llm,
-                    buildCombinePrompt(config.prompt, config.characters, config.fields),
-                    job.abortController?.signal,
-                ),
-            job.abortController?.signal,
-        );
-        const validatedOutput = validateGeneratedGroupCardDescription(
-            output,
-            config.characters.length,
-        );
-        job.results.combinedOutput = validatedOutput;
-
-        this.emitEvent(job.id, 'merge_completed', { output: validatedOutput });
-        return validatedOutput;
+        return this.generateIndividualMode(job, config, config.concurrency);
     }
 
     /**
@@ -1231,7 +1268,7 @@ export class GroupCardJobManager {
         job.results.characterOutputs = [];
 
         this.emitEvent(job.id, 'merge_started', {
-            mode: concurrency === 1 ? 'serial' : 'parallel',
+            mode: 'parallel',
             concurrency,
         });
 
@@ -1248,11 +1285,13 @@ export class GroupCardJobManager {
 
             try {
                 const charPrompt = config.parallelPrompt || config.prompt;
+                const nudge =
+					config.nudges?.[index] ?? config.nudges?.[String(index)] ?? '';
                 const output = await withRetries(
                     () =>
                         callLlmApi(
                             config.llm,
-                            buildCombinePrompt(charPrompt, [character], config.fields),
+                            buildCombinePrompt(charPrompt, [character], config.fields, nudge),
                             signal,
                         ),
                     signal,

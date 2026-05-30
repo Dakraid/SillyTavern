@@ -372,7 +372,6 @@ export const power_user = {
     group_card_combine_prompt: DEFAULT_GROUP_CARD_COMBINE_PROMPT,
     group_card_combine_prompt_presets: [],
     group_card_combine_included_fields: ['personality'],
-    group_card_processing_mode: 'parallel',
     group_card_parallel_concurrency: 10,
     group_card_post_merge_enabled: true,
     group_card_post_merge_prompt: DEFAULT_POST_MERGE_PROMPT,

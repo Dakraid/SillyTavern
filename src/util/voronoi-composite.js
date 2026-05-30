@@ -45,23 +45,23 @@ export async function generateVoronoiComposite(
     }
 
     const width =
-		typeof options.width === 'number' &&
-		Number.isFinite(options.width) &&
-		options.width > 0
-		    ? Math.round(options.width)
-		    : DEFAULT_WIDTH;
+        typeof options.width === 'number' &&
+        Number.isFinite(options.width) &&
+        options.width > 0
+            ? Math.round(options.width)
+            : DEFAULT_WIDTH;
     const height =
-		typeof options.height === 'number' &&
-		Number.isFinite(options.height) &&
-		options.height > 0
-		    ? Math.round(options.height)
-		    : DEFAULT_HEIGHT;
+        typeof options.height === 'number' &&
+        Number.isFinite(options.height) &&
+        options.height > 0
+            ? Math.round(options.height)
+            : DEFAULT_HEIGHT;
     const cropOptions = normalizeCropOptions(options);
     const offsets = normalizeOffsets(options.offsets, avatarPaths.length);
     const seed =
-		typeof options.seed === 'number' && Number.isFinite(options.seed)
-		    ? Math.round(options.seed)
-		    : null;
+        typeof options.seed === 'number' && Number.isFinite(options.seed)
+            ? Math.round(options.seed)
+            : null;
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
@@ -194,17 +194,17 @@ export async function generateGridComposite(
     }
 
     const width =
-		typeof options.width === 'number' &&
-		Number.isFinite(options.width) &&
-		options.width > 0
-		    ? Math.round(options.width)
-		    : DEFAULT_WIDTH;
+        typeof options.width === 'number' &&
+        Number.isFinite(options.width) &&
+        options.width > 0
+            ? Math.round(options.width)
+            : DEFAULT_WIDTH;
     const height =
-		typeof options.height === 'number' &&
-		Number.isFinite(options.height) &&
-		options.height > 0
-		    ? Math.round(options.height)
-		    : DEFAULT_HEIGHT;
+        typeof options.height === 'number' &&
+        Number.isFinite(options.height) &&
+        options.height > 0
+            ? Math.round(options.height)
+            : DEFAULT_HEIGHT;
     const cropOptions = normalizeCropOptions(options);
     const offsets = normalizeOffsets(options.offsets, avatarPaths.length);
     const cellAspect = normalizeCellAspect(options.cellAspect);
@@ -315,12 +315,12 @@ function normalizeCropOptions(options = {}) {
         ? options.cropStrategy
         : DEFAULT_CROP_STRATEGY;
     const cropPadding =
-		typeof options.cropPadding === 'number' &&
-		Number.isFinite(options.cropPadding) &&
-		options.cropPadding >= 0 &&
-		options.cropPadding <= MAX_CROP_PADDING
-		    ? options.cropPadding
-		    : DEFAULT_CROP_PADDING;
+        typeof options.cropPadding === 'number' &&
+        Number.isFinite(options.cropPadding) &&
+        options.cropPadding >= 0 &&
+        options.cropPadding <= MAX_CROP_PADDING
+            ? options.cropPadding
+            : DEFAULT_CROP_PADDING;
 
     return { cropStrategy, cropPadding };
 }
@@ -337,8 +337,8 @@ function normalizeOffset(offset) {
     const scale = Number(offset?.scale);
 
     return {
-        x: Number.isFinite(x) ? clamp(Math.round(x), -100, 100) : 0,
-        y: Number.isFinite(y) ? clamp(Math.round(y), -100, 100) : 0,
+        x: Number.isFinite(x) ? clamp(Math.round(x), -1000, 1000) : 0,
+        y: Number.isFinite(y) ? clamp(Math.round(y), -1000, 1000) : 0,
         scale: Number.isFinite(scale) ? clamp(Math.round(scale), 50, 200) : 100,
     };
 }
@@ -353,8 +353,8 @@ function normalizeCellAspect(cellAspect) {
     }
 
     return typeof cellAspect === 'number' &&
-		Number.isFinite(cellAspect) &&
-		cellAspect > 0
+        Number.isFinite(cellAspect) &&
+        cellAspect > 0
         ? cellAspect
         : 9 / 16;
 }
@@ -408,10 +408,10 @@ async function applyAvatarOffset(imageBuffer, width, height, offset) {
             .toBuffer();
     }
 
-    const canvasLeft = clamp(x, 0, width);
-    const canvasTop = clamp(y, 0, height);
-    const canvasRight = clamp(x + transformedWidth, 0, width);
-    const canvasBottom = clamp(y + transformedHeight, 0, height);
+    const canvasLeft = Math.max(0, x);
+    const canvasTop = Math.max(0, y);
+    const canvasRight = Math.min(width, x + transformedWidth);
+    const canvasBottom = Math.min(height, y + transformedHeight);
     const visibleWidth = canvasRight - canvasLeft;
     const visibleHeight = canvasBottom - canvasTop;
 
@@ -584,7 +584,7 @@ function mulberry32(seed) {
  */
 function generateSeedPoints(count, width, height, seed) {
     const rng =
-		seed !== null && seed !== undefined ? mulberry32(seed) : Math.random;
+        seed !== null && seed !== undefined ? mulberry32(seed) : Math.random;
     const minDist = Math.sqrt((width * height) / (count * Math.PI)) * 0.5;
     const padding = minDist * 0.3;
     /** @type {Array<[number, number]>} */

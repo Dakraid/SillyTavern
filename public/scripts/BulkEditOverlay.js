@@ -2136,27 +2136,10 @@ class BulkEditOverlay {
                             </div>
                         </div>
                         <div class="field-group">
-                            <small>Processing mode</small>
-                            <div id="bulk_combine_group_card_mode" class="mode-selector">
-                                <label class="checkbox_label">
-                                    <input type="radio" name="bulk_combine_mode" value="combined" />
-                                    <span>Combined</span>
-                                </label>
-                                <label class="checkbox_label">
-                                    <input type="radio" name="bulk_combine_mode" value="parallel" />
-                                    <span>Parallel</span>
-                                </label>
-                                <label class="checkbox_label">
-                                    <input type="radio" name="bulk_combine_mode" value="serial" />
-                                    <span>Serial</span>
-                                </label>
-                            </div>
-                            <div id="bulk_combine_group_card_concurrency_container" class="field-group" style="display:none;">
-                                <label for="bulk_combine_group_card_concurrency" class="text_label">
-                                    <span>Max concurrency</span>
-                                    <input id="bulk_combine_group_card_concurrency" class="text_pole" type="number" min="1" max="50" value="10" style="width:80px;" />
-                                </label>
-                            </div>
+                            <label for="bulk_combine_group_card_concurrency" class="text_label">
+                                <span>Max concurrency</span>
+                                <input id="bulk_combine_group_card_concurrency" class="text_pole" type="number" min="1" max="50" value="10" style="width:80px;" />
+                            </label>
                         </div>
                         <div class="field-group">
                             <small>Avatar layout & crop</small>
@@ -2363,7 +2346,6 @@ class BulkEditOverlay {
             selectedCharacters,
             Boolean(config.createLorebook || config.dynamicLorebook),
             config.fields,
-            config.processingMode,
             config.concurrency,
             // Initial generation stops at per-character outputs.
             // Stage 3 applies post-processing after review.
@@ -2730,9 +2712,35 @@ class BulkEditOverlay {
                 $('<div></div>').addClass('menu_button edit-btn').text('Edit'),
             );
             card.append(actions);
+            const nudgeToggle = $('<div></div>')
+                .addClass('menu_button nudge-toggle')
+                .text('Nudge');
+            const nudgeArea = $('<div></div>')
+                .addClass('nudge-area')
+                .css('display', 'none');
+            nudgeArea.append(
+                $('<textarea></textarea>')
+                    .addClass('text_pole nudge-prompt')
+                    .attr('rows', '2')
+                    .attr('placeholder', 'Optional nudge prompt for regeneration...'),
+            );
+            nudgeToggle.on('click', () => {
+                nudgeArea.toggle();
+                nudgeToggle.text(nudgeArea.is(':visible') ? 'Hide Nudge' : 'Nudge');
+            });
+            card.append(nudgeToggle);
+            card.append(nudgeArea);
             cards.append(card);
         });
 
+        content.append(
+            $('<style></style>').text(`
+                .result-card.regenerating { opacity: 0.75; }
+                .result-card .nudge-toggle { margin-top: 0.5em; }
+                .result-card .nudge-area { margin-top: 0.5em; }
+                .result-card .nudge-prompt { width: 100%; }
+            `),
+        );
         content.append(cards);
         const successful = wizardState.characterOutputs
             .filter(Boolean)
@@ -2875,12 +2883,213 @@ class BulkEditOverlay {
         try {
             const sourceCharacters =
 				BulkEditOverlay.#getWizardSourceCharacters(wizardState);
-            for (const outputIndex of checkedIndexes) {
+            const setRegenButtonsDisabled = (disabled) => {
+                popupContent
+                    .find('#bulk_combine_regen_selected, #bulk_combine_regen_failed')
+                    .toggleClass('disabled', disabled)
+                    .css('pointer-events', disabled ? 'none' : '')
+                    .attr('aria-disabled', String(disabled));
+            };
+            setRegenButtonsDisabled(true);
+
+            if (BulkEditOverlay.#canUseServerGroupCardJob()) {
+                let jobEventSource = null;
+                let jobId = '';
+                const regenItems = checkedIndexes
+                    .map((outputIndex) => {
+                        const oldOutput = wizardState.characterOutputs[outputIndex];
+                        return {
+                            outputIndex,
+                            character:
+								sourceCharacters[oldOutput?.characterIndex ?? outputIndex],
+                        };
+                    })
+                    .filter((item) => item.character);
+                const regenOutputIndexes = regenItems.map((item) => item.outputIndex);
+                const regenCharacters = regenItems.map((item) => item.character);
+                if (!regenCharacters.length) {
+                    throw new Error('No source characters found for selected output.');
+                }
+                const nudges = {};
+                regenOutputIndexes.forEach((outputIndex, regenIndex) => {
+                    const nudge = String(
+                        popupContent
+                            .find(`.result-card[data-index="${outputIndex}"] .nudge-prompt`)
+                            .val() ?? '',
+                    ).trim();
+                    if (nudge) {
+                        nudges[String(regenIndex)] = nudge;
+                    }
+                });
+                const response = await sendJsonRequest(
+                    '/api/characters/group-card-job/regen',
+                    {
+                        characters: regenCharacters,
+                        prompt: wizardState.config.prompt,
+                        nudges,
+                        fields: wizardState.config.fields,
+                        concurrency: wizardState.config.concurrency,
+                        llm: BulkEditOverlay.#getGroupCardJobLlmConfig(),
+                    },
+                );
+                await throwIfNotOk(
+                    response,
+                    'Failed to start server-side regeneration.',
+                );
+                const data = await response.json();
+                jobId = String(data.jobId ?? data.id ?? '');
+                if (!jobId) {
+                    throw new Error('Server did not return a regeneration job ID.');
+                }
+                sessionStorage.setItem(GROUP_CARD_JOB_SESSION_KEY, jobId);
+
+                const SSE_TIMEOUT_MS = 10 * 60 * 1000;
+                await new Promise((resolve, reject) => {
+                    let settled = false;
+                    let reconnectNotified = false;
+                    const parseEvent = (event) => JSON.parse(event.data || '{}');
+                    const updateCardStatus = (originalIndex, status, regenerating) => {
+                        const card = popupContent.find(
+                            `.result-card[data-index="${originalIndex}"]`,
+                        );
+                        card.toggleClass('regenerating', regenerating);
+                        card.find('.status').text(status);
+                    };
+                    const timeoutId = setTimeout(() => {
+                        if (settled) {
+                            return;
+                        }
+                        settled = true;
+                        jobEventSource?.close();
+                        sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                        BulkEditOverlay.#removeGroupCardJob(jobId);
+                        void BulkEditOverlay.#cancelGroupCardJob(jobId);
+                        reject(new Error('Regeneration timed out.'));
+                    }, SSE_TIMEOUT_MS);
+                    const settle = (callback) => {
+                        if (settled) {
+                            return;
+                        }
+                        settled = true;
+                        clearTimeout(timeoutId);
+                        sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                        BulkEditOverlay.#removeGroupCardJob(jobId);
+                        jobEventSource?.close();
+                        callback();
+                    };
+
+                    jobEventSource = new EventSource(
+                        `/api/characters/group-card-job/${encodeURIComponent(jobId)}/events`,
+                    );
+                    jobEventSource.addEventListener('character_started', (event) => {
+                        const eventData = parseEvent(event);
+                        const regenIndex = Number(eventData.index ?? 0);
+                        const originalIndex = regenOutputIndexes[regenIndex];
+                        if (Number.isInteger(originalIndex)) {
+                            updateCardStatus(originalIndex, '🔄', true);
+                        }
+                    });
+                    jobEventSource.addEventListener('character_completed', (event) => {
+                        const eventData = parseEvent(event);
+                        const regenIndex = Number(eventData.index ?? 0);
+                        const originalIndex = regenOutputIndexes[regenIndex];
+                        if (!Number.isInteger(originalIndex)) {
+                            return;
+                        }
+                        const oldOutput = wizardState.characterOutputs[originalIndex];
+                        const character =
+							sourceCharacters[oldOutput?.characterIndex ?? originalIndex] ??
+							{};
+                        wizardState.characterOutputs[originalIndex] =
+							BulkEditOverlay.#normalizeWizardCharacterOutput({
+							    characterIndex: oldOutput?.characterIndex ?? originalIndex,
+							    characterName: String(
+							        eventData.name ??
+										getCoreCharacterField(character, 'name') ??
+										`Character ${originalIndex + 1}`,
+							    ),
+							    xmlOutput: String(eventData.output ?? ''),
+							});
+                        const card = popupContent.find(
+                            `.result-card[data-index="${originalIndex}"]`,
+                        );
+                        card
+                            .find('.xml')
+                            .val(wizardState.characterOutputs[originalIndex].xmlOutput);
+                        updateCardStatus(originalIndex, '✅', false);
+                    });
+                    jobEventSource.addEventListener('character_failed', (event) => {
+                        const eventData = parseEvent(event);
+                        const regenIndex = Number(eventData.index ?? 0);
+                        const originalIndex = regenOutputIndexes[regenIndex];
+                        if (!Number.isInteger(originalIndex)) {
+                            return;
+                        }
+                        const oldOutput = wizardState.characterOutputs[originalIndex];
+                        const character =
+							sourceCharacters[oldOutput?.characterIndex ?? originalIndex] ??
+							{};
+                        wizardState.characterOutputs[originalIndex] =
+							BulkEditOverlay.#normalizeWizardCharacterOutput({
+							    characterIndex: oldOutput?.characterIndex ?? originalIndex,
+							    characterName: String(
+							        eventData.name ??
+										getCoreCharacterField(character, 'name') ??
+										`Character ${originalIndex + 1}`,
+							    ),
+							    xmlOutput: '',
+							    parseStatus: 'error',
+							    error: String(eventData.error ?? 'Generation failed.'),
+							});
+                        const card = popupContent.find(
+                            `.result-card[data-index="${originalIndex}"]`,
+                        );
+                        card
+                            .find('.xml')
+                            .val(wizardState.characterOutputs[originalIndex].error);
+                        updateCardStatus(originalIndex, '❌', false);
+                    });
+                    jobEventSource.addEventListener('job_completed', () => {
+                        settle(() => resolve());
+                    });
+                    jobEventSource.addEventListener('job_failed', (event) => {
+                        const eventData = parseEvent(event);
+                        settle(() =>
+                            reject(
+                                new Error(
+                                    eventData.error || 'Server-side regeneration failed.',
+                                ),
+                            ),
+                        );
+                    });
+                    jobEventSource.onerror = () => {
+                        if (jobEventSource.readyState === EventSource.CLOSED || settled) {
+                            return;
+                        }
+                        if (reconnectNotified) {
+                            return;
+                        }
+                        reconnectNotified = true;
+                        toastr.info(
+                            'Connection lost. Reconnecting to regeneration job…',
+                            'Combine into Group Card',
+                        );
+                    };
+                });
+                BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                toastr.success(
+                    'Regenerated selected output.',
+                    'Combine into Group Card',
+                );
+                return;
+            }
+
+            const tasks = checkedIndexes.map(async (outputIndex) => {
                 const oldOutput = wizardState.characterOutputs[outputIndex];
                 const character =
 					sourceCharacters[oldOutput?.characterIndex ?? outputIndex];
                 if (!character) {
-                    continue;
+                    return;
                 }
                 const quiet_prompt = buildGroupCardCombineQuietPrompt(
                     wizardState.config.prompt,
@@ -2902,7 +3111,8 @@ class BulkEditOverlay {
 					    xmlOutput: validated,
 					    parseStatus: 'ok',
 					});
-            }
+            });
+            await Promise.all(tasks);
             BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
             toastr.success('Regenerated selected output.', 'Combine into Group Card');
         } catch (error) {
@@ -2913,6 +3123,11 @@ class BulkEditOverlay {
             );
         } finally {
             BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
+            popupContent
+                .find('#bulk_combine_regen_selected, #bulk_combine_regen_failed')
+                .removeClass('disabled')
+                .css('pointer-events', '')
+                .attr('aria-disabled', 'false');
         }
     };
 
@@ -3290,7 +3505,7 @@ class BulkEditOverlay {
                         .append(`${axis.toUpperCase()}: `)
                         .append(
                             $(
-                                `<input type="range" class="offset-${axis}" min="-100" max="100" />`,
+                                `<input type="range" class="offset-${axis}" min="-1000" max="1000" />`,
                             ).val(String(offset[axis] ?? 0)),
                         )
                         .append(
@@ -3323,7 +3538,7 @@ class BulkEditOverlay {
         content
             .find('#bulk_combine_review_source_summary')
             .text(
-                `Source: ${sourceCharacters.length} characters | Mode: ${wizardState.config?.processingMode ?? 'parallel'} | Fields: ${(wizardState.config?.fields ?? []).join(', ')}`,
+                `Source: ${sourceCharacters.length} characters | Fields: ${(wizardState.config?.fields ?? []).join(', ')}`,
             );
         content
             .find('#bulk_combine_avatar_offsets input[type="range"]')
@@ -4228,7 +4443,6 @@ class BulkEditOverlay {
 	 */
     static #handleCombineWizardStage1Next = async (popupContent, wizardState) => {
         const promptInput = popupContent.find('#bulk_combine_group_card_prompt');
-        const modeInputs = popupContent.find('input[name="bulk_combine_mode"]');
         const concurrencyInput = popupContent.find(
             '#bulk_combine_group_card_concurrency',
         );
@@ -4263,14 +4477,6 @@ class BulkEditOverlay {
             return;
         }
 
-        const selectedMode = String(
-            modeInputs.filter(':checked').val() ?? 'parallel',
-        );
-        const processingMode = ['combined', 'parallel', 'serial'].includes(
-            selectedMode,
-        )
-            ? selectedMode
-            : 'parallel';
         const parsedConcurrency = Number(concurrencyInput.val());
         const concurrency = Number.isFinite(parsedConcurrency)
             ? Math.max(1, Math.min(50, Math.round(parsedConcurrency)))
@@ -4341,7 +4547,6 @@ class BulkEditOverlay {
 
         power_user.group_card_combine_prompt = prompt;
         power_user.group_card_combine_included_fields = selectedOptionalFields;
-        power_user.group_card_processing_mode = processingMode;
         power_user.group_card_parallel_concurrency = concurrency;
         power_user.group_card_crop_strategy = cropStrategy;
         power_user.group_card_crop_padding = cropPadding;
@@ -4359,7 +4564,6 @@ class BulkEditOverlay {
             minifySingleLine,
             fields: selectedFields,
             selectedOptionalFields,
-            processingMode,
             concurrency,
             postMergeEnabled,
             postMergePrompt,
@@ -4425,7 +4629,6 @@ class BulkEditOverlay {
             config: {
                 groupName: wizardState.config?.groupName,
                 prompt: wizardState.config?.prompt,
-                processingMode: wizardState.config?.processingMode,
                 concurrency: wizardState.config?.concurrency,
                 cropStrategy: wizardState.config?.cropStrategy,
                 cropPadding: wizardState.config?.cropPadding,
@@ -4649,10 +4852,6 @@ class BulkEditOverlay {
                 const minifySingleLineLabel = popupContent.find(
                     '#bulk_combine_minify_single_line_label',
                 );
-                const modeInputs = popupContent.find('input[name="bulk_combine_mode"]');
-                const concurrencyContainer = popupContent.find(
-                    '#bulk_combine_group_card_concurrency_container',
-                );
                 const concurrencyInput = popupContent.find(
                     '#bulk_combine_group_card_concurrency',
                 );
@@ -4681,14 +4880,6 @@ class BulkEditOverlay {
 						power_user.group_card_combine_prompt ??
 						DEFAULT_GROUP_CARD_COMBINE_PROMPT,
                 );
-                const persistedMode = ['combined', 'parallel', 'serial'].includes(
-                    wizardState.config?.processingMode ??
-						power_user.group_card_processing_mode,
-                )
-                    ? (wizardState.config?.processingMode ??
-						power_user.group_card_processing_mode)
-                    : 'parallel';
-                modeInputs.filter(`[value="${persistedMode}"]`).prop('checked', true);
                 concurrencyInput.val(
                     Number.isFinite(
                         Number(
@@ -4702,8 +4893,6 @@ class BulkEditOverlay {
                         )
                         : '10',
                 );
-                concurrencyContainer.toggle(persistedMode === 'parallel');
-
                 cropStrategySelect.val(
                     ['attention', 'entropy', 'center', 'top', 'face'].includes(
                         wizardState.config?.cropStrategy ??
@@ -5021,7 +5210,6 @@ class BulkEditOverlay {
 	 * @param {Array<object>} selectedCharacters Source characters.
 	 * @param {boolean} createLorebook Whether to create lorebook.
 	 * @param {Array<string>} fields Included fields.
-	 * @param {string} processingMode Processing mode.
 	 * @param {number} concurrency Parallel concurrency.
 	 * @param {boolean} postMergeEnabled Whether post-merge runs.
 	 * @param {string} postMergePrompt Post-merge prompt.
@@ -5039,7 +5227,6 @@ class BulkEditOverlay {
         selectedCharacters,
         createLorebook,
         fields,
-        processingMode,
         concurrency,
         postMergeEnabled,
         postMergePrompt,
@@ -5062,7 +5249,7 @@ class BulkEditOverlay {
             avatar: character?.avatar ?? '',
         })),
         fields,
-        processingMode,
+        processingMode: 'parallel',
         concurrency,
         postMergeEnabled,
         postMergePrompt,
@@ -5378,8 +5565,8 @@ class BulkEditOverlay {
             false,
             validatedDescription,
             null,
-            false,
-            false,
+            wizardState.config?.minify ?? false,
+            wizardState.config?.minifySingleLine ?? false,
         );
 
         try {
@@ -5440,7 +5627,6 @@ class BulkEditOverlay {
 	 * @param {Array<object>} selectedCharacters Valid selected characters.
 	 * @param {boolean} [createLorebook] Whether to create and link a lorebook.
 	 * @param {Array<string>} [fields] Included core fields.
-	 * @param {string} [processingMode] Processing mode.
 	 * @param {number} [concurrency] Parallel concurrency.
 	 * @param {boolean} [postMergeEnabled] Whether to run post-merge.
 	 * @param {string} [postMergePrompt] Post-merge prompt.
@@ -5454,7 +5640,6 @@ class BulkEditOverlay {
         selectedCharacters,
         createLorebook = true,
         fields,
-        processingMode = 'parallel',
         concurrency = 10,
         postMergeEnabled = true,
         postMergePrompt = DEFAULT_POST_MERGE_PROMPT,
@@ -5479,7 +5664,6 @@ class BulkEditOverlay {
             selectedCharacters,
             createLorebook,
             fields,
-            processingMode,
             concurrency,
             postMergeEnabled,
             postMergePrompt,
