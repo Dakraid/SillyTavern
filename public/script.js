@@ -191,6 +191,9 @@ import {
     clamp,
     shakeElement,
     createTimeout,
+    PAGINATION_TEMPLATE,
+    renderPaginationDropdown,
+    paginationDropdownChangeHandler,
 } from './scripts/utils.js';
 import {
     debounce_timeout,
