@@ -19,6 +19,8 @@ import {
     main_api,
     amount_gen,
     max_context,
+    getVirtualCharacterList,
+    getEntitiesList,
 } from '../script.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
@@ -1454,6 +1456,11 @@ class BulkEditOverlay {
     #stateChangeCallbacks = [];
     #selectedCharacters = [];
     #bulkTagPopupHandler = new BulkTagPopupHandler();
+    #chunkLoadHandler = () => {
+        if (this.state === BulkEditOverlayState.select) {
+            this.#rebindVisibleElements();
+        }
+    };
 
     /**
 	 * @typedef {object} LastSelected - An object noting the last selected character and its state.
@@ -1542,6 +1549,7 @@ class BulkEditOverlay {
             event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER,
             this.handleStateChange,
         );
+        eventSource.on(event_types.CHARACTER_PAGE_LOADED, this.#chunkLoadHandler);
         bulkEditOverlayInstance = Object.freeze(this);
     }
 
@@ -1559,7 +1567,9 @@ class BulkEditOverlay {
 	 * Set up a Sortable grid for the loaded page
 	 */
     onPageLoad = () => {
-        this.browseState();
+        if (this.state !== BulkEditOverlayState.select) {
+            this.browseState();
+        }
 
         const elements = this.#getEnabledElements();
         elements.forEach((element) =>
@@ -1754,6 +1764,43 @@ class BulkEditOverlay {
         ...this.container.getElementsByClassName(BulkEditOverlay.bogusFolderClass),
     ];
 
+    #rebindVisibleElements() {
+        const elements = this.#getEnabledElements();
+        elements.forEach((element) => {
+            if (!element._bulkEditBound) {
+                element._bulkEditBound = true;
+                element.addEventListener('click', this.toggleCharacterSelected);
+                element.addEventListener('touchstart', this.handleHold);
+                element.addEventListener('mousedown', this.handleHold);
+                element.addEventListener('contextmenu', this.handleDefaultContextMenu);
+                element.addEventListener('touchend', this.handleLongPressEnd);
+                element.addEventListener('mouseup', this.handleLongPressEnd);
+                element.addEventListener('dragend', this.handleLongPressEnd);
+                element.addEventListener('touchmove', this.handleLongPressEnd);
+            }
+        });
+
+        this.container.querySelectorAll('.character_select').forEach((element) => {
+            if (!element.querySelector('.bulk_select_checkbox')) {
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.className = 'bulk_select_checkbox';
+                checkbox.addEventListener('click', (event) =>
+                    event.stopImmediatePropagation(),
+                );
+                element.prepend(checkbox);
+            }
+        });
+
+        const vcl = getVirtualCharacterList();
+        if (vcl) {
+            vcl.applySelectionState(
+                this.selectedCharacters,
+                BulkEditOverlay.selectedClass,
+            );
+        }
+    }
+
     toggleCharacterSelected = (event) => {
         event.stopPropagation();
 
@@ -1855,44 +1902,63 @@ class BulkEditOverlay {
         const currentCharacterId = Number(
             currentCharacter.getAttribute('data-chid'),
         );
-        const characters = Array.from(
-            document.querySelectorAll(
-                '#' +
-					BulkEditOverlay.containerId +
-					' .' +
-					BulkEditOverlay.characterClass,
-            ),
+        const vcl = getVirtualCharacterList();
+        const entities = vcl
+            ? vcl.getEntities()
+            : getEntitiesList({ doFilter: true });
+
+        const lastIndex = entities.findIndex(
+            (entity) =>
+                entity.type === 'character' &&
+				entity.id === this.lastSelected.characterId,
+        );
+        const currentIndex = entities.findIndex(
+            (entity) =>
+                entity.type === 'character' && entity.id === currentCharacterId,
         );
 
-        const startIndex = characters.findIndex(
-            (c) =>
-                Number(c.getAttribute('data-chid')) ===
-				Number(this.lastSelected.characterId),
-        );
-        const endIndex = characters.findIndex(
-            (c) => Number(c.getAttribute('data-chid')) === currentCharacterId,
-        );
+        if (lastIndex === -1 || currentIndex === -1) return;
 
-        for (
-            let i = Math.min(startIndex, endIndex);
-            i <= Math.max(startIndex, endIndex);
-            i++
-        ) {
-            const character = characters[i];
-            const characterId = Number(character.getAttribute('data-chid'));
+        const [start, end] = [
+            Math.min(lastIndex, currentIndex),
+            Math.max(lastIndex, currentIndex),
+        ];
+
+        for (let i = start; i <= end; i++) {
+            const entity = entities[i];
+            if (entity.type !== 'character') continue;
+
+            const characterId = entity.id;
             const isCharacterSelected = this.selectedCharacters.includes(characterId);
 
-            // Only toggle the character if it wasn't on the state we have are toggling towards.
-            // Also doing a weird type check, because typescript checker doesn't like the return of 'querySelectorAll'.
             if (
-                ((select && !isCharacterSelected) ||
-					(!select && isCharacterSelected)) &&
-				character instanceof HTMLElement
+                (select && !isCharacterSelected) ||
+				(!select && isCharacterSelected)
             ) {
-                this.toggleSingleCharacter(character, {
-                    markState: currentCharacterId == characterId,
-                });
+                const character = this.container.querySelector(
+                    `[data-chid="${characterId}"]`,
+                );
+                if (character instanceof HTMLElement) {
+                    this.toggleSingleCharacter(character, {
+                        markState: currentCharacterId === characterId,
+                    });
+                } else if (select) {
+                    this.#selectedCharacters.push(characterId);
+                } else {
+                    this.#selectedCharacters = this.#selectedCharacters.filter(
+                        (id) => id !== characterId,
+                    );
+                }
             }
+        }
+
+        this.updateSelectedCount();
+
+        if (vcl) {
+            vcl.applySelectionState(
+                this.selectedCharacters,
+                BulkEditOverlay.selectedClass,
+            );
         }
     };
 

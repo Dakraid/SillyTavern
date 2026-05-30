@@ -1,5 +1,9 @@
-import { characterGroupOverlay } from '../script.js';
-import { BulkEditOverlay, BulkEditOverlayState, CharacterContextMenu } from './BulkEditOverlay.js';
+import { characterGroupOverlay, getVirtualCharacterList } from '../script.js';
+import {
+    BulkEditOverlay,
+    BulkEditOverlayState,
+    CharacterContextMenu,
+} from './BulkEditOverlay.js';
 import { event_types, eventSource } from './events.js';
 
 let is_bulk_edit = false;
@@ -43,24 +47,37 @@ function onEditButtonClick() {
  */
 function onSelectAllButtonClick() {
     console.log('Bulk select all button clicked');
-    const characters = Array.from(document.querySelectorAll('#' + BulkEditOverlay.containerId + ' .' + BulkEditOverlay.characterClass));
-    let atLeastOneSelected = false;
-    for (const character of characters) {
-        const checked = $(character).find('.bulk_select_checkbox:checked').length > 0;
-        if (!checked && character instanceof HTMLElement) {
-            characterGroupOverlay.toggleSingleCharacter(character);
-            atLeastOneSelected = true;
+    const vcl = getVirtualCharacterList();
+    const entities = vcl ? vcl.getEntities() : [];
+    const allCharacterIds = entities
+        .filter((entity) => entity.type === 'character')
+        .map((entity) => entity.id);
+    const selectedSet = new Set(characterGroupOverlay.selectedCharacters);
+    const allSelected = allCharacterIds.every((id) => selectedSet.has(id));
+
+    if (allSelected) {
+        characterGroupOverlay.selectedCharacters.splice(
+            0,
+            characterGroupOverlay.selectedCharacters.length,
+            ...characterGroupOverlay.selectedCharacters.filter(
+                (id) => !allCharacterIds.includes(id),
+            ),
+        );
+    } else {
+        for (const id of allCharacterIds) {
+            if (!selectedSet.has(id)) {
+                characterGroupOverlay.selectedCharacters.push(id);
+            }
         }
     }
 
-    if (!atLeastOneSelected) {
-        // If none was selected, trigger click on all to deselect all of them
-        for (const character of characters) {
-            const checked = $(character).find('.bulk_select_checkbox:checked') ?? false;
-            if (checked && character instanceof HTMLElement) {
-                characterGroupOverlay.toggleSingleCharacter(character);
-            }
-        }
+    characterGroupOverlay.updateSelectedCount();
+
+    if (vcl) {
+        vcl.applySelectionState(
+            characterGroupOverlay.selectedCharacters,
+            BulkEditOverlay.selectedClass,
+        );
     }
 }
 
@@ -78,7 +95,7 @@ async function onDeleteButtonClick() {
  * Enables bulk selection by adding a checkbox next to each character.
  */
 function enableBulkSelect() {
-    $('#rm_print_characters_block .character_select').each((i, el) => {
+    $('#rm_print_characters_block .character_select').each((_i, el) => {
         // Prevent checkbox from adding multiple times (because of stage change callback)
         if ($(el).find('.bulk_select_checkbox').length > 0) {
             return;
@@ -89,14 +106,23 @@ function enableBulkSelect() {
         });
         $(el).prepend(checkbox);
     });
-    $('#rm_print_characters_block.group_overlay_mode_select .bogus_folder_select, #rm_print_characters_block.group_overlay_mode_select .group_select')
-        .addClass('disabled');
+    $(
+        '#rm_print_characters_block.group_overlay_mode_select .bogus_folder_select, #rm_print_characters_block.group_overlay_mode_select .group_select',
+    ).addClass('disabled');
 
     $('#rm_print_characters_block').addClass('bulk_select');
     // We also need to disable the default click event for the character_select divs
     $(document).on('click', '.bulk_select_checkbox', function (event) {
         event.stopImmediatePropagation();
     });
+
+    const vcl = getVirtualCharacterList();
+    if (vcl) {
+        vcl.applySelectionState(
+            characterGroupOverlay.selectedCharacters,
+            BulkEditOverlay.selectedClass,
+        );
+    }
 }
 
 /**
@@ -104,8 +130,9 @@ function enableBulkSelect() {
  */
 function disableBulkSelect() {
     $('.bulk_select_checkbox').remove();
-    $('#rm_print_characters_block.group_overlay_mode_select .bogus_folder_select, #rm_print_characters_block.group_overlay_mode_select .group_select')
-        .removeClass('disabled');
+    $(
+        '#rm_print_characters_block.group_overlay_mode_select .bogus_folder_select, #rm_print_characters_block.group_overlay_mode_select .group_select',
+    ).removeClass('disabled');
     $('#rm_print_characters_block').removeClass('bulk_select');
 }
 
@@ -123,6 +150,9 @@ export function initBulkEdit() {
     $('#bulkDeleteButton').on('click', onDeleteButtonClick);
 
     const characterContextMenu = new CharacterContextMenu(characterGroupOverlay);
-    eventSource.on(event_types.CHARACTER_PAGE_LOADED, characterGroupOverlay.onPageLoad);
+    eventSource.on(
+        event_types.CHARACTER_PAGE_LOADED,
+        characterGroupOverlay.onPageLoad,
+    );
     console.debug('Character context menu initialized', characterContextMenu);
 }

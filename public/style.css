@@ -3090,6 +3090,16 @@ input[type="file"] {
 	padding: 1px;
 }
 
+/* Virtual character list spacers */
+.virtual-character-list-spacer {
+	width: 100%;
+}
+
+.virtual-character-list-sentinel {
+	width: 100%;
+	height: 1px;
+}
+
 #rm_print_characters_block .entity_block.useless {
 	opacity: 0.25;
 }
