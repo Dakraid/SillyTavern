@@ -14,6 +14,7 @@ export class VirtualCharacterList {
     #sentinel;
     #sentinelObserver = null;
     #scrollRafPending = false;
+    #measurementRafPending = false;
     #firstRenderedIndex = -1;
     #lastRenderedIndex = -1;
     #loadedUntil = -1;
@@ -180,7 +181,7 @@ export class VirtualCharacterList {
         const newNode = this.#renderEntity(clampedIndex);
         oldNode.replaceWith(newNode);
         this.#rendered.set(clampedIndex, newNode);
-        this.#measureRenderedItems();
+        this.#scheduleMeasurement();
     }
 
     /**
@@ -302,8 +303,20 @@ export class VirtualCharacterList {
         this.#firstRenderedIndex = firstIndex;
         this.#lastRenderedIndex = lastIndex;
         this.#updateSpacers(firstIndex, lastIndex);
-        this.#measureRenderedItems();
+        this.#scheduleMeasurement();
         this.#options.onChunkLoaded?.();
+    }
+
+    #scheduleMeasurement() {
+        if (this.#measurementRafPending) {
+            return;
+        }
+
+        this.#measurementRafPending = true;
+        requestAnimationFrame(() => {
+            this.#measureRenderedItems();
+            this.#measurementRafPending = false;
+        });
     }
 
     #renderRange(firstIndex, lastIndex) {
@@ -405,13 +418,46 @@ export class VirtualCharacterList {
         }
 
         if (count > 0) {
-            this.#averageItemHeight = Math.max(1, total / count);
+            const newAverage = Math.max(1, total / count);
+            const averageChanged =
+				Math.abs(newAverage - this.#averageItemHeight) /
+					this.#averageItemHeight >
+				0.05;
+
+            if (averageChanged) {
+                this.#averageItemHeight = newAverage;
+                if (this.#firstRenderedIndex >= 0 && this.#lastRenderedIndex >= 0) {
+                    this.#updateSpacers(
+                        this.#firstRenderedIndex,
+                        this.#lastRenderedIndex,
+                    );
+                }
+            }
         }
     }
 
     #updateSpacers(firstIndex, lastIndex) {
-        this.#topSpacer.style.height = `${this.#getEstimatedHeight(0, firstIndex)}px`;
-        this.#bottomSpacer.style.height = `${this.#getEstimatedHeight(lastIndex + 1, this.#entities.length)}px`;
+        const savedScrollTop = this.#container.scrollTop;
+        const topHeight = this.#getEstimatedHeight(0, firstIndex);
+        const bottomHeight = this.#getEstimatedHeight(
+            lastIndex + 1,
+            this.#entities.length,
+        );
+        const currentTopHeight = parseFloat(this.#topSpacer.style.height) || 0;
+        const currentBottomHeight =
+			parseFloat(this.#bottomSpacer.style.height) || 0;
+
+        if (Math.abs(topHeight - currentTopHeight) > 1) {
+            this.#topSpacer.style.height = `${topHeight}px`;
+        }
+
+        if (Math.abs(bottomHeight - currentBottomHeight) > 1) {
+            this.#bottomSpacer.style.height = `${bottomHeight}px`;
+        }
+
+        if (this.#container.scrollTop !== savedScrollTop) {
+            this.#container.scrollTop = savedScrollTop;
+        }
     }
 
     #getEstimatedHeight(startIndex, endIndex) {

@@ -1231,19 +1231,8 @@ function renderItemForEntity(entity, recycledNode) {
  * @param {boolean} fullRefresh - If true, the list is fully refreshed and the navigation is being reset
  */
 export async function printCharacters(fullRefresh = false) {
+    const storageKey = 'Characters_PerPage';
     const listId = '#rm_print_characters_block';
-    const container = document.querySelector(listId);
-
-    let currentScrollTop =
-		(virtualCharacterList?.getScrollPosition() ??
-			Number(accountStorage.getItem('Characters_ScrollTop'))) ||
-		0;
-
-    if (fullRefresh) {
-        currentScrollTop = 0;
-        accountStorage.removeItem('Characters_ScrollTop');
-        await delay(1);
-    }
 
     // Before printing the personas, we check if we should enable/disable search sorting
     verifyCharactersSearchSortRule();
@@ -1259,10 +1248,129 @@ export async function printCharacters(fullRefresh = false) {
 
     const entities = getEntitiesList({ doFilter: true });
 
+    if (power_user.infiniteScroll) {
+        await printCharactersInfiniteScroll(entities, fullRefresh, listId);
+    } else {
+        await printCharactersPaginated(entities, fullRefresh, listId, storageKey);
+    }
+}
+
+/**
+ * Prints character list with pagination.js (default mode).
+ * @param {Entity[]} entities Filtered/sorted entities.
+ * @param {boolean} fullRefresh Whether to reset page/scroll.
+ * @param {string} listId Character list selector.
+ * @param {string} storageKey Pagination size storage key.
+ */
+async function printCharactersPaginated(entities, fullRefresh, listId, storageKey) {
+    let currentScrollTop = $(listId).scrollTop();
+
+    if (fullRefresh) {
+        saveCharactersPage = 0;
+        currentScrollTop = 0;
+        await delay(1);
+    }
+
     if (virtualCharacterList) {
         virtualCharacterList.destroy();
         virtualCharacterList = null;
     }
+
+    $(listId).off('scroll.savePosition');
+    $('#rm_print_characters_block_count').text('');
+
+    const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
+    const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
+    $('#rm_print_characters_pagination').pagination({
+        dataSource: entities,
+        pageSize,
+        pageRange: 1,
+        pageNumber: saveCharactersPage || 1,
+        position: 'top',
+        showPageNumbers: false,
+        showSizeChanger: true,
+        prevText: '<',
+        nextText: '>',
+        formatNavigator: PAGINATION_TEMPLATE,
+        formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
+        showNavigator: true,
+        callback: async function (/** @type {Entity[]} */ data) {
+            $(listId).empty();
+            if (power_user.bogus_folders && isBogusFolderOpen()) {
+                $(listId).append(getBackBlock());
+            }
+            if (!data.length) {
+                const emptyBlock = await getEmptyBlock();
+                $(listId).append(emptyBlock);
+            }
+            let displayCount = 0;
+            for (const i of data) {
+                switch (i.type) {
+                    case 'character':
+                        $(listId).append(getCharacterBlock(i.item, i.id));
+                        displayCount++;
+                        break;
+                    case 'group':
+                        $(listId).append(getGroupBlock(i.item));
+                        displayCount++;
+                        break;
+                    case 'tag':
+                        $(listId).append(getTagBlock(i.item, i.entities, i.hidden, i.isUseless));
+                        break;
+                }
+            }
+
+            const hidden = (characters.length + groups.length) - displayCount;
+            if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
+                const hiddenBlock = await getHiddenBlock(hidden);
+                $(listId).append(hiddenBlock);
+            }
+            localizePagination($('#rm_print_characters_pagination'));
+
+            eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
+        },
+        afterSizeSelectorChange: function (e, size) {
+            accountStorage.setItem(storageKey, e.target.value);
+            paginationDropdownChangeHandler(e, size);
+        },
+        afterPaging: function (e) {
+            saveCharactersPage = e;
+        },
+        afterRender: function () {
+            $(listId).scrollTop(currentScrollTop);
+        },
+    });
+
+    favsToHotswap();
+    updatePersonaConnectionsAvatarList();
+}
+
+/**
+ * Prints character list with VirtualCharacterList infinite scroll.
+ * @param {Entity[]} entities Filtered/sorted entities.
+ * @param {boolean} fullRefresh Whether to reset scroll.
+ * @param {string} listId Character list selector.
+ */
+async function printCharactersInfiniteScroll(entities, fullRefresh, listId) {
+    const container = document.querySelector(listId);
+
+    let currentScrollTop =
+        (virtualCharacterList?.getScrollPosition() ??
+            Number(accountStorage.getItem('Characters_ScrollTop'))) ||
+        0;
+
+    if (fullRefresh) {
+        currentScrollTop = 0;
+        accountStorage.removeItem('Characters_ScrollTop');
+        await delay(1);
+    }
+
+    if (virtualCharacterList) {
+        virtualCharacterList.destroy();
+        virtualCharacterList = null;
+    }
+
+    $('#rm_print_characters_pagination .paginationjs').remove();
 
     const nonTagCount = entities.filter((entity) => entity.type !== 'tag').length;
     $('#rm_print_characters_block_count').text(
@@ -1275,7 +1383,7 @@ export async function printCharacters(fullRefresh = false) {
 
     if (!entities.length) {
         const emptyBlock = await getEmptyBlock();
-        $(listId).append(emptyBlock);
+        $(listId).empty().append(emptyBlock);
         eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
         favsToHotswap();
         updatePersonaConnectionsAvatarList();
@@ -11155,6 +11263,12 @@ export function select_rm_info(type, charId, previousCharId = null) {
                 const selector = `#rm_print_characters_block [title*="${avatarFileName}"]`;
                 if (virtualCharacterList) {
                     virtualCharacterList.scrollToEntity(charIndex);
+                } else {
+                    const perPage =
+                        Number(accountStorage.getItem('Characters_PerPage')) ||
+                        per_page_default;
+                    const page = Math.floor(charIndex / perPage) + 1;
+                    $('#rm_print_characters_pagination').pagination('go', page);
                 }
 
                 waitUntilCondition(
@@ -11191,6 +11305,12 @@ export function select_rm_info(type, charId, previousCharId = null) {
 
             if (virtualCharacterList) {
                 virtualCharacterList.scrollToEntity(charIndex);
+            } else {
+                const perPage =
+                    Number(accountStorage.getItem('Characters_PerPage')) ||
+                    per_page_default;
+                const page = Math.floor(charIndex / perPage) + 1;
+                $('#rm_print_characters_pagination').pagination('go', page);
             }
             const selector = `#rm_print_characters_block [grid="${charId}"]`;
             try {
@@ -15939,6 +16059,13 @@ jQuery(async function () {
 
     $('#charListGridToggle').on('click', async () => {
         doCharListDisplaySwitch();
+    });
+
+    $('#infiniteScrollToggle').on('click', async () => {
+        power_user.infiniteScroll = !power_user.infiniteScroll;
+        saveSettingsDebounced();
+        document.body.classList.toggle('infiniteScroll', power_user.infiniteScroll);
+        await printCharacters(true);
     });
 
     $('#hideCharPanelAvatarButton').on('click', () => {

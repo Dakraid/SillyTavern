@@ -182,6 +182,7 @@ export const persona_description_positions = _persona_description_positions;
 
 export const power_user = {
     charListGrid: false,
+    infiniteScroll: false,
     tokenizer: tokenizers.BEST_MATCH,
     token_padding: 64,
     custom_tokenizer_source: 'url',
@@ -2417,6 +2418,7 @@ function toggleMDHotkeyIconDisplay() {
 
 function loadCharListState() {
     document.body.classList.toggle('charListGrid', power_user.charListGrid);
+    document.body.classList.toggle('infiniteScroll', power_user.infiniteScroll);
 }
 
 export function loadMovingUIState() {
