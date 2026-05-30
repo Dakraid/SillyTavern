@@ -194,6 +194,7 @@ import {
     PAGINATION_TEMPLATE,
     renderPaginationDropdown,
     paginationDropdownChangeHandler,
+    localizePagination,
 } from './scripts/utils.js';
 import {
     debounce_timeout,
