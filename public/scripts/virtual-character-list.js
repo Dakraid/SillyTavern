@@ -1,34 +1,38 @@
 /**
- * Virtualized character list renderer.
- * Keeps only visible rows plus buffer in DOM, using spacers to preserve scroll size.
+ * Progressive virtual character list renderer.
+ *
+ * This intentionally avoids bottom-spacer estimation. Items append in normal flow,
+ * sentinel sits directly after the last rendered node, and only removed top items
+ * are represented by a measured top spacer.
  */
 export class VirtualCharacterList {
     #container;
     #options;
     #entities = [];
-    #rendered = new Map();
-    #heights = new Map();
+    /** @type {{index:number,node:HTMLElement}[]} */
+    #rendered = [];
+    #renderedIndices = new Set();
     #pool = [];
     #topSpacer;
-    #bottomSpacer;
     #sentinel;
-    #sentinelObserver = null;
+    #observer = null;
     #scrollRafPending = false;
-    #measurementRafPending = false;
-    #firstRenderedIndex = -1;
-    #lastRenderedIndex = -1;
     #loadedUntil = -1;
-    #averageItemHeight = 80;
-    #maxPoolSize = 200;
+    #maxDOMNodes = 200;
+    #knownHeights = new Map();
+    #totalRemovedHeight = 0;
+    #removedCount = 0;
+    #loadingNextChunk = false;
+    #allLoadedEmitted = false;
 
     /**
 	 * @param {HTMLElement} container Scroll container element.
 	 * @param {object} options Renderer options.
-	 * @param {(entity: object, index: number, recycledNode?: HTMLElement) => HTMLElement|JQuery} options.renderItem Item renderer.
-	 * @param {() => void} [options.onChunkLoaded] Called after a chunk/range renders.
-	 * @param {() => void} [options.onAllLoaded] Called when all entities are available to render.
+	 * @param {(entity: object, index: number, recycledNode?: HTMLElement) => HTMLElement|JQuery} [options.renderItem] Item renderer.
+	 * @param {() => void} [options.onChunkLoaded] Called after a chunk renders.
+	 * @param {() => void} [options.onAllLoaded] Called when all entities are loaded.
 	 * @param {number} [options.chunkSize=50] Incremental loading chunk size.
-	 * @param {number} [options.bufferSize=20] Items to keep above/below viewport.
+	 * @param {number} [options.maxDOMNodes=200] Maximum rendered nodes before top windowing.
 	 */
     constructor(container, options = {}) {
         if (!(container instanceof HTMLElement)) {
@@ -44,11 +48,15 @@ export class VirtualCharacterList {
         this.#container = container;
         this.#options = {
             chunkSize: 50,
-            bufferSize: 20,
+            maxDOMNodes: 200,
             onChunkLoaded: null,
             onAllLoaded: null,
             ...options,
         };
+        this.#maxDOMNodes = Math.max(
+            this.#options.chunkSize,
+            Number(this.#options.maxDOMNodes) || 200,
+        );
 
         this.#topSpacer = document.createElement('div');
         this.#topSpacer.classList.add(
@@ -56,44 +64,51 @@ export class VirtualCharacterList {
             'virtual-character-list-top-spacer',
         );
         this.#topSpacer.setAttribute('aria-hidden', 'true');
-
-        this.#bottomSpacer = document.createElement('div');
-        this.#bottomSpacer.classList.add(
-            'virtual-character-list-spacer',
-            'virtual-character-list-bottom-spacer',
-        );
-        this.#bottomSpacer.setAttribute('aria-hidden', 'true');
+        this.#topSpacer.style.cssText = 'width:100%;height:0px;flex-shrink:0;';
 
         this.#sentinel = document.createElement('div');
         this.#sentinel.classList.add('virtual-character-list-sentinel');
         this.#sentinel.setAttribute('aria-hidden', 'true');
+        this.#sentinel.style.cssText = 'width:100%;height:1px;flex-shrink:0;';
 
         this.#container.addEventListener('scroll', this.#onScroll, {
             passive: true,
         });
-        this.#setupSentinelObserver();
+        this.#setupObserver();
     }
 
     /**
-	 * Set or replace entity list and render from top.
+	 * Set or replace entity list and render initial chunk.
 	 * @param {object[]} entities Entity list.
 	 */
     setEntities(entities) {
-        this.#entities = Array.isArray(entities) ? entities : [];
+        this.#entities = Array.isArray(entities) ? [...entities] : [];
         this.#loadedUntil = Math.min(
             this.#entities.length - 1,
             this.#options.chunkSize - 1,
         );
-        this.#firstRenderedIndex = -1;
-        this.#lastRenderedIndex = -1;
-        this.#heights.clear();
-        this.#releaseAllRendered();
+        this.#totalRemovedHeight = 0;
+        this.#removedCount = 0;
+        this.#knownHeights.clear();
+        this.#loadingNextChunk = false;
+        this.#allLoadedEmitted = false;
+
+        this.#releaseAll();
         this.#container.textContent = '';
-        this.#container.append(this.#topSpacer, this.#bottomSpacer, this.#sentinel);
+        this.#topSpacer.style.height = '0px';
+        this.#container.append(this.#topSpacer, this.#sentinel);
         this.#container.scrollTop = 0;
-        this.#updateVisibleRange(true);
+
+        if (this.#loadedUntil >= 0) {
+            this.#renderChunk(0, this.#loadedUntil);
+        }
+
         this.#observeSentinel();
         this.#options.onChunkLoaded?.();
+
+        if (this.#loadedUntil >= this.#entities.length - 1) {
+            this.#emitAllLoaded();
+        }
     }
 
     /**
@@ -109,17 +124,17 @@ export class VirtualCharacterList {
 	 */
     destroy() {
         this.#container.removeEventListener('scroll', this.#onScroll);
-        this.#sentinelObserver?.disconnect();
-        this.#sentinelObserver = null;
-        this.#releaseAllRendered();
+        this.#observer?.disconnect();
+        this.#observer = null;
+        this.#releaseAll();
         this.#pool.length = 0;
-        this.#heights.clear();
+        this.#knownHeights.clear();
         this.#entities = [];
         this.#container.textContent = '';
     }
 
     /**
-	 * Scroll to entity by index.
+	 * Scroll to entity by index. Loads intermediate chunks when needed.
 	 * @param {number} index Entity index.
 	 */
     scrollToEntity(index) {
@@ -127,10 +142,20 @@ export class VirtualCharacterList {
             return;
         }
 
-        const clampedIndex = this.#clampIndex(index);
-        this.#ensureLoaded(clampedIndex);
-        this.#container.scrollTop = this.#getEstimatedOffset(clampedIndex);
-        this.#updateVisibleRange(true);
+        const targetIndex = this.#clampIndex(index);
+        if (targetIndex > this.#loadedUntil) {
+            this.#loadedUntil = targetIndex;
+            this.#renderChunk(this.#lastRenderedIndex() + 1, targetIndex);
+            this.#options.onChunkLoaded?.();
+        }
+
+        const item = this.#rendered.find((x) => x.index === targetIndex);
+        if (item) {
+            item.node.scrollIntoView({ block: 'nearest' });
+            return;
+        }
+
+        this.#container.scrollTop = this.#estimateOffset(targetIndex);
     }
 
     /**
@@ -138,9 +163,13 @@ export class VirtualCharacterList {
 	 * @returns {number}
 	 */
     getFirstVisibleIndex() {
-        return this.#clampIndex(
-            Math.floor(this.#container.scrollTop / this.#averageItemHeight),
-        );
+        const containerTop = this.#container.getBoundingClientRect().top;
+        for (const item of this.#rendered) {
+            if (item.node.getBoundingClientRect().bottom >= containerTop) {
+                return item.index;
+            }
+        }
+        return this.#rendered[0]?.index ?? 0;
     }
 
     /**
@@ -152,12 +181,7 @@ export class VirtualCharacterList {
         if (!Number.isFinite(value)) {
             return;
         }
-
-        this.#ensureLoaded(
-            Math.ceil(value / this.#averageItemHeight) + this.#getVisibleCount(),
-        );
         this.#container.scrollTop = Math.max(0, value);
-        this.#updateVisibleRange(true);
     }
 
     /**
@@ -173,16 +197,19 @@ export class VirtualCharacterList {
 	 * @param {number} index Entity index.
 	 */
     updateEntity(index) {
-        const clampedIndex = Number(index);
-        if (!Number.isInteger(clampedIndex) || !this.#rendered.has(clampedIndex)) {
+        const targetIndex = Number(index);
+        const itemIndex = this.#rendered.findIndex((x) => x.index === targetIndex);
+        if (!Number.isInteger(targetIndex) || itemIndex === -1) {
             return;
         }
 
-        const oldNode = this.#rendered.get(clampedIndex);
-        const newNode = this.#renderEntity(clampedIndex);
-        oldNode.replaceWith(newNode);
-        this.#rendered.set(clampedIndex, newNode);
-        this.#scheduleMeasurement();
+        const oldItem = this.#rendered[itemIndex];
+        const newNode = this.#createNode(targetIndex, oldItem.node);
+        if (newNode !== oldItem.node) {
+            oldItem.node.replaceWith(newNode);
+        }
+        this.#rendered[itemIndex] = { index: targetIndex, node: newNode };
+        this.#measureItem(targetIndex, newNode);
     }
 
     /**
@@ -193,39 +220,36 @@ export class VirtualCharacterList {
     applySelectionState(selectedIds, className) {
         const selectedSet =
 			selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
-        const visibleItems = this.#container.querySelectorAll('[data-chid]');
 
-        for (const item of visibleItems) {
-            const chid = Number(item.getAttribute('data-chid'));
-            item.classList.toggle(className, selectedSet.has(chid));
-            const checkbox = item.querySelector('.bulk_select_checkbox');
+        for (const item of this.#rendered) {
+            const chid = Number(item.node.getAttribute('data-chid'));
+            const selected = selectedSet.has(chid);
+            item.node.classList.toggle(className, selected);
+            const checkbox = item.node.querySelector('.bulk_select_checkbox');
             if (checkbox instanceof HTMLInputElement) {
-                checkbox.checked = selectedSet.has(chid);
+                checkbox.checked = selected;
             }
         }
     }
 
-    #setupSentinelObserver() {
+    #setupObserver() {
         if (typeof IntersectionObserver !== 'function') {
             return;
         }
 
-        this.#sentinelObserver = new IntersectionObserver(
+        this.#observer = new IntersectionObserver(
             (entries) => {
                 if (entries.some((entry) => entry.isIntersecting)) {
                     this.#loadNextChunk();
                 }
             },
-            {
-                root: this.#container,
-                rootMargin: '200px',
-            },
+            { root: this.#container, rootMargin: '200px' },
         );
     }
 
     #observeSentinel() {
-        this.#sentinelObserver?.disconnect();
-        this.#sentinelObserver?.observe(this.#sentinel);
+        this.#observer?.disconnect();
+        this.#observer?.observe(this.#sentinel);
     }
 
     #onScroll = () => {
@@ -235,115 +259,87 @@ export class VirtualCharacterList {
 
         this.#scrollRafPending = true;
         requestAnimationFrame(() => {
-            this.#updateVisibleRange();
             this.#scrollRafPending = false;
+            this.#maybeWindow();
         });
     };
 
     #loadNextChunk() {
+        if (this.#loadingNextChunk) {
+            return;
+        }
+
         if (
             !this.#entities.length ||
 			this.#loadedUntil >= this.#entities.length - 1
         ) {
-            this.#options.onAllLoaded?.();
+            this.#emitAllLoaded();
             return;
         }
 
+        this.#loadingNextChunk = true;
+        const previousLoaded = this.#loadedUntil;
         this.#loadedUntil = Math.min(
             this.#entities.length - 1,
             this.#loadedUntil + this.#options.chunkSize,
         );
-        this.#updateVisibleRange(true);
+        this.#renderChunk(previousLoaded + 1, this.#loadedUntil);
+        this.#maybeWindow();
         this.#options.onChunkLoaded?.();
 
         if (this.#loadedUntil >= this.#entities.length - 1) {
-            this.#options.onAllLoaded?.();
-        }
-    }
-
-    #ensureLoaded(index) {
-        if (!this.#entities.length) {
-            return;
+            this.#emitAllLoaded();
         }
 
-        this.#loadedUntil = Math.max(
-            this.#loadedUntil,
-            Math.min(this.#entities.length - 1, index),
-        );
-    }
+        this.#loadingNextChunk = false;
 
-    #updateVisibleRange(force = false) {
-        if (!this.#entities.length) {
-            this.#topSpacer.style.height = '0px';
-            this.#bottomSpacer.style.height = '0px';
-            this.#releaseAllRendered();
-            return;
-        }
-
-        const visibleCount = this.#getVisibleCount();
-        const firstVisible = this.#clampIndex(
-            Math.floor(this.#container.scrollTop / this.#averageItemHeight),
-        );
-        this.#ensureLoaded(firstVisible + visibleCount + this.#options.bufferSize);
-
-        const firstIndex = Math.max(0, firstVisible - this.#options.bufferSize);
-        const lastIndex = Math.min(
-            this.#loadedUntil,
-            firstVisible + visibleCount + this.#options.bufferSize,
-        );
-
-        if (
-            !force &&
-			firstIndex === this.#firstRenderedIndex &&
-			lastIndex === this.#lastRenderedIndex
-        ) {
-            return;
-        }
-
-        this.#renderRange(firstIndex, lastIndex);
-        this.#firstRenderedIndex = firstIndex;
-        this.#lastRenderedIndex = lastIndex;
-        this.#updateSpacers(firstIndex, lastIndex);
-        this.#scheduleMeasurement();
-    }
-
-    #scheduleMeasurement() {
-        if (this.#measurementRafPending) {
-            return;
-        }
-
-        this.#measurementRafPending = true;
         requestAnimationFrame(() => {
-            this.#measureRenderedItems();
-            this.#measurementRafPending = false;
+            if (this.#isSentinelNearViewport()) {
+                this.#loadNextChunk();
+            }
         });
     }
 
-    #renderRange(firstIndex, lastIndex) {
-        for (const [index, node] of this.#rendered.entries()) {
-            if (index < firstIndex || index > lastIndex) {
-                node.remove();
-                this.#releaseNode(node);
-                this.#rendered.delete(index);
-            }
+    #emitAllLoaded() {
+        if (this.#allLoadedEmitted) {
+            return;
         }
-
-        let insertBefore = this.#bottomSpacer;
-        for (let index = lastIndex; index >= firstIndex; index--) {
-            let node = this.#rendered.get(index);
-            if (!node) {
-                node = this.#renderEntity(index);
-                this.#rendered.set(index, node);
-            }
-            if (node.nextSibling !== insertBefore) {
-                this.#container.insertBefore(node, insertBefore);
-            }
-            insertBefore = node;
-        }
+        this.#allLoadedEmitted = true;
+        this.#options.onAllLoaded?.();
     }
 
-    #renderEntity(index) {
-        const recycledNode = this.#acquireNode();
+    #isSentinelNearViewport() {
+        if (!this.#sentinel.isConnected || !this.#container.isConnected) {
+            return false;
+        }
+
+        const sentinelRect = this.#sentinel.getBoundingClientRect();
+        const containerRect = this.#container.getBoundingClientRect();
+        return sentinelRect.top <= containerRect.bottom + 200;
+    }
+
+    #renderChunk(firstIndex, lastIndex) {
+        if (!this.#entities.length || firstIndex > lastIndex) {
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        for (let index = firstIndex; index <= lastIndex; index++) {
+            if (this.#renderedIndices.has(index)) {
+                continue;
+            }
+
+            const node = this.#createNode(index);
+            this.#rendered.push({ index, node });
+            this.#renderedIndices.add(index);
+            fragment.append(node);
+        }
+
+        this.#container.insertBefore(fragment, this.#sentinel);
+        this.#measureRenderedRange(firstIndex, lastIndex);
+    }
+
+    #createNode(index, recycledNode = this.#acquireNode()) {
         const rendered = this.#options.renderItem(
             this.#entities[index],
             index,
@@ -377,12 +373,60 @@ export class VirtualCharacterList {
         );
     }
 
-    #releaseAllRendered() {
-        for (const node of this.#rendered.values()) {
-            node.remove();
-            this.#releaseNode(node);
+    #maybeWindow() {
+        if (this.#rendered.length <= this.#maxDOMNodes) {
+            return;
         }
-        this.#rendered.clear();
+
+        const scrollDirectionDown =
+			this.#container.scrollTop > this.#totalRemovedHeight;
+        if (!scrollDirectionDown) {
+            return;
+        }
+
+        const removeCount = Math.min(
+            this.#rendered.length - this.#maxDOMNodes + this.#options.chunkSize,
+            this.#rendered.length - this.#options.chunkSize,
+        );
+
+        if (removeCount <= 0) {
+            return;
+        }
+
+        const anchor = this.#rendered[removeCount];
+        const oldAnchorTop = anchor?.node.getBoundingClientRect().top ?? 0;
+        let removedHeight = 0;
+
+        for (let i = 0; i < removeCount; i++) {
+            const item = this.#rendered.shift();
+            if (!item) {
+                break;
+            }
+
+            const height = this.#measureItem(item.index, item.node);
+            removedHeight += height;
+            this.#renderedIndices.delete(item.index);
+            item.node.remove();
+            this.#releaseNode(item.node);
+        }
+
+        this.#totalRemovedHeight += removedHeight;
+        this.#removedCount += removeCount;
+        this.#topSpacer.style.height = `${this.#totalRemovedHeight}px`;
+
+        if (anchor) {
+            const newAnchorTop = anchor.node.getBoundingClientRect().top;
+            this.#container.scrollTop += newAnchorTop - oldAnchorTop;
+        }
+    }
+
+    #releaseAll() {
+        for (const item of this.#rendered) {
+            item.node.remove();
+            this.#releaseNode(item.node);
+        }
+        this.#rendered.length = 0;
+        this.#renderedIndices.clear();
     }
 
     #releaseNode(node) {
@@ -391,82 +435,45 @@ export class VirtualCharacterList {
         }
 
         node.remove();
-
-        // Clear avatar images to free browser image decode resources
         const img = node.querySelector('img');
         if (img instanceof HTMLImageElement) {
             img.src = '';
             img.removeAttribute('srcset');
         }
 
-        if (this.#pool.length < this.#maxPoolSize) {
+        if (this.#pool.length < this.#maxDOMNodes) {
             this.#pool.push(node);
         }
     }
 
-    #measureRenderedItems() {
-        let total = 0;
-        let count = 0;
-
-        for (const [index, node] of this.#rendered.entries()) {
-            const height = node.getBoundingClientRect().height;
-            if (height > 0) {
-                this.#heights.set(index, height);
-                total += height;
-                count++;
-            }
-        }
-
-        if (count > 0) {
-            const newAverage = Math.max(1, total / count);
-            const averageChanged =
-				Math.abs(newAverage - this.#averageItemHeight) /
-					this.#averageItemHeight >
-				0.05;
-
-            if (averageChanged) {
-                this.#averageItemHeight = newAverage;
+    #measureRenderedRange(firstIndex, lastIndex) {
+        for (let index = firstIndex; index <= lastIndex; index++) {
+            const item = this.#rendered.find((x) => x.index === index);
+            if (item) {
+                this.#measureItem(index, item.node);
             }
         }
     }
 
-    #updateSpacers(firstIndex, lastIndex) {
-        const oldTopHeight = parseFloat(this.#topSpacer.style.height) || 0;
-        const newTopHeight = this.#getEstimatedHeight(0, firstIndex);
-        const newBottomHeight = this.#getEstimatedHeight(
-            lastIndex + 1,
-            this.#entities.length,
-        );
-        const currentBottomHeight =
-			parseFloat(this.#bottomSpacer.style.height) || 0;
-
-        if (Math.abs(newTopHeight - oldTopHeight) > 1) {
-            this.#topSpacer.style.height = `${newTopHeight}px`;
-            this.#container.scrollTop += newTopHeight - oldTopHeight;
-        }
-
-        if (Math.abs(newBottomHeight - currentBottomHeight) > 1) {
-            this.#bottomSpacer.style.height = `${newBottomHeight}px`;
-        }
+    #measureItem(index, node) {
+        const height =
+			node.getBoundingClientRect().height ||
+			this.#knownHeights.get(index) ||
+			80;
+        this.#knownHeights.set(index, height);
+        return height;
     }
 
-    #getEstimatedHeight(startIndex, endIndex) {
-        let height = 0;
-        for (let index = startIndex; index < endIndex; index++) {
-            height += this.#heights.get(index) || this.#averageItemHeight;
+    #estimateOffset(index) {
+        let offset = 0;
+        for (let i = 0; i < index; i++) {
+            offset += this.#knownHeights.get(i) || 80;
         }
-        return Math.max(0, height);
+        return offset;
     }
 
-    #getEstimatedOffset(index) {
-        return this.#getEstimatedHeight(0, index);
-    }
-
-    #getVisibleCount() {
-        return Math.max(
-            1,
-            Math.ceil(this.#container.clientHeight / this.#averageItemHeight),
-        );
+    #lastRenderedIndex() {
+        return this.#rendered.at(-1)?.index ?? -1;
     }
 
     #clampIndex(index) {
