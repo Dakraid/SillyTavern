@@ -20,6 +20,9 @@ import {
     name1,
     getOneCharacter,
     select_selected_character,
+    main_api,
+    amount_gen,
+    max_context,
 } from '../script.js';
 import {
     download,
@@ -71,8 +74,15 @@ import { isMobile } from './RossAscends-mods.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { getTokenCountAsync } from './tokenizers.js';
 import { power_user } from './power-user.js';
+import {
+    showActionLoader,
+    hideActionLoader,
+    ActionLoaderToastMode,
+} from './action-loader.js';
 import { getTagKeyForEntity } from './tags.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS } from './constants.js';
+import { oai_settings } from './openai.js';
+import { textgenerationwebui_settings } from './textgen-settings.js';
 import {
     getRegexedString,
     regex_placement,
@@ -1068,67 +1078,13 @@ function getAIManagedState() {
 }
 
 /**
- * Generates a sanitized AI function name from an entry's comment or content.
- * @param {object} entry The WI entry
- * @param {Set<string>} existingNames Set of already-used names for dedup
- * @returns {string} A valid, unique function name
- */
-export function generateAIEntryName(entry, existingNames = new Set()) {
-    let raw = (entry.comment || '').trim();
-
-    if (!raw) {
-        raw = (entry.content || '').trim().substring(0, 30);
-    }
-
-    let name = raw
-        .replace(/[^a-zA-Z0-9_]/g, '_')
-        .replace(/_+/g, '_')
-        .replace(/^_|_$/g, '');
-
-    if (!name) {
-        name = 'entry';
-    }
-
-    let finalName = name;
-    let suffix = 1;
-    while (existingNames.has(finalName)) {
-        finalName = `${name}_${suffix++}`;
-    }
-
-    existingNames.add(finalName);
-    return finalName;
-}
-
-/**
- * Generates a short AI description from an entry's content.
- * @param {object} entry The WI entry
- * @returns {string} Description, max 250 chars
- */
-export function generateAIEntryDescription(entry) {
-    const MAX_LEN = 250;
-    let desc = (entry.content || '').trim();
-    desc = desc.replace(/\n/g, ' ').replace(/\s+/g, ' ');
-
-    if (desc.length > MAX_LEN) {
-        desc = desc.substring(0, MAX_LEN - 3) + '...';
-    }
-
-    return desc;
-}
-
-/**
- * Generates AI registry metadata for all entries in a lorebook.
+ * Assembles the AI registry from existing entry metadata.
+ * Entries without aiFunctionName are skipped.
  * @param {string} lorebookName Lorebook name
  * @param {Record<string, object>|object[]} entries Entries object or array
- * @param {boolean} [overwrite=false] Whether to overwrite existing generated fields
- * @returns {{ name: string, description: string, lorebook: string, uid: number|string }[]} Generated registry
+ * @returns {{ name: string, description: string, lorebook: string, uid: number|string }[]} Registry of named entries
  */
-export function generateAILorebookRegistry(
-    lorebookName,
-    entries,
-    overwrite = false,
-) {
-    const existingNames = new Set();
+export function generateAILorebookRegistry(lorebookName, entries) {
     const entryList = Array.isArray(entries)
         ? entries
         : Object.values(entries || {});
@@ -1139,31 +1095,16 @@ export function generateAILorebookRegistry(
             continue;
         }
 
-        const currentName = String(entry.aiFunctionName || '').trim();
-        let aiFunctionName = currentName;
-        if (!aiFunctionName || overwrite) {
-            aiFunctionName = generateAIEntryName(entry, existingNames);
-            entry.aiFunctionName = aiFunctionName;
-        } else if (existingNames.has(aiFunctionName)) {
-            aiFunctionName = generateAIEntryName(
-                { comment: aiFunctionName },
-                existingNames,
-            );
-            entry.aiFunctionName = aiFunctionName;
-        } else {
-            existingNames.add(aiFunctionName);
+        const aiFunctionName = String(entry.aiFunctionName || '').trim();
+        if (!aiFunctionName) {
+            continue;
         }
 
-        const currentDescription = String(entry.aiDescription || '').trim();
-        if (!currentDescription || overwrite) {
-            entry.aiDescription = generateAIEntryDescription(entry);
-        } else if (currentDescription.length > 250) {
-            entry.aiDescription = currentDescription.substring(0, 247) + '...';
-        }
+        const aiDescription = String(entry.aiDescription || '').trim();
 
         registry.push({
-            name: `${lorebookName}${AI_MANAGED_LORE_SEPARATOR}${entry.aiFunctionName}`,
-            description: entry.aiDescription,
+            name: `${lorebookName}${AI_MANAGED_LORE_SEPARATOR}${aiFunctionName}`,
+            description: aiDescription,
             lorebook: lorebookName,
             uid: entry.uid,
         });
@@ -3261,13 +3202,211 @@ async function displayWorldEntries(
     });
     $('#world_ai_managed_header').show();
 
+    const updateEntryAIFields = (uid, aiFunctionName, aiDescription) => {
+        const entryElement = $('#world_popup_entries_list .world_entry').filter(
+            function () {
+                return (
+                    String($(this).data('uid')) === String(uid) ||
+					String($(this).attr('uid')) === String(uid)
+                );
+            },
+        );
+
+        if (!entryElement.length) {
+            return;
+        }
+
+        entryElement.find('input[name="aiFunctionName"]').val(aiFunctionName || '');
+        entryElement
+            .find('textarea[name="aiDescription"]')
+            .val(aiDescription || '');
+        entryElement
+            .find('.ai_description_counter')
+            .text(`(${String(aiDescription || '').length}/250)`);
+    };
+
     $('#world_ai_regenerate_names')
         .off('click')
         .on('click', async function () {
-            generateAILorebookRegistry(name, data.entries, true);
-            await saveWorldInfo(name, data);
-            updateEditor();
-            toastr.success(t`Regenerated AI names for all entries`);
+            let jobId = null;
+            let jobEventSource = null;
+            let finished = false;
+
+            const parseEvent = (event) => {
+                try {
+                    return JSON.parse(event.data);
+                } catch {
+                    return {};
+                }
+            };
+
+            const closeGeneration = () => {
+                finished = true;
+                jobEventSource?.close();
+                hideActionLoader(loader);
+            };
+
+            const loader = showActionLoader({
+                message: t`Starting AI metadata generation...`,
+                blocking: true,
+                toastMode: ActionLoaderToastMode.STOPPABLE,
+                onStop: () => {
+                    finished = true;
+                    jobEventSource?.close();
+                    if (jobId) {
+                        fetch(
+                            `/api/worldinfo/ai-jobs/${encodeURIComponent(jobId)}/cancel`,
+                            {
+                                method: 'POST',
+                                headers: getRequestHeaders(),
+                            },
+                        ).catch((error) =>
+                            console.warn(
+                                'Failed to cancel AI metadata generation job:',
+                                error,
+                            ),
+                        );
+                    }
+                    hideActionLoader(loader);
+                    toastr.info(t`AI metadata generation cancelled`);
+                },
+            });
+
+            try {
+                const concurrency =
+					Number(power_user.lorebook_ai_concurrency) || undefined;
+                const batchSize =
+					Number(power_user.lorebook_ai_batch_size) || undefined;
+                const response = await fetch('/api/worldinfo/ai-generate', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({
+                        lorebookName: name,
+                        overwrite: true,
+                        concurrency,
+                        batchSize,
+                        llm: {
+                            type: main_api,
+                            amount_gen,
+                            max_context,
+                            openai: { ...oai_settings },
+                            textgenerationwebui: { ...textgenerationwebui_settings },
+                        },
+                    }),
+                });
+
+                if (!response.ok) {
+                    let errorMessage =
+						response.status === 404
+						    ? t`AI metadata generation job endpoint not found`
+						    : t`Failed to start AI metadata generation`;
+                    try {
+                        const errorData = await response.json();
+                        errorMessage = errorData.error || errorData.message || errorMessage;
+                    } catch {
+                        // Ignore JSON parse errors; use fallback message.
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                const result = await response.json();
+                jobId = result.jobId;
+                if (!jobId) {
+                    throw new Error(t`AI metadata generation job was not created`);
+                }
+
+                if (finished) {
+                    fetch(`/api/worldinfo/ai-jobs/${encodeURIComponent(jobId)}/cancel`, {
+                        method: 'POST',
+                        headers: getRequestHeaders(),
+                    }).catch((error) =>
+                        console.warn('Failed to cancel AI metadata generation job:', error),
+                    );
+                    return;
+                }
+
+                jobEventSource = new EventSource(
+                    `/api/worldinfo/ai-jobs/${encodeURIComponent(jobId)}/events`,
+                );
+
+                jobEventSource.addEventListener('job_started', () => {
+                    loader.setMessage(t`AI metadata generation started...`);
+                });
+
+                jobEventSource.addEventListener('generation_started', (event) => {
+                    const eventData = parseEvent(event);
+                    loader.setMessage(
+                        t`Generating AI metadata for ${eventData.total || 0} entries...`,
+                    );
+                });
+
+                jobEventSource.addEventListener('entry_started', (event) => {
+                    const eventData = parseEvent(event);
+                    loader.setMessage(
+                        t`Processing entry ${eventData.index || 0}/${eventData.total || 0}...`,
+                    );
+                });
+
+                jobEventSource.addEventListener('entry_completed', (event) => {
+                    const eventData = parseEvent(event);
+                    const entry = data.entries[eventData.uid];
+                    if (entry) {
+                        entry.aiFunctionName = eventData.name || '';
+                        entry.aiDescription = eventData.description || '';
+                        updateEntryAIFields(
+                            eventData.uid,
+                            entry.aiFunctionName,
+                            entry.aiDescription,
+                        );
+                    }
+                    loader.setMessage(
+                        t`Completed ${eventData.generated || eventData.index || 0}/${eventData.total || 0} entries...`,
+                    );
+                });
+
+                jobEventSource.addEventListener('entry_failed', (event) => {
+                    const eventData = parseEvent(event);
+                    console.warn('AI metadata generation failed for entry:', eventData);
+                    loader.setMessage(
+                        t`Failed entry ${eventData.index || 0}/${eventData.total || 0}...`,
+                    );
+                });
+
+                jobEventSource.addEventListener('job_completed', async (event) => {
+                    const eventData = parseEvent(event);
+                    closeGeneration();
+                    await saveWorldInfo(name, data);
+                    toastr.success(
+                        t`Generated AI metadata for ${eventData.generated || 0} entries`,
+                    );
+                });
+
+                jobEventSource.addEventListener('job_failed', (event) => {
+                    const eventData = parseEvent(event);
+                    closeGeneration();
+                    toastr.error(eventData.error || t`AI metadata generation failed`);
+                });
+
+                jobEventSource.onerror = () => {
+                    if (finished) {
+                        return;
+                    }
+
+                    if (jobEventSource?.readyState === EventSource.CLOSED) {
+                        closeGeneration();
+                        toastr.error(t`AI metadata generation connection closed`);
+                    } else {
+                        loader.setMessage(t`Connection lost, reconnecting...`);
+                    }
+                };
+            } catch (error) {
+                if (finished) {
+                    return;
+                }
+                closeGeneration();
+                console.error('AI metadata generation failed:', error);
+                toastr.error(error?.message || t`AI metadata generation failed`);
+            }
         });
 
     // Before printing the WI, we check if we should enable/disable search sorting
@@ -3446,10 +3585,16 @@ async function displayWorldEntries(
 
             const description = document.createElement('span');
             const descriptionText = document.createElement('p');
-            descriptionText.innerHTML = t`Assigns Order values to all entries based on their current sort position.`;
+            descriptionText.textContent = t`Assigns Order values to all entries based on their current sort position.`;
             contentEl.appendChild(descriptionText);
             const descriptionDetail = document.createElement('p');
-            descriptionDetail.innerHTML = t`Entries are ordered <b>descending</b> by default — the first entry in the list gets the highest value and will be inserted first into the prompt.`;
+            descriptionDetail.append(
+                t`Entries are ordered `,
+                Object.assign(document.createElement('b'), {
+                    textContent: t`descending`,
+                }),
+                t` by default — the first entry in the list gets the highest value and will be inserted first into the prompt.`,
+            );
             contentEl.appendChild(descriptionDetail);
             const entryCountText = document.createElement('small');
             entryCountText.textContent = t`(${entryCount} entries total)`;
@@ -4851,7 +4996,10 @@ export async function getWorldEntry(name, data, entry) {
         aiFunctionNameInput.data('uid', entry.uid);
         aiFunctionNameInput.on('input', async function () {
             const uid = $(this).data('uid');
-            data.entries[uid].aiFunctionName = String($(this).val()).replace(/::/g, '__');
+            data.entries[uid].aiFunctionName = String($(this).val()).replace(
+                /::/g,
+                '__',
+            );
             await saveWorldInfo(name, data);
         });
 

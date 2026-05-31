@@ -11,9 +11,14 @@ import {
     DEFAULT_AVATAR_PATH,
     TEXTGEN_TYPES,
 } from '../constants.js';
+import {
+    JobManager,
+    runWithConcurrency,
+    throwIfAborted,
+    withRetries,
+} from './job-manager.js';
 import { write as writeCharacterPngData } from '../character-card-parser.js';
 import { getUniqueName } from '../util.js';
-import { readSecret, SECRET_KEYS } from '../endpoints/secrets.js';
 import { generateVoronoiComposite } from './voronoi-composite.js';
 import {
     escapeXml,
@@ -25,10 +30,7 @@ import {
     minifyXml,
 } from '../../public/scripts/group-card-xml-parser.js';
 
-const JOB_TTL_MS = 30 * 60 * 1000;
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const LLM_TIMEOUT_MS = 2 * 60 * 1000;
-const MAX_LLM_RETRIES = 3;
 const DEFAULT_CONCURRENCY = 10;
 const MAX_CONCURRENCY = 50;
 
@@ -48,14 +50,55 @@ const API_COMETAPI = 'https://api.cometapi.com/v1';
 const API_ZAI = 'https://api.z.ai/api/paas/v4';
 const API_SILICONFLOW = 'https://api.siliconflow.com/v1';
 
+const SECRETS_FILE = 'secrets.json';
+const SECRET_KEYS = {
+    VLLM: 'api_key_vllm',
+    APHRODITE: 'api_key_aphrodite',
+    TABBY: 'api_key_tabby',
+    OPENAI: 'api_key_openai',
+    OPENROUTER: 'api_key_openrouter',
+    MISTRALAI: 'api_key_mistralai',
+    CUSTOM: 'api_key_custom',
+    LLAMACPP: 'api_key_llamacpp',
+    GROQ: 'api_key_groq',
+    CHUTES: 'api_key_chutes',
+    ELECTRONHUB: 'api_key_electronhub',
+    NANOGPT: 'api_key_nanogpt',
+    GENERIC: 'api_key_generic',
+    DEEPSEEK: 'api_key_deepseek',
+    AIMLAPI: 'api_key_aimlapi',
+    XAI: 'api_key_xai',
+    FIREWORKS: 'api_key_fireworks',
+    MOONSHOT: 'api_key_moonshot',
+    COMETAPI: 'api_key_cometapi',
+    ZAI: 'api_key_zai',
+    SILICONFLOW: 'api_key_siliconflow',
+};
+
 const ALWAYS_INCLUDED_FIELDS = ['name', 'description'];
 const OPTIONAL_FIELDS = ['personality', 'scenario', 'first_mes', 'mes_example'];
 const CHARACTER_OPEN_TAG = '<character>';
 const CHARACTER_CLOSE_TAG = '</character>';
 
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
-const TERMINAL_EVENT_TYPES = new Set(['job_completed', 'job_failed']);
-const TERMINAL_SSE_RETRY_MS = 24 * 60 * 60 * 1000;
+function readSecret(directories, key, id = null) {
+    const filePath = path.join(directories.root, SECRETS_FILE);
+
+    if (!fs.existsSync(filePath)) {
+        return '';
+    }
+
+    const secrets = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const secretArray = secrets[key];
+
+    if (Array.isArray(secretArray) && secretArray.length > 0) {
+        const activeSecret = secretArray.find((secret) =>
+            id ? secret.id === id : secret.active,
+        );
+        return activeSecret?.value || '';
+    }
+
+    return '';
+}
 
 function normalizeSelectedFields(fields) {
     const includedFields = new Set(Array.isArray(fields) ? fields : []);
@@ -122,54 +165,6 @@ function normalizePostProcessMode(value) {
     return ['replace', 'prepend', 'append'].includes(value) ? value : 'replace';
 }
 
-function delay(ms, signal) {
-    return new Promise((resolve, reject) => {
-        if (signal?.aborted) {
-            reject(new Error('Job cancelled.'));
-            return;
-        }
-
-        const timeout = setTimeout(resolve, ms);
-
-        signal?.addEventListener(
-            'abort',
-            () => {
-                clearTimeout(timeout);
-                reject(new Error('Job cancelled.'));
-            },
-            { once: true },
-        );
-    });
-}
-
-function throwIfAborted(signal) {
-    if (signal?.aborted) {
-        throw new Error('Job cancelled.');
-    }
-}
-
-async function withRetries(task, signal, attempts = MAX_LLM_RETRIES) {
-    let lastError;
-
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-        throwIfAborted(signal);
-
-        try {
-            return await task();
-        } catch (error) {
-            lastError = error;
-
-            if (attempt >= attempts) {
-                break;
-            }
-
-            await delay(1000 * 2 ** (attempt - 1), signal);
-        }
-    }
-
-    throw lastError;
-}
-
 function buildLlmUrl(apiUrl) {
     const baseUrl = String(apiUrl ?? '')
         .trim()
@@ -186,7 +181,7 @@ function buildLlmUrl(apiUrl) {
     return `${baseUrl}/chat/completions`;
 }
 
-function resolveOpenAiLikeConfig(llmConfig) {
+export function resolveOpenAiLikeConfig(llmConfig) {
     const settings = llmConfig.openai ?? {};
     const directories = llmConfig.directories;
     const source = settings.chat_completion_source;
@@ -333,7 +328,7 @@ function getOpenAiLikeModel(settings, source) {
     return sourceConfig?.model ?? settings.openai_model ?? settings.custom_model;
 }
 
-function resolveTextGenOpenAiConfig(llmConfig) {
+export function resolveTextGenOpenAiConfig(llmConfig) {
     const settings = llmConfig.textgenerationwebui ?? {};
     const type = settings.type;
     const apiUrl = settings.server_urls?.[type];
@@ -394,7 +389,7 @@ function getTextGenSecretKey(type) {
     }
 }
 
-function resolveLlmConfig(llmConfig) {
+export function resolveLlmConfig(llmConfig) {
     if (llmConfig.apiUrl) {
         return {
             apiUrl: llmConfig.apiUrl,
@@ -418,7 +413,7 @@ function resolveLlmConfig(llmConfig) {
     );
 }
 
-async function callLlmApi(llmConfig, prompt, signal) {
+export async function callLlmApi(llmConfig, prompt, signal) {
     if (!llmConfig || typeof llmConfig !== 'object') {
         throw new Error('LLM config is required.');
     }
@@ -526,23 +521,6 @@ async function callLlmApi(llmConfig, prompt, signal) {
         clearTimeout(timeout);
         signal?.removeEventListener('abort', onAbort);
     }
-}
-
-async function runWithConcurrency(tasks, concurrency) {
-    const results = [];
-    let index = 0;
-
-    async function worker() {
-        while (index < tasks.length) {
-            const taskIndex = index++;
-            results[taskIndex] = await tasks[taskIndex]();
-        }
-    }
-
-    await Promise.all(
-        Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()),
-    );
-    return results;
 }
 
 function formatLorebookSummaryField(label, value) {
@@ -867,49 +845,12 @@ function getUniqueCharacterInternalName(groupName, directories) {
  * @property {Array<{id:number,eventType:string,data:object}>} eventLog
  */
 
-export class GroupCardJobManager {
+export class GroupCardJobManager extends JobManager {
     /**
 	 * @param {{ttlMs?: number, cleanupIntervalMs?: number}} [options]
 	 */
     constructor(options = {}) {
-        this.ttlMs = options.ttlMs ?? JOB_TTL_MS;
-        this.cleanupIntervalMs = options.cleanupIntervalMs ?? CLEANUP_INTERVAL_MS;
-        /** @type {Map<string, GroupCardJob>} */
-        this.jobs = new Map();
-        this.cleanupTimer = setInterval(
-            () => this.cleanup(),
-            this.cleanupIntervalMs,
-        );
-        this.cleanupTimer.unref?.();
-    }
-
-    /**
-	 * Creates a group card generation job and optionally starts the runner.
-	 * @param {object} config Full job config from client.
-	 * @param {{autoStart?: boolean}} [options] Job creation options.
-	 * @returns {GroupCardJob}
-	 */
-    createJob(config, options = {}) {
-        /** @type {GroupCardJob} */
-        const job = {
-            id: crypto.randomUUID(),
-            status: 'pending',
-            config: config && typeof config === 'object' ? config : {},
-            progress: {},
-            results: {},
-            error: null,
-            createdAt: Date.now(),
-            sseClients: new Set(),
-            abortController: new AbortController(),
-            eventCounter: 0,
-            eventLog: [],
-        };
-
-        this.jobs.set(job.id, job);
-        if (options.autoStart !== false) {
-            setImmediate(() => this.runJob(job.id));
-        }
-        return job;
+        super(options);
     }
 
     /**
@@ -977,96 +918,6 @@ export class GroupCardJobManager {
             job.error = error?.message ?? String(error);
             this.emitEvent(jobId, 'job_failed', { error: job.error });
             setTimeout(() => this.closeSseClients(job), 50);
-        }
-    }
-
-    /**
-	 * Gets a job by ID.
-	 * @param {string} id Job ID.
-	 * @returns {GroupCardJob|null}
-	 */
-    getJob(id) {
-        return this.jobs.get(id) ?? null;
-    }
-
-    /**
-	 * Cancels a running or pending job.
-	 * @param {string} id Job ID.
-	 * @returns {boolean}
-	 */
-    cancelJob(id) {
-        const job = this.getJob(id);
-        if (!job) {
-            return false;
-        }
-
-        if (TERMINAL_STATUSES.has(job.status)) {
-            return true;
-        }
-
-        job.status = 'cancelled';
-        job.abortController?.abort();
-        this.emitEvent(id, 'job_failed', { error: 'Job cancelled.' });
-        // Defer close to allow SSE event to flush to clients
-        setTimeout(() => this.closeSseClients(job), 50);
-        return true;
-    }
-
-    /**
-	 * Adds an SSE client and replays missed events.
-	 * @param {string} id Job ID.
-	 * @param {import('express').Response} response Express response.
-	 * @param {number} [lastEventId=0] Last received SSE event ID.
-	 * @returns {boolean}
-	 */
-    addSseClient(id, response, lastEventId = 0) {
-        const job = this.getJob(id);
-        if (!job) {
-            return false;
-        }
-
-        for (const event of job.eventLog) {
-            if (event.id > lastEventId) {
-                this.writeSseEvent(response, event.id, event.eventType, event.data);
-            }
-        }
-
-        if (TERMINAL_STATUSES.has(job.status)) {
-            response.flush?.();
-            setImmediate(() => this.closeSseClient(response));
-            return true;
-        }
-
-        job.sseClients.add(response);
-
-        response.on('close', () => {
-            job.sseClients.delete(response);
-        });
-
-        return true;
-    }
-
-    /**
-	 * Emits an SSE event to all connected clients and stores it for reconnect replay.
-	 * @param {string} jobId Job ID.
-	 * @param {string} eventType SSE event type.
-	 * @param {object} [data={}] Event payload.
-	 */
-    emitEvent(jobId, eventType, data = {}) {
-        const job = this.getJob(jobId);
-        if (!job) {
-            return;
-        }
-
-        const event = {
-            id: ++job.eventCounter,
-            eventType,
-            data: data && typeof data === 'object' ? data : {},
-        };
-        job.eventLog.push(event);
-
-        for (const client of [...job.sseClients]) {
-            this.writeSseEvent(client, event.id, event.eventType, event.data);
         }
     }
 
@@ -1482,95 +1333,6 @@ export class GroupCardJobManager {
                 fs.rmSync(artifactPath, { force: true, recursive: true });
             }
         }
-    }
-
-    /**
-	 * Removes expired jobs and closes lingering SSE connections.
-	 */
-    cleanup() {
-        const now = Date.now();
-
-        for (const [id, job] of this.jobs.entries()) {
-            if (now - job.createdAt <= this.ttlMs) {
-                continue;
-            }
-
-            job.abortController?.abort();
-            this.closeSseClients(job);
-            this.jobs.delete(id);
-        }
-    }
-
-    /**
-	 * Closes all jobs and stops cleanup timer.
-	 */
-    shutdown() {
-        clearInterval(this.cleanupTimer);
-
-        for (const job of this.jobs.values()) {
-            job.abortController?.abort();
-            this.closeSseClients(job);
-        }
-
-        this.jobs.clear();
-    }
-
-    /**
-	 * @param {GroupCardJob} job Job object.
-	 */
-    closeSseClients(job) {
-        for (const client of [...job.sseClients]) {
-            this.closeSseClient(client);
-        }
-        job.sseClients.clear();
-    }
-
-    /**
-	 * @param {import('express').Response} response Express response.
-	 */
-    closeSseClient(response) {
-        try {
-            if (!response.writableEnded) {
-                response.end();
-            }
-        } catch (error) {
-            console.debug('Failed to close group card job SSE client:', error);
-        }
-    }
-
-    /**
-	 * @param {import('express').Response} response Express response.
-	 * @param {number} id Event ID.
-	 * @param {string} eventType Event type.
-	 * @param {object} data Event payload.
-	 */
-    writeSseEvent(response, id, eventType, data) {
-        if (response.writableEnded) {
-            return;
-        }
-
-        response.write(`id: ${id}\n`);
-        response.write(`event: ${eventType}\n`);
-        if (TERMINAL_EVENT_TYPES.has(eventType)) {
-            response.write(`retry: ${TERMINAL_SSE_RETRY_MS}\n`);
-        }
-        response.write(`data: ${JSON.stringify(data)}\n\n`);
-        response.flush?.();
-    }
-
-    /**
-	 * Creates a safe public view of a job.
-	 * @param {GroupCardJob} job Job object.
-	 * @returns {{id:string,status:string,progress:object,results:object,error:string|null}}
-	 */
-    serializeJob(job) {
-        return {
-            id: job.id,
-            status: job.status,
-            progress: job.progress,
-            results: job.results,
-            error: job.error,
-        };
     }
 }
 

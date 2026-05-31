@@ -13931,6 +13931,80 @@
                                                 </div>
 
                                                 <div
+                                                    class="alignitemscenter flex-container flexFlowColumn flexGrow flexShrink gap0 flexBasis48p"
+                                                    title="Controls how many lorebook entries are processed in parallel during AI metadata generation"
+                                                    data-i18n="[title]Controls how many lorebook entries are processed in parallel during AI metadata generation"
+                                                >
+                                                    <small>
+                                                        <span
+                                                            data-i18n="AI Metadata Concurrency"
+                                                            >AI Metadata
+                                                            Concurrency</span
+                                                        >
+                                                        <div
+                                                            class="fa-solid fa-circle-info opacity50p"
+                                                            data-i18n="[title]How many entries are sent to the LLM in parallel during AI metadata generation"
+                                                            title="How many entries are sent to the LLM in parallel during AI metadata generation"
+                                                        ></div>
+                                                    </small>
+                                                    <input
+                                                        class="neo-range-slider"
+                                                        type="range"
+                                                        id="lorebook_ai_concurrency"
+                                                        name="lorebook_ai_concurrency"
+                                                        min="1"
+                                                        max="20"
+                                                        step="1"
+                                                    />
+                                                    <input
+                                                        class="neo-range-input"
+                                                        type="number"
+                                                        min="1"
+                                                        max="20"
+                                                        step="1"
+                                                        data-for="lorebook_ai_concurrency"
+                                                        id="lorebook_ai_concurrency_counter"
+                                                    />
+                                                </div>
+
+                                                <div
+                                                    class="alignitemscenter flex-container flexFlowColumn flexGrow flexShrink gap0 flexBasis48p"
+                                                    title="Controls how many lorebook entries are sent per LLM request batch"
+                                                    data-i18n="[title]Controls how many lorebook entries are sent per LLM request batch"
+                                                >
+                                                    <small>
+                                                        <span
+                                                            data-i18n="AI Metadata Batch Size"
+                                                            >AI Metadata Batch
+                                                            Size</span
+                                                        >
+                                                        <div
+                                                            class="fa-solid fa-circle-info opacity50p"
+                                                            data-i18n="[title]How many entries are sent per LLM request batch"
+                                                            title="How many entries are sent per LLM request batch"
+                                                        ></div>
+                                                    </small>
+                                                    <input
+                                                        class="neo-range-slider"
+                                                        type="range"
+                                                        id="lorebook_ai_batch_size"
+                                                        name="lorebook_ai_batch_size"
+                                                        min="5"
+                                                        max="50"
+                                                        step="1"
+                                                    />
+                                                    <input
+                                                        class="neo-range-input"
+                                                        type="number"
+                                                        min="5"
+                                                        max="50"
+                                                        step="1"
+                                                        data-for="lorebook_ai_batch_size"
+                                                        id="lorebook_ai_batch_size_counter"
+                                                    />
+                                                </div>
+
+                                                <div
                                                     class="alignitemscenter flex-container flexFlowColumn flexGrow flexShrink flexBasis48p"
                                                 >
                                                     <small
