@@ -1127,6 +1127,15 @@ function hasAIManagedLorebooks() {
     return false;
 }
 
+function hasAIManagedDirectAccess() {
+    for (const data of worldInfoCache.values()) {
+        if (data?.aiManagedEnabled && data?.aiManagedDirectAccess) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /**
  * Gets AI-manageable lorebook entries from the current cache.
  * @param {string} [lorebookFilter] Optional lorebook name filter
@@ -1237,7 +1246,8 @@ function registerAIManagedLoreTools() {
                 ({ entry, ...item }) => item,
             );
         },
-        shouldRegister: () => hasAIManagedLorebooks(),
+        shouldRegister: () =>
+            hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
         stealth: true,
     });
 
@@ -1286,7 +1296,8 @@ function registerAIManagedLoreTools() {
 
             return `Loaded lore entry: ${item.name}`;
         },
-        shouldRegister: () => hasAIManagedLorebooks(),
+        shouldRegister: () =>
+            hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
         stealth: false,
     });
 
@@ -1326,7 +1337,8 @@ function registerAIManagedLoreTools() {
 
             return `Unloaded lore entry: ${item.name}`;
         },
-        shouldRegister: () => hasAIManagedLorebooks(),
+        shouldRegister: () =>
+            hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
         stealth: false,
     });
 
@@ -1357,6 +1369,54 @@ function registerAIManagedLoreTools() {
         shouldRegister: () => hasAIManagedLorebooks(),
         stealth: true,
     });
+
+    // Register individual get_ tools when Direct Access mode is enabled
+    const registry = getAIManagedLoreRegistry();
+    for (const item of registry) {
+        const toolName =
+			'get_' +
+			item.name
+			    .toLowerCase()
+			    .replace(/[^a-z0-9_]/g, '_')
+			    .replace(/^_+/, '')
+			    .replace(/_+/g, '_');
+
+        const entryDescription =
+			item.description ||
+			`Get the content of lorebook entry "${item.name}" from "${item.lorebook}"`;
+
+        ToolManager.registerFunctionTool({
+            name: toolName,
+            displayName: `Get ${item.entry?.comment || item.name}`,
+            description: entryDescription,
+            parameters: Object.freeze({ type: 'object', properties: {} }),
+            action: async () => {
+                const currentRegistry = getAIManagedLoreRegistry();
+                const found = currentRegistry.find((r) => r.name === item.name);
+                if (!found || !found.entry) {
+                    throw new Error(`Lore entry not found: ${item.name}`);
+                }
+                const entry = found.entry;
+                const state =
+					entry.constant === true
+					    ? 'constant'
+					    : entry.vectorized === true
+					        ? 'vectorized'
+					        : 'normal';
+                return {
+                    content: entry.content || '',
+                    comment: entry.comment || '',
+                    lorebook: item.lorebook,
+                    position: entry.position,
+                    depth: entry.depth,
+                    order: entry.order,
+                    state: state,
+                };
+            },
+            shouldRegister: () => hasAIManagedDirectAccess(),
+            stealth: true,
+        });
+    }
 }
 
 /**
@@ -3199,8 +3259,170 @@ async function displayWorldEntries(
         await saveWorldInfo(name, data);
         $('.ai-managed-load-toggle').toggle(data.aiManagedEnabled);
         $('[name="aiManagedBlock"]').toggle(data.aiManagedEnabled);
+        $('[name="aiBulkEditBlock"]').toggle(data.aiManagedEnabled);
+        $('#world_ai_managed_direct_access_toggle')
+            .closest('label')
+            .toggle(data.aiManagedEnabled);
     });
+
+    $('[name="aiBulkEditBlock"]').toggle(!!data.aiManagedEnabled);
+
+    const directAccessToggle = $('#world_ai_managed_direct_access_toggle');
+    directAccessToggle.prop('checked', !!data.aiManagedDirectAccess);
+    directAccessToggle.off('input').on('input', async function () {
+        data.aiManagedDirectAccess = $(this).prop('checked');
+        await saveWorldInfo(name, data);
+    });
+    $('#world_ai_managed_direct_access_toggle')
+        .closest('label')
+        .toggle(!!data.aiManagedEnabled);
     $('#world_ai_managed_header').show();
+
+    // Bulk Edit Apply
+    $('#bulk_edit_apply')
+        .off('click')
+        .on('click', async function () {
+            const selectedNameValue = $('#world_info').val();
+            const selectedName =
+				typeof selectedNameValue === 'string' ? selectedNameValue : '';
+            if (!selectedName) {
+                toastr.warning('No lorebook loaded.');
+                return;
+            }
+            const data = worldInfoCache.get(selectedName);
+            if (!data || !data.entries) {
+                toastr.warning('No lorebook data found.');
+                return;
+            }
+
+            const entryStatus = String(
+                $('#bulk_edit_entry_status').val() ?? 'no_change',
+            );
+            const entryState = String(
+                $('#bulk_edit_entry_state').val() ?? 'no_change',
+            );
+            const position = String($('#bulk_edit_position').val() ?? 'no_change');
+            const depthVal = String($('#bulk_edit_depth').val() ?? '');
+            const orderVal = String($('#bulk_edit_order').val() ?? '');
+
+            let changed = false;
+
+            for (const [uid, entry] of Object.entries(data.entries)) {
+                if (!entry || typeof entry !== 'object') continue;
+
+                const uidNumber = Number(uid);
+
+                // Entry Status (disable)
+                if (entryStatus === 'enable') {
+                    entry.disable = false;
+                    setWIOriginalDataValue(data, uidNumber, 'enabled', true);
+                    changed = true;
+                } else if (entryStatus === 'disable') {
+                    entry.disable = true;
+                    setWIOriginalDataValue(data, uidNumber, 'enabled', false);
+                    changed = true;
+                }
+
+                // Entry State (constant/normal/vectorized)
+                if (entryState === 'constant') {
+                    entry.constant = true;
+                    entry.vectorized = false;
+                    setWIOriginalDataValue(data, uidNumber, 'constant', true);
+                    setWIOriginalDataValue(
+                        data,
+                        uidNumber,
+                        'extensions.vectorized',
+                        false,
+                    );
+                    changed = true;
+                } else if (entryState === 'normal') {
+                    entry.constant = false;
+                    entry.vectorized = false;
+                    setWIOriginalDataValue(data, uidNumber, 'constant', false);
+                    setWIOriginalDataValue(
+                        data,
+                        uidNumber,
+                        'extensions.vectorized',
+                        false,
+                    );
+                    changed = true;
+                } else if (entryState === 'vectorized') {
+                    entry.constant = false;
+                    entry.vectorized = true;
+                    setWIOriginalDataValue(data, uidNumber, 'constant', false);
+                    setWIOriginalDataValue(
+                        data,
+                        uidNumber,
+                        'extensions.vectorized',
+                        true,
+                    );
+                    changed = true;
+                }
+
+                // Position
+                if (position !== 'no_change') {
+                    const posNum = Number(position);
+                    entry.position = posNum;
+                    if (posNum === 4) {
+                        // atDepth
+                        entry.role = entry.role ?? 0; // default to system
+                    }
+                    setWIOriginalDataValue(
+                        data,
+                        uidNumber,
+                        'position',
+                        posNum === 0 ? 'before_char' : 'after_char',
+                    );
+                    setWIOriginalDataValue(
+                        data,
+                        uidNumber,
+                        'extensions.position',
+                        posNum,
+                    );
+                    setWIOriginalDataValue(
+                        data,
+                        uidNumber,
+                        'extensions.role',
+                        entry.role,
+                    );
+                    changed = true;
+                }
+
+                // Depth (only if input has a value)
+                if (depthVal !== '' && depthVal !== undefined) {
+                    const depthNum = Number(depthVal);
+                    if (!isNaN(depthNum) && depthNum >= 0) {
+                        entry.depth = depthNum;
+                        setWIOriginalDataValue(data, uidNumber, 'depth', depthNum);
+                        changed = true;
+                    }
+                }
+
+                // Order (only if input has a value)
+                if (orderVal !== '' && orderVal !== undefined) {
+                    const orderNum = Number(orderVal);
+                    if (!isNaN(orderNum)) {
+                        entry.order = orderNum;
+                        setWIOriginalDataValue(
+                            data,
+                            uidNumber,
+                            'insertion_order',
+                            orderNum,
+                        );
+                        changed = true;
+                    }
+                }
+            }
+
+            if (changed) {
+                await saveWorldInfo(selectedName, data);
+                // Refresh the editor to reflect changes
+                updateEditor();
+                toastr.success('Bulk edit applied.');
+            } else {
+                toastr.info('No changes to apply.');
+            }
+        });
 
     const updateEntryAIFields = (uid, aiFunctionName, aiDescription) => {
         const entryElement = $('#world_popup_entries_list .world_entry').filter(

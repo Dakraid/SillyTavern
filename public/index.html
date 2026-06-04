@@ -14389,6 +14389,20 @@
                                         >AI Managed</span
                                     >
                                 </label>
+                                <label
+                                    class="checkbox flex-container alignitemscenter"
+                                    title="Provide individual get functions for each entry instead of search and load"
+                                    data-i18n="[title]Provide individual get functions for each entry instead of search and load"
+                                    style="display: none"
+                                >
+                                    <input
+                                        type="checkbox"
+                                        id="world_ai_managed_direct_access_toggle"
+                                    />
+                                    <span data-i18n="Direct Access"
+                                        >Direct Access</span
+                                    >
+                                </label>
                                 <div
                                     id="world_ai_regenerate_names"
                                     class="menu_button fa-solid fa-wand-magic-sparkles"
@@ -20845,6 +20859,136 @@
                                     max="9999"
                                     data-i18n="[placeholder]0 = disabled"
                                 />
+                            </div>
+                        </div>
+                        <div
+                            class="inline-drawer wide100p flexFlowColumn"
+                            name="aiBulkEditBlock"
+                        >
+                            <div
+                                class="inline-drawer-toggle inline-drawer-header inline-drawer-header-pointer userSettingsInnerExpandable"
+                            >
+                                <strong data-i18n="Bulk Edit">Bulk Edit</strong>
+                                <div
+                                    class="fa-solid fa-circle-chevron-down inline-drawer-icon down"
+                                ></div>
+                            </div>
+                            <div
+                                class="inline-drawer-content flex-container flexFlowColumn flexGap10 paddingBottom5px"
+                            >
+                                <div
+                                    class="flex-container flexFlowRow flexGap10"
+                                >
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Entry Status"
+                                            >Entry Status</small
+                                        >
+                                        <select
+                                            id="bulk_edit_entry_status"
+                                            class="text_pole margin0"
+                                        >
+                                            <option value="no_change" selected>
+                                                No Change
+                                            </option>
+                                            <option value="enable">
+                                                Enable All
+                                            </option>
+                                            <option value="disable">
+                                                Disable All
+                                            </option>
+                                        </select>
+                                    </div>
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Entry State"
+                                            >Entry State</small
+                                        >
+                                        <select
+                                            id="bulk_edit_entry_state"
+                                            class="text_pole margin0"
+                                        >
+                                            <option value="no_change" selected>
+                                                No Change
+                                            </option>
+                                            <option value="constant">
+                                                🔵 Constant
+                                            </option>
+                                            <option value="normal">
+                                                🟢 Normal
+                                            </option>
+                                            <option value="vectorized">
+                                                🔗 Vectorized
+                                            </option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div
+                                    class="flex-container flexFlowRow flexGap10"
+                                >
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Position"
+                                            >Position</small
+                                        >
+                                        <select
+                                            id="bulk_edit_position"
+                                            class="text_pole margin0"
+                                        >
+                                            <option value="no_change" selected>
+                                                No Change
+                                            </option>
+                                            <option value="0">↑Char</option>
+                                            <option value="1">↓Char</option>
+                                            <option value="5">↑EM</option>
+                                            <option value="6">↓EM</option>
+                                            <option value="2">↑AN</option>
+                                            <option value="3">↓AN</option>
+                                            <option value="4">@D ⚙️</option>
+                                        </select>
+                                    </div>
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Depth"
+                                            >Depth</small
+                                        >
+                                        <input
+                                            id="bulk_edit_depth"
+                                            class="text_pole margin0"
+                                            type="number"
+                                            placeholder="No Change"
+                                            min="0"
+                                            max="1000"
+                                        />
+                                    </div>
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Order"
+                                            >Order</small
+                                        >
+                                        <input
+                                            id="bulk_edit_order"
+                                            class="text_pole margin0"
+                                            type="number"
+                                            placeholder="No Change"
+                                        />
+                                    </div>
+                                </div>
+                                <div
+                                    class="flex-container flexFlowRow flexGap10"
+                                >
+                                    <input
+                                        id="bulk_edit_apply"
+                                        class="menu_button"
+                                        type="button"
+                                        value="Apply to All Entries"
+                                    />
+                                </div>
                             </div>
                         </div>
                     </div>
