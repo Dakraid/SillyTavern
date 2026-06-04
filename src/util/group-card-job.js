@@ -609,6 +609,12 @@ function buildLorebookEntry(character, index, fields) {
         cooldown: null,
         delay: null,
         triggers: [],
+        aiFunctionName: name
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+/, ''),
+        aiDescription: `Content for ${name}`,
     };
 }
 
@@ -712,6 +718,12 @@ function buildDynamicLorebookEntry(block, index) {
         cooldown: null,
         delay: null,
         triggers: [],
+        aiFunctionName: name
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+/, ''),
+        aiDescription: `Content for ${name}`,
     };
 }
 
@@ -869,7 +881,10 @@ export class GroupCardJobManager extends JobManager {
                 )
                 : [],
             fields: normalizeSelectedFields(config?.fields),
-            llm: config?.llm ?? {},
+            llm: {
+                ...(config?.llm && typeof config.llm === 'object' ? config.llm : {}),
+                directories: config.directories,
+            },
             nudges: config?.nudges ?? {},
         };
 

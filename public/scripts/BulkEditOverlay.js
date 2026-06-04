@@ -306,6 +306,12 @@ function buildLorebookEntry(character, index, fields) {
         content: buildLorebookEntryContent(character, fields),
         addMemo: true,
         order: 100 - uid,
+        aiFunctionName: name
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+/, ''),
+        aiDescription: `Content for ${name}`,
     };
 }
 
@@ -395,6 +401,12 @@ function buildDynamicLorebookData(generatedXml) {
                 content: stripSummaryFromCharacterBlock(block.raw),
                 addMemo: true,
                 order: 100 - uid,
+                aiFunctionName: characterName
+                    .toLowerCase()
+                    .replace(/[^a-z0-9_]/g, '_')
+                    .replace(/_+/g, '_')
+                    .replace(/^_+/, ''),
+                aiDescription: `Content for ${characterName}`,
             };
             return [entry.uid, entry];
         }),
@@ -4150,10 +4162,12 @@ class BulkEditOverlay {
                     wizardState.config?.minify,
                     wizardState.config?.minifySingleLine,
                 );
+                const { avatar, world } = result;
+                wizardState.createdArtifacts = { avatar, world };
                 wizardState.results = result;
                 await BulkEditOverlay.#applyWizardRegeneratedAvatar(
                     wizardState,
-                    result.avatar,
+                    avatar,
                 );
             }
             await getCharacters();
@@ -4767,7 +4781,7 @@ class BulkEditOverlay {
             validCharacters.length,
         );
         const rerunStoredConfig = rerunConfig?.rerunMeta?.config ?? {};
-        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, characterOutputs:Array<object>, mergedXml:string, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null, voronoiSeed:number, rerunConfig?:object|null}} */
+        /** @type {{stage:number, config:object, selectedCharacterIds:Array<number>, results:unknown, createdArtifacts:{avatar:string, world:string}|null, characterOutputs:Array<object>, mergedXml:string, postProcessResult:unknown, postProcessMode:string, avatarOffsets:Array<object>, avatarUrl:string|null, voronoiSeed:number, rerunConfig?:object|null}} */
         const wizardState = {
             stage: 1,
             config: {
@@ -4794,6 +4808,7 @@ class BulkEditOverlay {
             },
             selectedCharacterIds,
             results: null,
+            createdArtifacts: null,
             characterOutputs: [],
             mergedXml: '',
             postProcessResult: null,
@@ -5075,9 +5090,35 @@ class BulkEditOverlay {
                     }
                 });
 
-                popupContent.find('#bulk_combine_wizard_cancel').on('click', () => {
-                    popup.completeCancelled();
-                });
+                popupContent
+                    .find('#bulk_combine_wizard_cancel')
+                    .on('click', async () => {
+                        // Cancel any running server-side job
+                        const activeJobId = sessionStorage.getItem(
+                            GROUP_CARD_JOB_SESSION_KEY,
+                        );
+                        if (activeJobId) {
+                            sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
+                            await BulkEditOverlay.#cancelGroupCardJob(String(activeJobId));
+                            BulkEditOverlay.#removeGroupCardJob(String(activeJobId));
+                        }
+
+                        // Rollback created artifacts if we reached stage 4
+                        if (wizardState.stage >= 4 && wizardState.createdArtifacts) {
+                            const { avatar, world } = wizardState.createdArtifacts;
+                            const groupName = String(
+                                wizardState.config?.groupName ?? '',
+                            ).trim();
+                            if (world) {
+                                await rollbackGeneratedLorebook(groupName);
+                            }
+                            if (avatar && groupName) {
+                                await rollbackGeneratedCharacter(groupName, avatar);
+                            }
+                        }
+
+                        popup.completeCancelled();
+                    });
 
                 popupContent
                     .find('#bulk_combine_wizard_save_as_is')
