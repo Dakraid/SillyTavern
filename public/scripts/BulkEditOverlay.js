@@ -4973,13 +4973,6 @@ class BulkEditOverlay {
                     wizardState.selectedCharacterIds,
                 );
 
-                modeInputs.on('change', () => {
-                    const selectedMode = String(
-                        modeInputs.filter(':checked').val() ?? 'parallel',
-                    );
-                    concurrencyContainer.toggle(selectedMode === 'parallel');
-                });
-
                 cropPaddingInput.on('input', () => {
                     cropPaddingValue.text(String(cropPaddingInput.val() ?? '15'));
                 });
