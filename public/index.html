@@ -13931,6 +13931,80 @@
                                                 </div>
 
                                                 <div
+                                                    class="alignitemscenter flex-container flexFlowColumn flexGrow flexShrink gap0 flexBasis48p"
+                                                    title="Controls how many lorebook entries are processed in parallel during AI metadata generation"
+                                                    data-i18n="[title]Controls how many lorebook entries are processed in parallel during AI metadata generation"
+                                                >
+                                                    <small>
+                                                        <span
+                                                            data-i18n="AI Metadata Concurrency"
+                                                            >AI Metadata
+                                                            Concurrency</span
+                                                        >
+                                                        <div
+                                                            class="fa-solid fa-circle-info opacity50p"
+                                                            data-i18n="[title]How many entries are sent to the LLM in parallel during AI metadata generation"
+                                                            title="How many entries are sent to the LLM in parallel during AI metadata generation"
+                                                        ></div>
+                                                    </small>
+                                                    <input
+                                                        class="neo-range-slider"
+                                                        type="range"
+                                                        id="lorebook_ai_concurrency"
+                                                        name="lorebook_ai_concurrency"
+                                                        min="1"
+                                                        max="20"
+                                                        step="1"
+                                                    />
+                                                    <input
+                                                        class="neo-range-input"
+                                                        type="number"
+                                                        min="1"
+                                                        max="20"
+                                                        step="1"
+                                                        data-for="lorebook_ai_concurrency"
+                                                        id="lorebook_ai_concurrency_counter"
+                                                    />
+                                                </div>
+
+                                                <div
+                                                    class="alignitemscenter flex-container flexFlowColumn flexGrow flexShrink gap0 flexBasis48p"
+                                                    title="Controls how many lorebook entries are sent per LLM request batch"
+                                                    data-i18n="[title]Controls how many lorebook entries are sent per LLM request batch"
+                                                >
+                                                    <small>
+                                                        <span
+                                                            data-i18n="AI Metadata Batch Size"
+                                                            >AI Metadata Batch
+                                                            Size</span
+                                                        >
+                                                        <div
+                                                            class="fa-solid fa-circle-info opacity50p"
+                                                            data-i18n="[title]How many entries are sent per LLM request batch"
+                                                            title="How many entries are sent per LLM request batch"
+                                                        ></div>
+                                                    </small>
+                                                    <input
+                                                        class="neo-range-slider"
+                                                        type="range"
+                                                        id="lorebook_ai_batch_size"
+                                                        name="lorebook_ai_batch_size"
+                                                        min="5"
+                                                        max="50"
+                                                        step="1"
+                                                    />
+                                                    <input
+                                                        class="neo-range-input"
+                                                        type="number"
+                                                        min="5"
+                                                        max="50"
+                                                        step="1"
+                                                        data-for="lorebook_ai_batch_size"
+                                                        id="lorebook_ai_batch_size_counter"
+                                                    />
+                                                </div>
+
+                                                <div
                                                     class="alignitemscenter flex-container flexFlowColumn flexGrow flexShrink flexBasis48p"
                                                 >
                                                     <small
@@ -14313,6 +14387,20 @@
                                     />
                                     <span data-i18n="AI Managed"
                                         >AI Managed</span
+                                    >
+                                </label>
+                                <label
+                                    class="checkbox flex-container alignitemscenter"
+                                    title="Provide individual get functions for each entry instead of search and load"
+                                    data-i18n="[title]Provide individual get functions for each entry instead of search and load"
+                                    style="display: none"
+                                >
+                                    <input
+                                        type="checkbox"
+                                        id="world_ai_managed_direct_access_toggle"
+                                    />
+                                    <span data-i18n="Direct Access"
+                                        >Direct Access</span
                                     >
                                 </label>
                                 <div
@@ -20771,6 +20859,136 @@
                                     max="9999"
                                     data-i18n="[placeholder]0 = disabled"
                                 />
+                            </div>
+                        </div>
+                        <div
+                            class="inline-drawer wide100p flexFlowColumn"
+                            name="aiBulkEditBlock"
+                        >
+                            <div
+                                class="inline-drawer-toggle inline-drawer-header inline-drawer-header-pointer userSettingsInnerExpandable"
+                            >
+                                <strong data-i18n="Bulk Edit">Bulk Edit</strong>
+                                <div
+                                    class="fa-solid fa-circle-chevron-down inline-drawer-icon down"
+                                ></div>
+                            </div>
+                            <div
+                                class="inline-drawer-content flex-container flexFlowColumn flexGap10 paddingBottom5px"
+                            >
+                                <div
+                                    class="flex-container flexFlowRow flexGap10"
+                                >
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Entry Status"
+                                            >Entry Status</small
+                                        >
+                                        <select
+                                            id="bulk_edit_entry_status"
+                                            class="text_pole margin0"
+                                        >
+                                            <option value="no_change" selected>
+                                                No Change
+                                            </option>
+                                            <option value="enable">
+                                                Enable All
+                                            </option>
+                                            <option value="disable">
+                                                Disable All
+                                            </option>
+                                        </select>
+                                    </div>
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Entry State"
+                                            >Entry State</small
+                                        >
+                                        <select
+                                            id="bulk_edit_entry_state"
+                                            class="text_pole margin0"
+                                        >
+                                            <option value="no_change" selected>
+                                                No Change
+                                            </option>
+                                            <option value="constant">
+                                                🔵 Constant
+                                            </option>
+                                            <option value="normal">
+                                                🟢 Normal
+                                            </option>
+                                            <option value="vectorized">
+                                                🔗 Vectorized
+                                            </option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div
+                                    class="flex-container flexFlowRow flexGap10"
+                                >
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Position"
+                                            >Position</small
+                                        >
+                                        <select
+                                            id="bulk_edit_position"
+                                            class="text_pole margin0"
+                                        >
+                                            <option value="no_change" selected>
+                                                No Change
+                                            </option>
+                                            <option value="0">↑Char</option>
+                                            <option value="1">↓Char</option>
+                                            <option value="5">↑EM</option>
+                                            <option value="6">↓EM</option>
+                                            <option value="2">↑AN</option>
+                                            <option value="3">↓AN</option>
+                                            <option value="4">@D ⚙️</option>
+                                        </select>
+                                    </div>
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Depth"
+                                            >Depth</small
+                                        >
+                                        <input
+                                            id="bulk_edit_depth"
+                                            class="text_pole margin0"
+                                            type="number"
+                                            placeholder="No Change"
+                                            min="0"
+                                            max="1000"
+                                        />
+                                    </div>
+                                    <div class="world_entry_form_control flex1">
+                                        <small
+                                            class="textAlignCenter"
+                                            data-i18n="Order"
+                                            >Order</small
+                                        >
+                                        <input
+                                            id="bulk_edit_order"
+                                            class="text_pole margin0"
+                                            type="number"
+                                            placeholder="No Change"
+                                        />
+                                    </div>
+                                </div>
+                                <div
+                                    class="flex-container flexFlowRow flexGap10"
+                                >
+                                    <input
+                                        id="bulk_edit_apply"
+                                        class="menu_button"
+                                        type="button"
+                                        value="Apply to All Entries"
+                                    />
+                                </div>
                             </div>
                         </div>
                     </div>

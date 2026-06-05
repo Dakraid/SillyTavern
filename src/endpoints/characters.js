@@ -2183,6 +2183,34 @@ router.post('/group-card-job', async function (request, response) {
     }
 });
 
+router.post('/group-card-job/regen', async function (request, response) {
+    try {
+        if (!request.body || typeof request.body !== 'object') {
+            return response.status(400).send({ message: 'Regen config is required' });
+        }
+
+        const config = {
+            ...(request.body.config && typeof request.body.config === 'object'
+                ? request.body.config
+                : request.body),
+            directories: request.user.directories,
+        };
+
+        if (!Array.isArray(config.characters) || config.characters.length === 0) {
+            return response
+                .status(400)
+                .send({ message: 'At least one character is required' });
+        }
+
+        const { jobId } = await groupCardJobManager.createRegenJob(config);
+
+        return response.send({ jobId });
+    } catch (err) {
+        console.error('Group card regen job creation failed:', err);
+        return response.status(500).send({ message: 'Failed to create regen job' });
+    }
+});
+
 router.get('/group-card-job/:id/events', function (request, response) {
     const jobId = String(request.params.id ?? '');
     const job = groupCardJobManager.getJob(jobId);

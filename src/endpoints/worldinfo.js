@@ -6,6 +6,7 @@ import sanitize from 'sanitize-filename';
 import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { tryParse } from '../util.js';
+import { lorebookAIJobManager } from '../util/lorebook-ai-job.js';
 
 /**
  * Reads a World Info file and returns its contents
@@ -154,4 +155,77 @@ router.post('/edit', (request, response) => {
     writeFileAtomicSync(pathToFile, JSON.stringify(request.body.data, null, 4));
 
     return response.send({ ok: true });
+});
+
+// --- Lorebook AI Metadata Generation ---
+
+router.post('/ai-generate', (request, response) => {
+    try {
+        if (!request.body?.lorebookName) {
+            return response.status(400).json({ error: 'Lorebook name is required.' });
+        }
+
+        const config = {
+            lorebookName: request.body.lorebookName,
+            worldsDir: request.user.directories.worlds,
+            llm: {
+                ...(request.body.llm || {}),
+                directories: request.user.directories,
+            },
+            concurrency: request.body.concurrency,
+            batchSize: request.body.batchSize,
+            overwrite: request.body.overwrite,
+        };
+
+        const job = lorebookAIJobManager.createLorebookJob(config);
+        return response.json({ jobId: job.id });
+    } catch (error) {
+        return response.status(400).json({ error: error.message });
+    }
+});
+
+router.get('/ai-jobs/:id/events', (request, response) => {
+    const jobId = request.params.id;
+    const job = lorebookAIJobManager.getJob(jobId);
+
+    if (!job) {
+        return response.status(404).json({ error: 'Job not found.' });
+    }
+
+    response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    });
+    response.flush?.();
+
+    const lastEventId = Number(request.headers['last-event-id'] || 0);
+    lorebookAIJobManager.addSseClient(jobId, response, lastEventId);
+
+    request.on('close', () => {
+        try {
+            if (!response.writableEnded) {
+                response.end();
+            }
+        } catch {
+            // Ignore close errors.
+        }
+    });
+});
+
+router.get('/ai-jobs/:id', (request, response) => {
+    const job = lorebookAIJobManager.getJob(request.params.id);
+    if (!job) {
+        return response.status(404).json({ error: 'Job not found.' });
+    }
+    return response.json(lorebookAIJobManager.serializeJob(job));
+});
+
+router.post('/ai-jobs/:id/cancel', (request, response) => {
+    const cancelled = lorebookAIJobManager.cancelJob(request.params.id);
+    if (!cancelled) {
+        return response.status(404).json({ error: 'Job not found or already terminal.' });
+    }
+    return response.json({ ok: true });
 });

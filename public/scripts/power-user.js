@@ -279,6 +279,8 @@ export const power_user = {
     trim_spaces: true,
     relaxed_api_urls: false,
     world_import_dialog: true,
+    lorebook_ai_concurrency: 5,
+    lorebook_ai_batch_size: 10,
     enable_auto_select_input: false,
     enable_md_hotkeys: false,
     tag_import_setting: tag_import_setting.ASK,
@@ -372,7 +374,6 @@ export const power_user = {
     group_card_combine_prompt: DEFAULT_GROUP_CARD_COMBINE_PROMPT,
     group_card_combine_prompt_presets: [],
     group_card_combine_included_fields: ['personality'],
-    group_card_processing_mode: 'parallel',
     group_card_parallel_concurrency: 10,
     group_card_post_merge_enabled: true,
     group_card_post_merge_prompt: DEFAULT_POST_MERGE_PROMPT,
@@ -2079,6 +2080,22 @@ export async function loadPowerUserSettings(settings, data) {
     $('#single_line').prop('checked', power_user.single_line);
     $('#relaxed_api_urls').prop('checked', power_user.relaxed_api_urls);
     $('#world_import_dialog').prop('checked', power_user.world_import_dialog);
+    power_user.lorebook_ai_concurrency = Math.min(
+        Math.max(Number(power_user.lorebook_ai_concurrency), 1),
+        20,
+    );
+    power_user.lorebook_ai_batch_size = Math.min(
+        Math.max(Number(power_user.lorebook_ai_batch_size), 5),
+        50,
+    );
+    $('#lorebook_ai_concurrency').val(power_user.lorebook_ai_concurrency);
+    $('#lorebook_ai_concurrency_counter').val(
+        power_user.lorebook_ai_concurrency,
+    );
+    $('#lorebook_ai_batch_size').val(power_user.lorebook_ai_batch_size);
+    $('#lorebook_ai_batch_size_counter').val(
+        power_user.lorebook_ai_batch_size,
+    );
     $('#enable_auto_select_input').prop(
         'checked',
         power_user.enable_auto_select_input,
@@ -4216,6 +4233,30 @@ jQuery(() => {
     $('#chat_truncation').on('input', function () {
         power_user.chat_truncation = Number($('#chat_truncation').val());
         $('#chat_truncation_counter').val(power_user.chat_truncation);
+        saveSettingsDebounced();
+    });
+
+    $('input[name="lorebook_ai_concurrency"]').on('input', function () {
+        power_user.lorebook_ai_concurrency = Math.min(
+            Math.max(Number($(this).val()), 1),
+            20,
+        );
+        $('#lorebook_ai_concurrency').val(power_user.lorebook_ai_concurrency);
+        $('#lorebook_ai_concurrency_counter').val(
+            power_user.lorebook_ai_concurrency,
+        );
+        saveSettingsDebounced();
+    });
+
+    $('input[name="lorebook_ai_batch_size"]').on('input', function () {
+        power_user.lorebook_ai_batch_size = Math.min(
+            Math.max(Number($(this).val()), 5),
+            50,
+        );
+        $('#lorebook_ai_batch_size').val(power_user.lorebook_ai_batch_size);
+        $('#lorebook_ai_batch_size_counter').val(
+            power_user.lorebook_ai_batch_size,
+        );
         saveSettingsDebounced();
     });
 

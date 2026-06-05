@@ -11,9 +11,14 @@ import {
     DEFAULT_AVATAR_PATH,
     TEXTGEN_TYPES,
 } from '../constants.js';
+import {
+    JobManager,
+    runWithConcurrency,
+    throwIfAborted,
+    withRetries,
+} from './job-manager.js';
 import { write as writeCharacterPngData } from '../character-card-parser.js';
 import { getUniqueName } from '../util.js';
-import { readSecret, SECRET_KEYS } from '../endpoints/secrets.js';
 import { generateVoronoiComposite } from './voronoi-composite.js';
 import {
     escapeXml,
@@ -25,10 +30,7 @@ import {
     minifyXml,
 } from '../../public/scripts/group-card-xml-parser.js';
 
-const JOB_TTL_MS = 30 * 60 * 1000;
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const LLM_TIMEOUT_MS = 2 * 60 * 1000;
-const MAX_LLM_RETRIES = 3;
 const DEFAULT_CONCURRENCY = 10;
 const MAX_CONCURRENCY = 50;
 
@@ -48,14 +50,55 @@ const API_COMETAPI = 'https://api.cometapi.com/v1';
 const API_ZAI = 'https://api.z.ai/api/paas/v4';
 const API_SILICONFLOW = 'https://api.siliconflow.com/v1';
 
+const SECRETS_FILE = 'secrets.json';
+const SECRET_KEYS = {
+    VLLM: 'api_key_vllm',
+    APHRODITE: 'api_key_aphrodite',
+    TABBY: 'api_key_tabby',
+    OPENAI: 'api_key_openai',
+    OPENROUTER: 'api_key_openrouter',
+    MISTRALAI: 'api_key_mistralai',
+    CUSTOM: 'api_key_custom',
+    LLAMACPP: 'api_key_llamacpp',
+    GROQ: 'api_key_groq',
+    CHUTES: 'api_key_chutes',
+    ELECTRONHUB: 'api_key_electronhub',
+    NANOGPT: 'api_key_nanogpt',
+    GENERIC: 'api_key_generic',
+    DEEPSEEK: 'api_key_deepseek',
+    AIMLAPI: 'api_key_aimlapi',
+    XAI: 'api_key_xai',
+    FIREWORKS: 'api_key_fireworks',
+    MOONSHOT: 'api_key_moonshot',
+    COMETAPI: 'api_key_cometapi',
+    ZAI: 'api_key_zai',
+    SILICONFLOW: 'api_key_siliconflow',
+};
+
 const ALWAYS_INCLUDED_FIELDS = ['name', 'description'];
 const OPTIONAL_FIELDS = ['personality', 'scenario', 'first_mes', 'mes_example'];
 const CHARACTER_OPEN_TAG = '<character>';
 const CHARACTER_CLOSE_TAG = '</character>';
 
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
-const TERMINAL_EVENT_TYPES = new Set(['job_completed', 'job_failed']);
-const TERMINAL_SSE_RETRY_MS = 24 * 60 * 60 * 1000;
+function readSecret(directories, key, id = null) {
+    const filePath = path.join(directories.root, SECRETS_FILE);
+
+    if (!fs.existsSync(filePath)) {
+        return '';
+    }
+
+    const secrets = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const secretArray = secrets[key];
+
+    if (Array.isArray(secretArray) && secretArray.length > 0) {
+        const activeSecret = secretArray.find((secret) =>
+            id ? secret.id === id : secret.active,
+        );
+        return activeSecret?.value || '';
+    }
+
+    return '';
+}
 
 function normalizeSelectedFields(fields) {
     const includedFields = new Set(Array.isArray(fields) ? fields : []);
@@ -88,12 +131,16 @@ function buildCharacterXmlBlock(character, fields) {
     return `${CHARACTER_OPEN_TAG}\n${fieldXml}\n${CHARACTER_CLOSE_TAG}`;
 }
 
-function buildCombinePrompt(prompt, characters, fields) {
+function buildCombinePrompt(prompt, characters, fields, nudge) {
     const payload = characters
         .map((character) => buildCharacterXmlBlock(character, fields))
         .join('\n\n');
 
-    return `${String(prompt ?? '').trim()}\n\nInput characters:\n${payload}`;
+    let result = `${String(prompt ?? '').trim()}\n\nInput characters:\n${payload}`;
+    if (nudge && String(nudge).trim()) {
+        result += `\n\nAdditional guidance: ${String(nudge).trim()}`;
+    }
+    return result;
 }
 
 function buildPostMergePrompt(prompt, mergedOutput) {
@@ -110,62 +157,12 @@ function normalizeConcurrency(value) {
     return Math.min(Math.floor(concurrency), MAX_CONCURRENCY);
 }
 
-function normalizeProcessingMode(value) {
-    return ['combined', 'parallel', 'serial'].includes(value)
-        ? value
-        : 'combined';
+function normalizeProcessingMode(_value) {
+    return 'parallel';
 }
 
 function normalizePostProcessMode(value) {
     return ['replace', 'prepend', 'append'].includes(value) ? value : 'replace';
-}
-
-function delay(ms, signal) {
-    return new Promise((resolve, reject) => {
-        if (signal?.aborted) {
-            reject(new Error('Job cancelled.'));
-            return;
-        }
-
-        const timeout = setTimeout(resolve, ms);
-
-        signal?.addEventListener(
-            'abort',
-            () => {
-                clearTimeout(timeout);
-                reject(new Error('Job cancelled.'));
-            },
-            { once: true },
-        );
-    });
-}
-
-function throwIfAborted(signal) {
-    if (signal?.aborted) {
-        throw new Error('Job cancelled.');
-    }
-}
-
-async function withRetries(task, signal, attempts = MAX_LLM_RETRIES) {
-    let lastError;
-
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-        throwIfAborted(signal);
-
-        try {
-            return await task();
-        } catch (error) {
-            lastError = error;
-
-            if (attempt >= attempts) {
-                break;
-            }
-
-            await delay(1000 * 2 ** (attempt - 1), signal);
-        }
-    }
-
-    throw lastError;
 }
 
 function buildLlmUrl(apiUrl) {
@@ -184,7 +181,7 @@ function buildLlmUrl(apiUrl) {
     return `${baseUrl}/chat/completions`;
 }
 
-function resolveOpenAiLikeConfig(llmConfig) {
+export function resolveOpenAiLikeConfig(llmConfig) {
     const settings = llmConfig.openai ?? {};
     const directories = llmConfig.directories;
     const source = settings.chat_completion_source;
@@ -331,7 +328,7 @@ function getOpenAiLikeModel(settings, source) {
     return sourceConfig?.model ?? settings.openai_model ?? settings.custom_model;
 }
 
-function resolveTextGenOpenAiConfig(llmConfig) {
+export function resolveTextGenOpenAiConfig(llmConfig) {
     const settings = llmConfig.textgenerationwebui ?? {};
     const type = settings.type;
     const apiUrl = settings.server_urls?.[type];
@@ -392,7 +389,7 @@ function getTextGenSecretKey(type) {
     }
 }
 
-function resolveLlmConfig(llmConfig) {
+export function resolveLlmConfig(llmConfig) {
     if (llmConfig.apiUrl) {
         return {
             apiUrl: llmConfig.apiUrl,
@@ -416,7 +413,7 @@ function resolveLlmConfig(llmConfig) {
     );
 }
 
-async function callLlmApi(llmConfig, prompt, signal) {
+export async function callLlmApi(llmConfig, prompt, signal) {
     if (!llmConfig || typeof llmConfig !== 'object') {
         throw new Error('LLM config is required.');
     }
@@ -526,23 +523,6 @@ async function callLlmApi(llmConfig, prompt, signal) {
     }
 }
 
-async function runWithConcurrency(tasks, concurrency) {
-    const results = [];
-    let index = 0;
-
-    async function worker() {
-        while (index < tasks.length) {
-            const taskIndex = index++;
-            results[taskIndex] = await tasks[taskIndex]();
-        }
-    }
-
-    await Promise.all(
-        Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()),
-    );
-    return results;
-}
-
 function formatLorebookSummaryField(label, value) {
     const trimmedValue = String(value ?? '').trim();
     return trimmedValue ? `${label}:\n${trimmedValue}` : '';
@@ -629,6 +609,12 @@ function buildLorebookEntry(character, index, fields) {
         cooldown: null,
         delay: null,
         triggers: [],
+        aiFunctionName: name
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+/, ''),
+        aiDescription: `Content for ${name}`,
     };
 }
 
@@ -732,6 +718,12 @@ function buildDynamicLorebookEntry(block, index) {
         cooldown: null,
         delay: null,
         triggers: [],
+        aiFunctionName: name
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+/, ''),
+        aiDescription: `Content for ${name}`,
     };
 }
 
@@ -865,135 +857,82 @@ function getUniqueCharacterInternalName(groupName, directories) {
  * @property {Array<{id:number,eventType:string,data:object}>} eventLog
  */
 
-export class GroupCardJobManager {
+export class GroupCardJobManager extends JobManager {
     /**
 	 * @param {{ttlMs?: number, cleanupIntervalMs?: number}} [options]
 	 */
     constructor(options = {}) {
-        this.ttlMs = options.ttlMs ?? JOB_TTL_MS;
-        this.cleanupIntervalMs = options.cleanupIntervalMs ?? CLEANUP_INTERVAL_MS;
-        /** @type {Map<string, GroupCardJob>} */
-        this.jobs = new Map();
-        this.cleanupTimer = setInterval(
-            () => this.cleanup(),
-            this.cleanupIntervalMs,
-        );
-        this.cleanupTimer.unref?.();
+        super(options);
     }
 
     /**
-	 * Creates a group card generation job and starts the placeholder runner.
-	 * @param {object} config Full job config from client.
-	 * @returns {GroupCardJob}
+	 * Creates and starts a regen job for a subset of characters.
+	 * @param {object} config Job config with characters, prompt, nudges, fields, concurrency, llm.
+	 * @returns {Promise<{ jobId: string, job: GroupCardJob }>} Created job.
 	 */
-    createJob(config) {
-        /** @type {GroupCardJob} */
-        const job = {
-            id: crypto.randomUUID(),
-            status: 'pending',
-            config: config && typeof config === 'object' ? config : {},
-            progress: {},
-            results: {},
-            error: null,
-            createdAt: Date.now(),
-            sseClients: new Set(),
-            abortController: new AbortController(),
-            eventCounter: 0,
-            eventLog: [],
+    async createRegenJob(config) {
+        const validatedConfig = {
+            ...(config && typeof config === 'object' ? config : {}),
+            processingMode: 'parallel',
+            concurrency: normalizeConcurrency(config?.concurrency),
+            characters: Array.isArray(config?.characters)
+                ? config.characters.filter(
+                    (character) => character && typeof character === 'object',
+                )
+                : [],
+            fields: normalizeSelectedFields(config?.fields),
+            llm: {
+                ...(config?.llm && typeof config.llm === 'object' ? config.llm : {}),
+                directories: config.directories,
+            },
+            nudges: config?.nudges ?? {},
         };
 
-        this.jobs.set(job.id, job);
-        setImmediate(() => this.runJob(job.id));
-        return job;
-    }
+        const job = this.createJob(validatedConfig, { autoStart: false });
 
-    /**
-	 * Gets a job by ID.
-	 * @param {string} id Job ID.
-	 * @returns {GroupCardJob|null}
-	 */
-    getJob(id) {
-        return this.jobs.get(id) ?? null;
-    }
-
-    /**
-	 * Cancels a running or pending job.
-	 * @param {string} id Job ID.
-	 * @returns {boolean}
-	 */
-    cancelJob(id) {
-        const job = this.getJob(id);
-        if (!job) {
-            return false;
-        }
-
-        if (TERMINAL_STATUSES.has(job.status)) {
-            return true;
-        }
-
-        job.status = 'cancelled';
-        job.abortController?.abort();
-        this.emitEvent(id, 'job_failed', { error: 'Job cancelled.' });
-        // Defer close to allow SSE event to flush to clients
-        setTimeout(() => this.closeSseClients(job), 50);
-        return true;
-    }
-
-    /**
-	 * Adds an SSE client and replays missed events.
-	 * @param {string} id Job ID.
-	 * @param {import('express').Response} response Express response.
-	 * @param {number} [lastEventId=0] Last received SSE event ID.
-	 * @returns {boolean}
-	 */
-    addSseClient(id, response, lastEventId = 0) {
-        const job = this.getJob(id);
-        if (!job) {
-            return false;
-        }
-
-        for (const event of job.eventLog) {
-            if (event.id > lastEventId) {
-                this.writeSseEvent(response, event.id, event.eventType, event.data);
-            }
-        }
-
-        if (TERMINAL_STATUSES.has(job.status)) {
-            response.flush?.();
-            setImmediate(() => this.closeSseClient(response));
-            return true;
-        }
-
-        job.sseClients.add(response);
-
-        response.on('close', () => {
-            job.sseClients.delete(response);
+        // Run in background — don't await.
+        this.runRegenJob(job.id, validatedConfig).catch((error) => {
+            if (job.abortController?.signal.aborted) return;
+            job.status = 'failed';
+            job.error = error?.message ?? String(error);
+            this.emitEvent(job.id, 'job_failed', { error: job.error });
+            setTimeout(() => this.closeSseClients(job), 50);
         });
 
-        return true;
+        return { jobId: job.id, job };
     }
 
     /**
-	 * Emits an SSE event to all connected clients and stores it for reconnect replay.
+	 * Runs a regen job — generates only the requested characters.
 	 * @param {string} jobId Job ID.
-	 * @param {string} eventType SSE event type.
-	 * @param {object} [data={}] Event payload.
+	 * @param {object} config Validated config.
+	 * @returns {Promise<void>}
 	 */
-    emitEvent(jobId, eventType, data = {}) {
+    async runRegenJob(jobId, config) {
         const job = this.getJob(jobId);
-        if (!job) {
-            return;
-        }
+        if (!job || job.status !== 'pending') return;
 
-        const event = {
-            id: ++job.eventCounter,
-            eventType,
-            data: data && typeof data === 'object' ? data : {},
-        };
-        job.eventLog.push(event);
+        job.status = 'running';
+        job.progress = { step: 'started' };
+        this.emitEvent(jobId, 'job_started', { id: jobId });
 
-        for (const client of [...job.sseClients]) {
-            this.writeSseEvent(client, event.id, event.eventType, event.data);
+        try {
+            await this.generateIndividualMode(job, config, config.concurrency);
+
+            job.progress = { step: 'completed' };
+            job.status = 'completed';
+            this.emitEvent(jobId, 'job_completed', job.results);
+            setTimeout(() => this.closeSseClients(job), 50);
+        } catch (error) {
+            if (job.abortController?.signal.aborted) {
+                this.closeSseClients(job);
+                return;
+            }
+
+            job.status = 'failed';
+            job.error = error?.message ?? String(error);
+            this.emitEvent(jobId, 'job_failed', { error: job.error });
+            setTimeout(() => this.closeSseClients(job), 50);
         }
     }
 
@@ -1180,43 +1119,7 @@ export class GroupCardJobManager {
 	 * @returns {Promise<string>} Generated and validated description.
 	 */
     async generateDescription(job, config) {
-        switch (config.processingMode) {
-            case 'parallel':
-                return this.generateIndividualMode(job, config, config.concurrency);
-            case 'serial':
-                return this.generateIndividualMode(job, config, 1);
-            case 'combined':
-            default:
-                return this.generateCombinedMode(job, config);
-        }
-    }
-
-    /**
-	 * @param {GroupCardJob} job Job object.
-	 * @param {object} config Validated config.
-	 * @returns {Promise<string>} Generated description.
-	 */
-    async generateCombinedMode(job, config) {
-        job.progress = { step: 'merge' };
-        this.emitEvent(job.id, 'merge_started', { mode: 'combined' });
-
-        const output = await withRetries(
-            () =>
-                callLlmApi(
-                    config.llm,
-                    buildCombinePrompt(config.prompt, config.characters, config.fields),
-                    job.abortController?.signal,
-                ),
-            job.abortController?.signal,
-        );
-        const validatedOutput = validateGeneratedGroupCardDescription(
-            output,
-            config.characters.length,
-        );
-        job.results.combinedOutput = validatedOutput;
-
-        this.emitEvent(job.id, 'merge_completed', { output: validatedOutput });
-        return validatedOutput;
+        return this.generateIndividualMode(job, config, config.concurrency);
     }
 
     /**
@@ -1231,7 +1134,7 @@ export class GroupCardJobManager {
         job.results.characterOutputs = [];
 
         this.emitEvent(job.id, 'merge_started', {
-            mode: concurrency === 1 ? 'serial' : 'parallel',
+            mode: 'parallel',
             concurrency,
         });
 
@@ -1248,11 +1151,13 @@ export class GroupCardJobManager {
 
             try {
                 const charPrompt = config.parallelPrompt || config.prompt;
+                const nudge =
+					config.nudges?.[index] ?? config.nudges?.[String(index)] ?? '';
                 const output = await withRetries(
                     () =>
                         callLlmApi(
                             config.llm,
-                            buildCombinePrompt(charPrompt, [character], config.fields),
+                            buildCombinePrompt(charPrompt, [character], config.fields, nudge),
                             signal,
                         ),
                     signal,
@@ -1443,95 +1348,6 @@ export class GroupCardJobManager {
                 fs.rmSync(artifactPath, { force: true, recursive: true });
             }
         }
-    }
-
-    /**
-	 * Removes expired jobs and closes lingering SSE connections.
-	 */
-    cleanup() {
-        const now = Date.now();
-
-        for (const [id, job] of this.jobs.entries()) {
-            if (now - job.createdAt <= this.ttlMs) {
-                continue;
-            }
-
-            job.abortController?.abort();
-            this.closeSseClients(job);
-            this.jobs.delete(id);
-        }
-    }
-
-    /**
-	 * Closes all jobs and stops cleanup timer.
-	 */
-    shutdown() {
-        clearInterval(this.cleanupTimer);
-
-        for (const job of this.jobs.values()) {
-            job.abortController?.abort();
-            this.closeSseClients(job);
-        }
-
-        this.jobs.clear();
-    }
-
-    /**
-	 * @param {GroupCardJob} job Job object.
-	 */
-    closeSseClients(job) {
-        for (const client of [...job.sseClients]) {
-            this.closeSseClient(client);
-        }
-        job.sseClients.clear();
-    }
-
-    /**
-	 * @param {import('express').Response} response Express response.
-	 */
-    closeSseClient(response) {
-        try {
-            if (!response.writableEnded) {
-                response.end();
-            }
-        } catch (error) {
-            console.debug('Failed to close group card job SSE client:', error);
-        }
-    }
-
-    /**
-	 * @param {import('express').Response} response Express response.
-	 * @param {number} id Event ID.
-	 * @param {string} eventType Event type.
-	 * @param {object} data Event payload.
-	 */
-    writeSseEvent(response, id, eventType, data) {
-        if (response.writableEnded) {
-            return;
-        }
-
-        response.write(`id: ${id}\n`);
-        response.write(`event: ${eventType}\n`);
-        if (TERMINAL_EVENT_TYPES.has(eventType)) {
-            response.write(`retry: ${TERMINAL_SSE_RETRY_MS}\n`);
-        }
-        response.write(`data: ${JSON.stringify(data)}\n\n`);
-        response.flush?.();
-    }
-
-    /**
-	 * Creates a safe public view of a job.
-	 * @param {GroupCardJob} job Job object.
-	 * @returns {{id:string,status:string,progress:object,results:object,error:string|null}}
-	 */
-    serializeJob(job) {
-        return {
-            id: job.id,
-            status: job.status,
-            progress: job.progress,
-            results: job.results,
-            error: job.error,
-        };
     }
 }
 
