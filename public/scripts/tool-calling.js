@@ -881,10 +881,51 @@ export class ToolManager {
     }
 
     /**
+     * Formats tool invocations for embedding inside a reasoning/processing block.
+     * @param {ToolInvocation[]} invocations Tool invocations.
+     * @returns {string} Formatted processing trace HTML.
+     */
+    static formatToolCallTrace(invocations) {
+        if (!Array.isArray(invocations) || invocations.length === 0) {
+            return '';
+        }
+
+        const container = document.createElement('div');
+        container.classList.add('tool-call-trace');
+
+        invocations.forEach((invocation) => {
+            const detailsElement = document.createElement('details');
+            detailsElement.classList.add('tool-call-trace-item');
+            const summaryElement = document.createElement('summary');
+            const preElement = document.createElement('pre');
+            const codeElement = document.createElement('code');
+            codeElement.classList.add('language-json');
+
+            const displayName = invocation.displayName || invocation.name || 'Unknown tool';
+            summaryElement.textContent = invocation.error
+                ? `Tool call failed: ${displayName}`
+                : `Tool call: ${displayName}`;
+
+            const data = structuredClone(invocation);
+            data.parameters = tryParse(data.parameters);
+            data.result = tryParse(data.result);
+            codeElement.textContent = JSON.stringify(data, null, 2);
+
+            preElement.append(codeElement);
+            detailsElement.append(summaryElement, preElement);
+            container.append(detailsElement);
+        });
+
+        return container.outerHTML;
+    }
+
+    /**
      * Saves function tool invocations to the last user chat message extra metadata.
      * @param {ToolInvocation[]} invocations Successful tool invocations
+     * @param {object} [options] Options.
+     * @param {boolean} [options.visible=true] Whether to render a visible tool-call system message.
      */
-    static async saveFunctionToolInvocations(invocations) {
+    static async saveFunctionToolInvocations(invocations, { visible = true } = {}) {
         if (!Array.isArray(invocations) || invocations.length === 0) {
             return;
         }
@@ -899,11 +940,14 @@ export class ToolManager {
                 tool_invocations: invocations,
                 api: getGeneratingApi(),
                 model: getGeneratingModel(),
+                ...(visible ? {} : { isToolResult: true }),
             },
         };
         chat.push(message);
         await eventSource.emit(event_types.TOOL_CALLS_PERFORMED, invocations);
-        addOneMessage(message);
+        if (visible) {
+            addOneMessage(message);
+        }
         await eventSource.emit(event_types.TOOL_CALLS_RENDERED, invocations);
         await saveChatConditional();
     }

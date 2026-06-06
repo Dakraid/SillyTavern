@@ -476,6 +476,25 @@ input[type="checkbox"]:focus-visible {
 	margin-bottom: 0;
 }
 
+.tool-call-trace {
+	margin-top: 0.75em;
+}
+
+.tool-call-trace-item {
+	margin-top: 0.5em;
+	padding-left: 0.5em;
+	border-left: 1px solid var(--reasoning-body-color);
+}
+
+.tool-call-trace-item summary {
+	cursor: pointer;
+	font-weight: 600;
+}
+
+.tool-call-trace-item pre {
+	margin-top: 0.5em;
+}
+
 .mes_reasoning_header_block {
 	flex-grow: 1;
 }

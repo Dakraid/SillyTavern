@@ -1,4 +1,5 @@
 import {
+    DOMPurify,
     moment,
 } from '../lib.js';
 import { chat, closeMessageEditor, event_types, eventSource, main_api, messageFormatting, saveChatConditional, saveChatDebounced, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessageBlock } from '../script.js';
@@ -114,10 +115,15 @@ export function extractReasoningFromData(data, {
                     return data?.choices?.[0]?.message?.reasoning_content ?? '';
                 case chat_completion_sources.XAI:
                     return data?.choices?.[0]?.message?.reasoning_content ?? '';
-                case chat_completion_sources.OPENROUTER:
-                    return data?.choices?.[0]?.message?.reasoning
-                        ?? data?.choices?.[0]?.message?.reasoning_content
-                        ?? '';
+                case chat_completion_sources.OPENROUTER: {
+                    const message = data?.choices?.[0]?.message;
+                    const messageReasoning = message?.reasoning ?? message?.reasoning_content ?? '';
+                    const detailsText = (message?.reasoning_details || [])
+                        .filter(detail => (detail.type === 'reasoning.text' && typeof detail.text === 'string') || (detail.type === 'reasoning.summary' && typeof detail.summary === 'string'))
+                        .map(detail => detail.text || detail.summary)
+                        .join('');
+                    return [messageReasoning, detailsText].filter(Boolean).join('\n\n') || '';
+                }
                 case chat_completion_sources.MAKERSUITE:
                 case chat_completion_sources.VERTEXAI:
                     return data?.responseContent?.parts?.filter(part => part.thought)?.map(part => part.text)?.join('\n\n') ?? '';
@@ -273,6 +279,8 @@ export class ReasoningHandler {
         this.reasoning = '';
         /** @type {string?} The reasoning output display in case of translate or other */
         this.reasoningDisplayText = null;
+        /** @type {boolean} True if reasoning display includes tool calls/results */
+        this.hasToolCalls = false;
         /** @type {Date} When the reasoning started */
         this.startTime = null;
         /** @type {Date} When the reasoning ended */
@@ -341,6 +349,7 @@ export class ReasoningHandler {
         this.type = extra?.reasoning_type;
         this.reasoning = extra?.reasoning ?? '';
         this.reasoningDisplayText = extra?.reasoning_display_text ?? null;
+        this.hasToolCalls = Boolean(extra?.isProcessingMessage || extra?.processing_trace);
 
         if (this.state !== ReasoningState.None) {
             this.initialTime = new Date(chat[messageId].gen_started);
@@ -357,6 +366,7 @@ export class ReasoningHandler {
             this.type = null;
             this.reasoning = '';
             this.reasoningDisplayText = null;
+            this.hasToolCalls = false;
             this.initialTime = new Date();
             this.startTime = null;
             this.endTime = null;
@@ -533,6 +543,29 @@ export class ReasoningHandler {
     }
 
     /**
+     * Appends processing trace content (for example tool calls/results) to the reasoning block.
+     * @param {number} messageId - The ID of the message to update
+     * @param {string} trace - Processing trace content to append
+     */
+    appendProcessingTrace(messageId, trace) {
+        if (!trace || messageId == -1 || !chat[messageId]) {
+            return;
+        }
+
+        if (this.state === ReasoningState.None) {
+            this.state = this.#isHiddenReasoningModel ? ReasoningState.Hidden : ReasoningState.Thinking;
+            this.startTime = this.startTime ?? this.initialTime;
+            this.endTime = null;
+        }
+
+        this.hasToolCalls = true;
+        chat[messageId].extra = chat[messageId].extra || {};
+        chat[messageId].extra.processing_trace = [chat[messageId].extra.processing_trace, trace].filter(Boolean).join('\n\n');
+        chat[messageId].extra.isProcessingMessage = true;
+        this.updateDom(messageId);
+    }
+
+    /**
      * Updates the reasoning UI elements for a message.
      *
      * Toggles the CSS class, updates states, reasoning message, and duration.
@@ -552,12 +585,17 @@ export class ReasoningHandler {
 
         // Update the reasoning message
         const reasoning = trimSpaces(this.reasoningDisplayText ?? this.reasoning);
+        const processingTrace = chat[messageId]?.extra?.processing_trace || '';
+        this.hasToolCalls = this.hasToolCalls || Boolean(chat[messageId]?.extra?.isProcessingMessage || processingTrace.includes('tool-call-trace'));
         const displayReasoning = messageFormatting(reasoning, '', false, false, messageId, {}, true);
+        const displayProcessingTrace = processingTrace ? DOMPurify.sanitize(processingTrace) : '';
+        const displayContent = [displayReasoning, displayProcessingTrace].filter(Boolean).join('\n\n');
 
         if (power_user.stream_fade_in) {
-            applyStreamFadeIn(this.messageReasoningContentDom, displayReasoning);
+            applyStreamFadeIn(this.messageReasoningContentDom, displayContent);
         } else {
-            this.messageReasoningContentDom.innerHTML = displayReasoning;
+            const formattedReasoning = document.createRange().createContextualFragment(displayContent);
+            this.messageReasoningContentDom.replaceChildren(formattedReasoning);
         }
 
         // Update tooltip for hidden reasoning edit
@@ -605,7 +643,7 @@ export class ReasoningHandler {
      * Updates the reasoning time display in the UI.
      *
      * Shows the duration in a human-readable format with a tooltip for exact seconds.
-     * Displays "Thinking..." if still processing, or a generic message otherwise.
+     * Displays "Processing..." for tool-call processing or "Thinking..." for reasoning-only work.
      */
     #updateReasoningTimeUI() {
         const element = this.messageReasoningHeaderDom;
@@ -616,14 +654,14 @@ export class ReasoningHandler {
             const seconds = moment.duration(duration).asSeconds();
 
             const durationStr = moment.duration(duration).locale(getCurrentLocale()).humanize({ s: 50, ss: 3 });
-            element.textContent = t`Thought for ${durationStr}`;
+            element.textContent = this.hasToolCalls ? t`Processed for ${durationStr}` : t`Thought for ${durationStr}`;
             data = String(seconds);
             title = `${seconds} seconds`;
         } else if ([ReasoningState.Done, ReasoningState.Hidden].includes(this.state)) {
-            element.textContent = t`Thought for some time`;
+            element.textContent = this.hasToolCalls ? t`Processed for some time` : t`Thought for some time`;
             data = 'unknown';
         } else {
-            element.textContent = t`Thinking...`;
+            element.textContent = this.hasToolCalls ? t`Processing...` : t`Thinking...`;
             data = null;
         }
 

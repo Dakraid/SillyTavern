@@ -1,0 +1,229 @@
+{
+    "streamingReasoningOnly": [
+        {
+            "choices": [
+                { "index": 0, "delta": { "reasoning": "Think step 1. " } }
+            ]
+        },
+        {
+            "choices": [
+                { "index": 0, "delta": { "reasoning": "Think step 2." } }
+            ]
+        }
+    ],
+    "streamingContentOnly": [
+        { "choices": [{ "index": 0, "delta": { "content": "Final " } }] },
+        { "choices": [{ "index": 0, "delta": { "content": "answer." } }] }
+    ],
+    "streamingInterleavedReasoningContent": [
+        {
+            "choices": [
+                { "index": 0, "delta": { "reasoning": "Analyze facts. " } }
+            ]
+        },
+        {
+            "choices": [
+                { "index": 0, "delta": { "reasoning": "Choose response." } }
+            ]
+        },
+        { "choices": [{ "index": 0, "delta": { "content": "Visible " } }] },
+        { "choices": [{ "index": 0, "delta": { "content": "reply." } }] }
+    ],
+    "streamingReasoningAndContentSameChunk": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning": "Private thought.",
+                        "content": "Public answer."
+                    }
+                }
+            ]
+        }
+    ],
+    "streamingEncryptedReasoningDetails": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.encrypted",
+                                "id": "reasoning-1",
+                                "data": "encrypted-reasoning-signature"
+                            },
+                            {
+                                "type": "reasoning.encrypted",
+                                "id": "call_search",
+                                "data": "encrypted-tool-signature"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ],
+    "streamingSummaryReasoningDetails": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.summary",
+                                "summary": "Used the provided facts to plan a concise answer."
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ],
+    "streamingToolCalls": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_search",
+                                "type": "function",
+                                "function": {
+                                    "name": "search_web",
+                                    "arguments": "{\"query\":"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "arguments": "\"OpenRouter reasoning\"}"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ],
+    "streamingToolCallsWithReasoning": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning": "Need external facts before answering."
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_search",
+                                "type": "function",
+                                "function": {
+                                    "name": "search_web",
+                                    "arguments": "{\"query\":\"reasoning\"}"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ],
+    "finalUsageChunk": {
+        "id": "gen-final",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "completion_tokens_details": { "reasoning_tokens": 3 }
+        }
+    },
+    "midStreamErrorChunk": {
+        "error": { "message": "Provider returned an error", "code": 502 },
+        "choices": [{ "index": 0, "finish_reason": "error", "delta": {} }]
+    },
+    "nonStreamingFullResponse": {
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "reasoning": "Full private reasoning.",
+                    "reasoning_details": [
+                        {
+                            "type": "reasoning.encrypted",
+                            "id": "reasoning-1",
+                            "data": "nonstream-signature"
+                        }
+                    ],
+                    "content": "Full public answer.",
+                    "tool_calls": [
+                        {
+                            "id": "call_lookup",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": "{\"id\":1}"
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    },
+    "streamingReasoningContentAlternative": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning_content": "Alternative reasoning field."
+                    }
+                }
+            ]
+        }
+    ],
+    "streamingImages": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "images": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "data:image/png;base64,aW1hZ2U="
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

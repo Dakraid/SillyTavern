@@ -3184,22 +3184,27 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
         }
         return data.choices?.[0]?.delta?.content || '';
     } else if (chat_completion_source === chat_completion_sources.OPENROUTER) {
-        const imageUrls = data?.choices?.[0]?.delta?.images?.filter(x => x.type === 'image_url')?.map(x => x?.image_url?.url) || [];
+        const choice = data?.choices?.[0];
+        const imageUrls = choice?.delta?.images?.filter(x => x.type === 'image_url')?.map(x => x?.image_url?.url) || [];
         if (Array.isArray(imageUrls) && imageUrls.length > 0) {
             state.images.push(...imageUrls.filter(isDataURL));
         }
         if (show_thoughts) {
-            state.reasoning +=
-                data.choices?.filter(x => x?.delta?.reasoning)?.[0]?.delta?.reasoning ??
-                data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content ??
-                data.choices?.filter(x => x?.message?.reasoning)?.[0]?.message?.reasoning ??
-                data.choices?.filter(x => x?.message?.reasoning_content)?.[0]?.message?.reasoning_content ??
-                '';
+            const hasDeltaReasoning = choice?.delta?.reasoning !== undefined && choice?.delta?.reasoning !== null;
+            const hasDeltaReasoningContent = choice?.delta?.reasoning_content !== undefined && choice?.delta?.reasoning_content !== null;
+            const hasMessageReasoning = choice?.message?.reasoning !== undefined && choice?.message?.reasoning !== null;
+            state.reasoning += hasDeltaReasoning
+                ? choice.delta.reasoning
+                : hasDeltaReasoningContent
+                    ? choice.delta.reasoning_content
+                    : hasMessageReasoning
+                        ? choice.message.reasoning
+                        : (choice?.message?.reasoning_content ?? '');
         }
-        // Extract thought signatures from OpenRouter streaming.
+        // Extract thought signatures and plaintext reasoning from OpenRouter streaming.
         const reasoningDetails = [
-            ...(data?.choices?.[0]?.delta?.reasoning_details || []),
-            ...(data?.choices?.[0]?.message?.reasoning_details || []),
+            ...(choice?.delta?.reasoning_details || []),
+            ...(choice?.message?.reasoning_details || []),
         ];
         reasoningDetails.forEach((detail) => {
             if (detail.type === 'reasoning.encrypted' && detail.data) {
@@ -3210,9 +3215,17 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
                 if (!isToolLikeId) {
                     state.signature = detail.data;
                 }
+            } else if (detail.type === 'reasoning.text' && typeof detail.text === 'string') {
+                if (show_thoughts) {
+                    state.reasoning += detail.text;
+                }
+            } else if (detail.type === 'reasoning.summary' && typeof detail.summary === 'string') {
+                if (show_thoughts) {
+                    state.reasoning += detail.summary;
+                }
             }
         });
-        return data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
+        return choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
     } else if ([chat_completion_sources.CUSTOM, chat_completion_sources.POLLINATIONS, chat_completion_sources.AIMLAPI, chat_completion_sources.MOONSHOT, chat_completion_sources.COMETAPI, chat_completion_sources.ELECTRONHUB, chat_completion_sources.NANOGPT, chat_completion_sources.ZAI, chat_completion_sources.SILICONFLOW, chat_completion_sources.CHUTES, chat_completion_sources.WORKERS_AI].includes(chat_completion_source)) {
         if (show_thoughts) {
             state.reasoning +=

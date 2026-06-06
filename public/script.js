@@ -1958,10 +1958,20 @@ export async function redisplayChat({
     if (messages.length > 0) {
         const newMessageElements = messages.map((message, offset) => {
             const i = startIndex + offset;
+            if (message?.extra?.isToolResult) {
+                return null;
+            }
             const messageElement = updateMessageElement(message, { messageId: i });
 
             return messageElement[0];
-        });
+        }).filter(Boolean);
+
+        if (newMessageElements.length === 0) {
+            refreshSwipeButtons(false, fade);
+            applyStylePins();
+            updateEditArrowClasses();
+            return;
+        }
 
         //The last_mes has been removed, add it to the new last message.
         newMessageElements.at(-1).classList.add('last_mes');
@@ -3174,6 +3184,10 @@ export function addOneMessage(
         return chat.length - 1;
     })();
 
+    if (mes?.extra?.isToolResult) {
+        return $();
+    }
+
     let messageElement;
 
     if (type === 'swipe') {
@@ -4347,10 +4361,20 @@ class StreamingProcessor {
 	 * @param {Date} timeStarted Date when generation was started
 	 * @param {string} continueMessage Previous message if the type is 'continue'
 	 * @param {PromptReasoning} promptReasoning Prompt reasoning instance
+	 * @param {number?} processingMessageId Existing processing message to continue streaming into
 	 */
-    constructor(type, forceName2, timeStarted, continueMessage, promptReasoning) {
+    constructor(
+        type,
+        forceName2,
+        timeStarted,
+        continueMessage,
+        promptReasoning,
+        processingMessageId = null,
+    ) {
         this.result = '';
-        this.messageId = -1;
+        this.messageId = Number.isInteger(processingMessageId)
+            ? processingMessageId
+            : -1;
         /** @type {HTMLElement} */
         this.messageDom = null;
         /** @type {HTMLElement} */
@@ -4592,6 +4616,10 @@ class StreamingProcessor {
         const message = chat[messageId];
         addCopyToCodeBlocks(messageElement);
 
+        if (message?.extra?.isProcessingMessage) {
+            delete message.extra.isProcessingMessage;
+        }
+
         await this.reasoningHandler.finish(messageId);
 
         if (Array.isArray(this.swipes) && this.swipes.length > 0) {
@@ -4731,6 +4759,9 @@ class StreamingProcessor {
             this.messageId = await this.onStartStreaming(this.firstMessageText);
             await delay(1); // delay for message to be rendered
             scrollLock = false;
+        } else {
+            await this.#checkDomElements(this.messageId);
+            this.markUIGenStarted();
         }
 
         // Stopping strings are expensive to calculate, especially with macros enabled. To remove stopping strings
@@ -5325,6 +5356,7 @@ function removeLastMessage() {
  * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
  * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
  * @property {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
+ * @property {number?} [processingMessageId] Message ID of an in-progress tool-call processing container.
  */
 
 /**
@@ -5349,6 +5381,7 @@ export async function Generate(
         quietName,
         jsonSchema = null,
         depth = 0,
+        processingMessageId = null,
     } = {},
     dryRun = false,
 ) {
@@ -5684,7 +5717,9 @@ export async function Generate(
 		depth < ToolManager.RECURSE_LIMIT;
     let coreChat = chat.filter(
         (x) =>
-            !x.is_system || (canUseTools && Array.isArray(x.extra?.tool_invocations)),
+            !x.extra?.isProcessingMessage &&
+			(!x.is_system ||
+				(canUseTools && Array.isArray(x.extra?.tool_invocations))),
     );
     if (type === 'swipe') {
         coreChat.pop();
@@ -6855,6 +6890,7 @@ export async function Generate(
                 generation_started,
                 continue_mag,
                 promptReasoning,
+                processingMessageId,
             );
             if (isContinue) {
                 // Save reply does add cycle text to the prompt, so it's not needed here
@@ -6889,23 +6925,9 @@ export async function Generate(
 				Array.isArray(streamingProcessor.toolCalls) &&
 				streamingProcessor.toolCalls.length;
             if (canPerformToolCalls && isStreamFinished && isStreamWithToolCalls) {
-                const lastMessage = chat[chat.length - 1];
                 const hasToolCalls = ToolManager.hasToolCalls(
                     streamingProcessor.toolCalls,
                 );
-                const shouldDeleteMessage =
-					type !== 'swipe' &&
-					['', '...'].includes(lastMessage?.mes) &&
-					!lastMessage?.extra?.reasoning &&
-					['', '...'].includes(streamingProcessor?.result);
-                hasToolCalls && shouldDeleteMessage && (await deleteLastMessage());
-                if (hasToolCalls && !shouldDeleteMessage) {
-                    await streamingProcessor.finalizeIntermediaryMessage(
-                        streamingProcessor.messageId,
-                        getMessage,
-                        { unlockUI: false },
-                    );
-                }
                 const invocationResult = await ToolManager.invokeFunctionTools(
                     streamingProcessor.toolCalls,
                     {
@@ -6913,7 +6935,7 @@ export async function Generate(
                     },
                 );
                 const shouldStopGeneration =
-					(!invocationResult.invocations.length && shouldDeleteMessage) ||
+					!invocationResult.invocations.length ||
 					invocationResult.stealthCalls.length;
                 if (hasToolCalls) {
                     if (shouldStopGeneration) {
@@ -6928,10 +6950,26 @@ export async function Generate(
                         return;
                     }
 
+                    const processingMessageId = streamingProcessor.messageId;
+                    const toolTrace = ToolManager.formatToolCallTrace(
+                        invocationResult.invocations,
+                    );
+                    if (chat[processingMessageId]) {
+                        chat[processingMessageId].extra =
+							chat[processingMessageId].extra || {};
+                        chat[processingMessageId].extra.isProcessingMessage = true;
+                        streamingProcessor.reasoningHandler.appendProcessingTrace(
+                            processingMessageId,
+                            toolTrace,
+                        );
+                    }
+                    streamingProcessor.messageDom?.classList.remove('displayNone');
                     streamingProcessor = null;
                     depth = depth + 1;
+                    const isHiddenToolFlow = oai_settings.chat_completion_source === chat_completion_sources.OPENROUTER;
                     await ToolManager.saveFunctionToolInvocations(
                         invocationResult.invocations,
+                        { visible: !isHiddenToolFlow },
                     );
                     return Generate(
                         'normal',
@@ -6946,6 +6984,7 @@ export async function Generate(
                             quietImage,
                             quietName,
                             depth,
+                            processingMessageId,
                         },
                         dryRun,
                     );
@@ -7050,7 +7089,24 @@ export async function Generate(
             return getMessage;
         } else {
             // Without streaming we'll be having a full message on continuation. Treat it as a last chunk.
-            if (originalType !== 'continue') {
+            if (
+                Number.isInteger(processingMessageId) &&
+				chat[processingMessageId] &&
+				originalType !== 'continue'
+            ) {
+                const message = chat[processingMessageId];
+                message.mes = getMessage;
+                message.gen_started = generation_started;
+                message.gen_finished = new Date();
+                message.extra = message.extra || {};
+                delete message.extra.isProcessingMessage;
+                if (reasoning) {
+                    message.extra.reasoning = [message.extra.reasoning, reasoning]
+                        .filter(Boolean)
+                        .join('\n\n');
+                }
+                updateMessageBlock(processingMessageId, message);
+            } else if (originalType !== 'continue') {
                 ({ type, getMessage } = await saveReply({
                     type,
                     getMessage,
@@ -7099,9 +7155,29 @@ export async function Generate(
                     return;
                 }
 
+                const currentProcessingMessageId = Number.isInteger(processingMessageId)
+                    ? processingMessageId
+                    : chat.length - 1;
+                const toolTrace = ToolManager.formatToolCallTrace(
+                    invocationResult.invocations,
+                );
+                if (chat[currentProcessingMessageId]) {
+                    chat[currentProcessingMessageId].extra =
+						chat[currentProcessingMessageId].extra || {};
+                    chat[currentProcessingMessageId].extra.isProcessingMessage = true;
+                    chat[currentProcessingMessageId].extra.processing_trace = [
+                        chat[currentProcessingMessageId].extra.processing_trace,
+                        toolTrace,
+                    ]
+                        .filter(Boolean)
+                        .join('\n\n');
+                    updateReasoningUI(currentProcessingMessageId);
+                }
                 depth = depth + 1;
+                const isHiddenToolFlow = oai_settings.chat_completion_source === chat_completion_sources.OPENROUTER;
                 await ToolManager.saveFunctionToolInvocations(
                     invocationResult.invocations,
+                    { visible: !isHiddenToolFlow },
                 );
                 return Generate(
                     'normal',
@@ -7116,6 +7192,7 @@ export async function Generate(
                         quietImage,
                         quietName,
                         depth,
+                        processingMessageId: currentProcessingMessageId,
                     },
                     dryRun,
                 );
