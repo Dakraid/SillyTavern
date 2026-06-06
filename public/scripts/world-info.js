@@ -1061,6 +1061,7 @@ export const worldInfoCache = new StructuredCloneMap({
 
 const AI_MANAGED_LORE_SEPARATOR = '::';
 let aiManagedLoreToolsRegistered = false;
+const registeredDirectAccessTools = new Set();
 
 /**
  * Gets or creates chat metadata for AI-managed lore entries.
@@ -1370,16 +1371,25 @@ function registerAIManagedLoreTools() {
         stealth: true,
     });
 
-    // Register individual get_ tools when Direct Access mode is enabled
+    refreshDirectAccessTools();
+}
+
+export function refreshDirectAccessTools() {
+    // Unregister previous direct access tools
+    for (const toolName of registeredDirectAccessTools) {
+        ToolManager.unregisterFunctionTool(toolName);
+    }
+    registeredDirectAccessTools.clear();
+
+    // Re-register from current cache state
     const registry = getAIManagedLoreRegistry();
     for (const item of registry) {
-        const toolName =
-			'get_' +
-			item.name
-			    .toLowerCase()
-			    .replace(/[^a-z0-9_]/g, '_')
-			    .replace(/^_+/, '')
-			    .replace(/_+/g, '_');
+        const sanitizedName = item.name
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, '_')
+            .replace(/^_+/, '')
+            .replace(/_+/g, '_');
+        const toolName = `get_${sanitizedName}`;
 
         const entryDescription =
 			item.description ||
@@ -1397,12 +1407,12 @@ function registerAIManagedLoreTools() {
                     throw new Error(`Lore entry not found: ${item.name}`);
                 }
                 const entry = found.entry;
-                const state =
-					entry.constant === true
-					    ? 'constant'
-					    : entry.vectorized === true
-					        ? 'vectorized'
-					        : 'normal';
+                let state = 'normal';
+                if (entry.constant === true) {
+                    state = 'constant';
+                } else if (entry.vectorized === true) {
+                    state = 'vectorized';
+                }
                 return {
                     content: entry.content || '',
                     comment: entry.comment || '',
@@ -1416,6 +1426,7 @@ function registerAIManagedLoreTools() {
             shouldRegister: () => hasAIManagedDirectAccess(),
             stealth: true,
         });
+        registeredDirectAccessTools.add(toolName);
     }
 }
 
@@ -2911,6 +2922,7 @@ export async function loadWorldInfo(name) {
     if (response.ok) {
         const data = await response.json();
         worldInfoCache.set(name, data);
+        refreshDirectAccessTools();
         return data;
     }
 
@@ -6215,6 +6227,7 @@ export async function saveWorldInfo(name, data, immediately = false) {
 
     // Update cache immediately, so any future call can pull from this
     worldInfoCache.set(name, data);
+    refreshDirectAccessTools();
 
     if (immediately) {
         return await _save(name, data);

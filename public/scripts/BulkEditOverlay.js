@@ -53,6 +53,9 @@ import {
     countXmlCorpus,
     autoFixXml,
     extractFirstMessage,
+    extractGreetingBlocks,
+    parseGreetingsFromGeneratedOutput,
+    stripGreetingBlocks,
     stripSummaryFromCharacterBlock,
     buildSummaryCharacterBlock,
     minifyXml,
@@ -67,6 +70,18 @@ const GROUP_CARD_JOB_SESSION_KEY = 'groupCardJobId';
 
 /** @type {Map<string, {jobId: string, groupName: string, loaderHandle: import('./action-loader.js').ActionLoaderHandle, source: EventSource|null, startedAt: number, status: string}>} */
 const groupCardJobs = new Map();
+let globalJobEventSource = null;
+
+function toGroupCardJobState(job) {
+    return {
+        jobId: job.id,
+        groupName: job.config?.groupName ?? '',
+        loaderHandle: null,
+        source: null,
+        startedAt: job.createdAt,
+        status: job.status,
+    };
+}
 
 const CORE_CHARACTER_FIELDS = [
     'name',
@@ -337,7 +352,7 @@ function buildLorebookData(selectedCharacters, fields) {
  * Extracts all top-level XML blocks without preferring character blocks.
  *
  * @param {string} xmlString XML text.
- * @returns {Array<{tag: string, content: string, raw: string}>} Top-level XML blocks.
+ * @returns {Array<{tag: string, content: string, raw: string, openTag: string}>} Top-level XML blocks.
  */
 function extractAllTopLevelXmlBlocks(xmlString) {
     const text = String(xmlString ?? '').trim();
@@ -368,6 +383,7 @@ function extractAllTopLevelXmlBlocks(xmlString) {
             tag: block.tag,
             content: block.content,
             raw: text.slice(blockStart, blockEnd),
+            openTag: block.openTag,
         });
         consumedUpTo = blockEnd;
         anyOpenRegex.lastIndex = Math.max(consumedUpTo, nextSearchIndex);
@@ -422,11 +438,14 @@ function buildDynamicLorebookData(generatedXml) {
  * @param {string} generatedXml Generated XML text.
  * @returns {string} Main card description XML.
  */
-function buildDynamicSummaryDescription(generatedXml) {
+function buildDynamicSummaryDescription(
+    generatedXml,
+    fallbackTags = ['summary'],
+) {
     return extractAllTopLevelXmlBlocks(String(generatedXml ?? ''))
         .map((block) =>
             block.tag === 'character'
-                ? buildSummaryCharacterBlock(block.raw)
+                ? buildSummaryCharacterBlock(block.raw, fallbackTags)
                 : block.raw,
         )
         .join('\n\n');
@@ -815,6 +834,8 @@ async function readCreatedCharacterAvatar(response, groupName) {
  * @param {object|null} [wizardMeta] Group card wizard metadata for future re-runs.
  * @param {boolean} [minify] Whether to minify lorebook entry content.
  * @param {boolean} [minifySingleLine] Whether minified lorebook entry content should be single-line.
+ * @param {string} [firstMes] First message.
+ * @param {Array<string>} [alternateGreetings] Alternate greetings.
  * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
  */
 async function createGeneratedGroupCard(
@@ -828,6 +849,8 @@ async function createGeneratedGroupCard(
     wizardMeta = null,
     minify = false,
     minifySingleLine = false,
+    firstMes = '',
+    alternateGreetings = [],
 ) {
     const request = validateGroupCardRequest(groupName, selectedChars, {
         createLorebook,
@@ -835,6 +858,54 @@ async function createGeneratedGroupCard(
 
     if (!request) {
         throw new Error('Group card request is no longer valid.');
+    }
+
+    if (request.collisions?.character || request.collisions?.lorebook) {
+        const collisionParts = [];
+        if (request.collisions.character) {
+            collisionParts.push(
+                `A character named "${request.groupName}" already exists.`,
+            );
+        }
+        if (request.collisions.lorebook) {
+            collisionParts.push(
+                `A lorebook named "${request.groupName}" already exists.`,
+            );
+        }
+
+        const overwrite = await callGenericPopup(
+            `${collisionParts.join('\n\n')}\n\nOverwrite existing item(s)?`,
+            POPUP_TYPE.CONFIRM,
+            'Name Collision',
+            { okButton: 'Overwrite Existing', cancelButton: 'Rename Automatically' },
+        );
+
+        if (overwrite === POPUP_RESULT.AFFIRMATIVE) {
+            request.collisionResolution = 'overwrite';
+        } else {
+            request.collisionResolution = 'rename';
+            const characterList = characters ?? [];
+            const worldNames = world_names ?? [];
+            let counter = 1;
+            let resolvedName = `${request.groupName} (${counter})`;
+
+            while (
+                characterList.some(
+                    (character) =>
+                        normalizeName(getCharacterName(character)) ===
+						normalizeName(resolvedName),
+                ) ||
+				(createLorebook &&
+					worldNames.some(
+					    (name) => normalizeName(name) === normalizeName(resolvedName),
+					))
+            ) {
+                counter++;
+                resolvedName = `${request.groupName} (${counter})`;
+            }
+
+            request.groupName = resolvedName;
+        }
     }
 
     const sourceNames = request.characters
@@ -868,13 +939,13 @@ async function createGeneratedGroupCard(
         );
     }
 
-    const characterResponse = await sendJsonRequest('/api/characters/create', {
+    const characterData = {
         name: request.groupName,
         ch_name: request.groupName,
         description: generatedDescription,
         personality: '',
         scenario: '',
-        first_mes: '',
+        first_mes: firstMes,
         mes_example: '',
         creator_notes: wizardMeta
             ? `Generated group card from: ${sourceNames}\n[group_card_wizard]`
@@ -890,38 +961,94 @@ async function createGeneratedGroupCard(
         depth_prompt_depth: '4',
         depth_prompt_role: 'system',
         fav: 'false',
-        alternate_greetings: [],
+        alternate_greetings: alternateGreetings ?? [],
         extensions: {
             ...(createLorebook ? {} : { world: '' }),
             ...(wizardMeta ? { [GROUP_CARD_WIZARD_METADATA_KEY]: wizardMeta } : {}),
         },
-    });
+    };
 
-    if (!characterResponse.ok) {
-        const responseText = await characterResponse.text();
-        const rollbackMessage = createLorebook
-            ? await rollbackGeneratedLorebook(request.groupName)
-            : '';
-        const artifactMessage = createLorebook
-            ? ` after lorebook "${request.groupName}" was created`
-            : '';
-        throw new Error(
-            `Failed to create character "${request.groupName}"${artifactMessage}. ${responseText || 'No response body.'} ${rollbackMessage}`,
-        );
-    }
+    const overwritingCharacter =
+		request.collisionResolution === 'overwrite' &&
+		request.collisions?.character;
+    const overwritingLorebook =
+		createLorebook &&
+		request.collisionResolution === 'overwrite' &&
+		request.collisions?.lorebook;
 
     let avatar = '';
 
-    try {
-        avatar = await readCreatedCharacterAvatar(
-            characterResponse,
-            request.groupName,
+    if (overwritingCharacter) {
+        const existingCharacter = (characters ?? []).find(
+            (character) =>
+                normalizeName(getCharacterName(character)) ===
+				normalizeName(request.groupName),
         );
-    } catch (error) {
-        const rollbackMessage = createLorebook
-            ? await rollbackGeneratedLorebook(request.groupName)
-            : '';
-        throw new Error(`${error?.message ?? error} ${rollbackMessage}`);
+        avatar = String(existingCharacter?.avatar ?? '');
+
+        if (!avatar) {
+            const rollbackMessage =
+				createLorebook && !overwritingLorebook
+				    ? await rollbackGeneratedLorebook(request.groupName)
+				    : '';
+            throw new Error(
+                `Failed to find existing character "${request.groupName}" avatar. ${rollbackMessage}`,
+            );
+        }
+
+        const characterResponse = await sendJsonRequest(
+            '/api/characters/merge-attributes',
+            {
+                avatar,
+                data: characterData,
+            },
+        );
+
+        if (!characterResponse.ok) {
+            const responseText = await characterResponse.text();
+            const rollbackMessage =
+				createLorebook && !overwritingLorebook
+				    ? await rollbackGeneratedLorebook(request.groupName)
+				    : '';
+            const artifactMessage = createLorebook
+                ? ` after lorebook "${request.groupName}" was created`
+                : '';
+            throw new Error(
+                `Failed to update character "${request.groupName}"${artifactMessage}. ${responseText || 'No response body.'} ${rollbackMessage}`,
+            );
+        }
+    } else {
+        const characterResponse = await sendJsonRequest(
+            '/api/characters/create',
+            characterData,
+        );
+
+        if (!characterResponse.ok) {
+            const responseText = await characterResponse.text();
+            const rollbackMessage =
+				createLorebook && !overwritingLorebook
+				    ? await rollbackGeneratedLorebook(request.groupName)
+				    : '';
+            const artifactMessage = createLorebook
+                ? ` after lorebook "${request.groupName}" was created`
+                : '';
+            throw new Error(
+                `Failed to create character "${request.groupName}"${artifactMessage}. ${responseText || 'No response body.'} ${rollbackMessage}`,
+            );
+        }
+
+        try {
+            avatar = await readCreatedCharacterAvatar(
+                characterResponse,
+                request.groupName,
+            );
+        } catch (error) {
+            const rollbackMessage =
+				createLorebook && !overwritingLorebook
+				    ? await rollbackGeneratedLorebook(request.groupName)
+				    : '';
+            throw new Error(`${error?.message ?? error} ${rollbackMessage}`);
+        }
     }
 
     if (!createLorebook) {
@@ -942,13 +1069,12 @@ async function createGeneratedGroupCard(
 
     if (!linkResponse.ok) {
         const responseText = await linkResponse.text();
-        const characterRollbackMessage = await rollbackGeneratedCharacter(
-            request.groupName,
-            avatar,
-        );
-        const lorebookRollbackMessage = await rollbackGeneratedLorebook(
-            request.groupName,
-        );
+        const characterRollbackMessage = overwritingCharacter
+            ? ''
+            : await rollbackGeneratedCharacter(request.groupName, avatar);
+        const lorebookRollbackMessage = overwritingLorebook
+            ? ''
+            : await rollbackGeneratedLorebook(request.groupName);
         throw new Error(
             `Failed to link lorebook "${request.groupName}" to character "${request.groupName}" (avatar "${avatar}"). ${responseText || 'No response body.'} ${characterRollbackMessage} ${lorebookRollbackMessage}`,
         );
@@ -967,7 +1093,7 @@ async function createGeneratedGroupCard(
  * @param {Array<string>} [options.worldNames] Loaded lorebook names.
  * @param {object} [options.toaster] Toastr-compatible notifier.
  * @param {boolean} [options.createLorebook] Whether a lorebook will be created.
- * @returns {{ groupName: string, characters: Array<object> }|null} Valid request data, or null when blocked.
+ * @returns {{ groupName: string, characters: Array<object>, collisions: { character: boolean, lorebook: boolean }, collisionResolution?: string }|null} Valid request data, or null when blocked.
  */
 function validateGroupCardRequest(
     groupName,
@@ -1005,27 +1131,18 @@ function validateGroupCardRequest(
             normalizeName(getCharacterName(character)) === normalizedName,
     );
 
-    if (hasCharacterNameCollision) {
-        toaster?.error?.(
-            `Character named "${trimmedName}" already exists.`,
-            'Combine into Group Card',
-        );
-        return null;
-    }
-
     const hasLorebookNameCollision =
 		createLorebook &&
 		(worldNames ?? []).some((name) => normalizeName(name) === normalizedName);
 
-    if (hasLorebookNameCollision) {
-        toaster?.error?.(
-            `Lorebook named "${trimmedName}" already exists.`,
-            'Combine into Group Card',
-        );
-        return null;
-    }
-
-    return { groupName: trimmedName, characters: validCharacters };
+    return {
+        groupName: trimmedName,
+        characters: validCharacters,
+        collisions: {
+            character: hasCharacterNameCollision,
+            lorebook: hasLorebookNameCollision,
+        },
+    };
 }
 
 /**
@@ -1569,6 +1686,216 @@ class BulkEditOverlay {
         return this.#bulkTagPopupHandler;
     }
 
+    static #syncGlobalGroupCardJobs = (jobs) => {
+        for (const job of jobs ?? []) {
+            if (job?.managerType !== 'group-card') {
+                continue;
+            }
+
+            const existing = groupCardJobs.get(job.id);
+            if (existing) {
+                existing.status = job.status;
+                existing.startedAt = job.createdAt;
+                existing.groupName = job.config?.groupName ?? existing.groupName;
+            } else {
+                groupCardJobs.set(job.id, toGroupCardJobState(job));
+            }
+        }
+
+        BulkEditOverlay.#renderGroupCardJobIndicator();
+    };
+
+    static #fetchGlobalJobs = async () => {
+        try {
+            const response = await fetch('/api/characters/jobs');
+            if (!response.ok) {
+                return;
+            }
+
+            const { jobs } = await response.json();
+            BulkEditOverlay.#syncGlobalGroupCardJobs(jobs);
+        } catch {
+            // Ignore discovery failures; per-job SSE still handles local jobs.
+        }
+    };
+
+    static #initActiveJobsPanel = () => {
+        const toggle = document.getElementById('active_jobs_toggle');
+        const content = document.getElementById('active_jobs_content');
+        if (!toggle || !content) {
+            return;
+        }
+
+        toggle.addEventListener('click', () => {
+            const isOpen = content.style.display !== 'none';
+            content.style.display = isOpen ? 'none' : 'block';
+            const icon = toggle.querySelector('.inline-drawer-icon');
+            if (icon) {
+                icon.classList.toggle('down', !isOpen);
+                icon.classList.toggle('up', isOpen);
+            }
+            if (!isOpen) {
+                BulkEditOverlay.#renderActiveJobsList();
+            }
+        });
+
+        BulkEditOverlay.#renderActiveJobsList();
+    };
+
+    static #renderActiveJobsList = async () => {
+        const container = document.getElementById('active_jobs_list');
+        if (!container) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/characters/jobs');
+            if (!response.ok) {
+                throw new Error('Failed to fetch jobs');
+            }
+
+            const { jobs = [] } = await response.json();
+            const terminalStatuses = ['completed', 'failed', 'cancelled'];
+
+            const badge = document.getElementById('active_jobs_badge');
+            if (badge) {
+                const active = jobs.filter(
+                    (job) => !terminalStatuses.includes(job.status),
+                ).length;
+                badge.textContent = String(active);
+                badge.style.display = active > 0 ? 'inline' : 'none';
+            }
+
+            if (jobs.length === 0) {
+                container.innerHTML =
+					'<div class="active-jobs-empty">No active tasks.</div>';
+                return;
+            }
+
+            container.innerHTML = `<div class="active-jobs-list">${jobs
+                .map((job) => {
+                    const icon = job.managerType === 'group-card' ? '📝' : '📖';
+                    const status = String(job.status ?? 'unknown');
+                    const statusClass = status.replace(/[^a-z0-9_-]/gi, '');
+                    const numericCreatedAt = Number(job.createdAt);
+                    const createdAt = Number.isFinite(numericCreatedAt)
+                        ? numericCreatedAt
+                        : Date.parse(String(job.createdAt));
+                    const elapsed = Number.isFinite(createdAt)
+                        ? Math.max(0, Math.round((Date.now() - createdAt) / 1000))
+                        : 0;
+                    const elapsedStr =
+						elapsed < 60
+						    ? `${elapsed}s`
+						    : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+                    const name =
+						job.config?.groupName || job.config?.lorebookName || job.id;
+                    const isTerminal = terminalStatuses.includes(status);
+                    const cancelBtn = isTerminal
+                        ? ''
+                        : `<div class="menu_button active-job-cancel" data-job-id="${escapeHtml(String(job.id))}" data-job-type="${escapeHtml(String(job.managerType))}" title="Cancel"><i class="fa-solid fa-xmark"></i></div>`;
+                    return `<div class="active-job-item">
+                    <span class="active-job-icon">${icon}</span>
+                    <span class="active-job-name">${escapeHtml(String(name))}</span>
+                    <span class="active-job-status ${statusClass}">${escapeHtml(status)}</span>
+                    <small>${elapsedStr}</small>
+                    ${cancelBtn}
+                </div>`;
+                })
+                .join('')}</div>`;
+
+            container.querySelectorAll('.active-job-cancel').forEach((btn) => {
+                if (!(btn instanceof HTMLElement)) {
+                    return;
+                }
+
+                btn.addEventListener('click', async () => {
+                    const jobId = btn.dataset.jobId;
+                    const jobType = btn.dataset.jobType;
+                    if (!jobId) {
+                        return;
+                    }
+
+                    const endpoint =
+						jobType === 'group-card'
+						    ? `/api/characters/group-card-job/${encodeURIComponent(jobId)}/cancel`
+						    : `/api/worldinfo/ai-jobs/${encodeURIComponent(jobId)}/cancel`;
+                    try {
+                        await fetch(endpoint, {
+                            method: 'POST',
+                            headers: getRequestHeaders(),
+                        });
+                    } catch (e) {
+                        console.error('Cancel failed:', e);
+                    }
+                    BulkEditOverlay.#renderActiveJobsList();
+                });
+            });
+        } catch (error) {
+            container.innerHTML =
+				'<div class="active-jobs-empty">Failed to load tasks.</div>';
+        }
+    };
+
+    static #initGlobalJobSync = () => {
+        if (globalJobEventSource) {
+            return;
+        }
+
+        BulkEditOverlay.#fetchGlobalJobs();
+        globalJobEventSource = new EventSource('/api/characters/jobs/events');
+
+        globalJobEventSource.addEventListener('state', (event) => {
+            try {
+                const { jobs } = JSON.parse(event.data || '{}');
+                BulkEditOverlay.#syncGlobalGroupCardJobs(jobs);
+                BulkEditOverlay.#renderActiveJobsList();
+            } catch {
+                // Ignore malformed sync events.
+            }
+        });
+
+        globalJobEventSource.addEventListener('job_started', (event) => {
+            try {
+                const data = JSON.parse(event.data || '{}');
+                if (data.managerType === 'group-card') {
+                    BulkEditOverlay.#fetchGlobalJobs();
+                }
+                BulkEditOverlay.#renderActiveJobsList();
+            } catch {
+                // Ignore malformed sync events.
+            }
+        });
+
+        globalJobEventSource.addEventListener('job_completed', (event) => {
+            try {
+                const data = JSON.parse(event.data || '{}');
+                if (data.managerType === 'group-card') {
+                    BulkEditOverlay.#removeGroupCardJob(data.jobId);
+                }
+                BulkEditOverlay.#renderActiveJobsList();
+            } catch {
+                // Ignore malformed sync events.
+            }
+        });
+
+        globalJobEventSource.addEventListener('job_failed', (event) => {
+            try {
+                const data = JSON.parse(event.data || '{}');
+                if (data.managerType === 'group-card') {
+                    BulkEditOverlay.#updateGroupCardJobStatus(data.jobId, 'failed');
+                }
+                BulkEditOverlay.#renderActiveJobsList();
+            } catch {
+                // Ignore malformed sync events.
+            }
+        });
+
+        window.addEventListener('beforeunload', () => {
+            globalJobEventSource?.close();
+        });
+    };
+
     constructor() {
         if (bulkEditOverlayInstance instanceof BulkEditOverlay)
             return bulkEditOverlayInstance;
@@ -1580,6 +1907,8 @@ class BulkEditOverlay {
             this.handleStateChange,
         );
         eventSource.on(event_types.CHARACTER_PAGE_LOADED, this.#chunkLoadHandler);
+        BulkEditOverlay.#initActiveJobsPanel();
+        BulkEditOverlay.#initGlobalJobSync();
         bulkEditOverlayInstance = Object.freeze(this);
     }
 
@@ -2203,6 +2532,10 @@ class BulkEditOverlay {
                             <input type="checkbox" id="bulk_combine_group_card_dynamic_lorebook_toggle" />
                             <span>Use dynamic lorebook</span>
                         </label>
+                        <label class="text_label">
+                            <span>Summary fallback tags (comma-separated)</span>
+                            <input id="bulk_combine_fallback_tags" class="text_pole" type="text" />
+                        </label>
                         <div id="bulk_combine_minify_section" class="field-group">
                             <label for="bulk_combine_group_card_minify_toggle" class="checkbox_label">
                                 <input type="checkbox" id="bulk_combine_group_card_minify_toggle" />
@@ -2724,33 +3057,21 @@ class BulkEditOverlay {
                 $('<div></div>').addClass('menu_button edit-btn').text('Edit'),
             );
             card.append(actions);
-            const nudgeToggle = $('<div></div>')
-                .addClass('menu_button nudge-toggle')
-                .text('Nudge');
-            const nudgeArea = $('<div></div>')
-                .addClass('nudge-area')
-                .css('display', 'none');
-            nudgeArea.append(
-                $('<textarea></textarea>')
-                    .addClass('text_pole nudge-prompt')
-                    .attr('rows', '2')
-                    .attr('placeholder', 'Optional nudge prompt for regeneration...'),
+            const nudgeRow = $('<div></div>').addClass('nudge-row');
+            nudgeRow.append(
+                $('<input type="text">')
+                    .addClass('text_pole nudge-input')
+                    .attr('placeholder', 'Nudge prompt...'),
             );
-            nudgeToggle.on('click', () => {
-                nudgeArea.toggle();
-                nudgeToggle.text(nudgeArea.is(':visible') ? 'Hide Nudge' : 'Nudge');
-            });
-            card.append(nudgeToggle);
-            card.append(nudgeArea);
+            card.append(nudgeRow);
             cards.append(card);
         });
 
         content.append(
             $('<style></style>').text(`
                 .result-card.regenerating { opacity: 0.75; }
-                .result-card .nudge-toggle { margin-top: 0.5em; }
-                .result-card .nudge-area { margin-top: 0.5em; }
-                .result-card .nudge-prompt { width: 100%; }
+                .result-card .nudge-row { display: flex; margin-top: 0.5em; }
+                .result-card .nudge-input { flex: 1; }
             `),
         );
         content.append(cards);
@@ -2926,7 +3247,7 @@ class BulkEditOverlay {
                 regenOutputIndexes.forEach((outputIndex, regenIndex) => {
                     const nudge = String(
                         popupContent
-                            .find(`.result-card[data-index="${outputIndex}"] .nudge-prompt`)
+                            .find(`.result-card[data-index="${outputIndex}"] .nudge-input`)
                             .val() ?? '',
                     ).trim();
                     if (nudge) {
@@ -3390,12 +3711,22 @@ class BulkEditOverlay {
 	 * @param {object} wizardState Wizard state.
 	 */
     static #renderStage4Content = (popupContent, wizardState) => {
-        let description = String(
+        const existingFirstMesValue = String(
+            popupContent.find('#bulk_combine_review_first_mes').val() ?? '',
+        );
+        const dynamicLorebookSourceXml = String(
             wizardState.postProcessResult || wizardState.mergedXml || '',
         );
+        const greetingBlocks = extractGreetingBlocks(dynamicLorebookSourceXml);
+        const greetings = parseGreetingsFromGeneratedOutput(
+            dynamicLorebookSourceXml,
+        );
+        let description = stripGreetingBlocks(dynamicLorebookSourceXml);
 
         if (wizardState.config?.dynamicLorebook) {
-            description = buildDynamicSummaryDescription(description);
+            const fallbackTags = wizardState.config?.summaryFallbackTags ??
+				power_user.summary_fallback_tags ?? ['summary'];
+            description = buildDynamicSummaryDescription(description, fallbackTags);
         }
 
         if (wizardState.config?.minify) {
@@ -3432,7 +3763,27 @@ class BulkEditOverlay {
         content.find('#bulk_combine_review_description').val(description);
         content
             .find('#bulk_combine_review_first_mes')
-            .val(extractFirstMessage(description));
+            .val(
+                existingFirstMesValue ||
+					greetings.first_mes ||
+					extractFirstMessage(description),
+            );
+        if (greetingBlocks.length > 1 && greetings.alternate_greetings.length > 0) {
+            const greetingsSection = $('<div class="review-section"></div>');
+            greetingsSection.append(
+                $('<label class="text_label"><span>Alternate Greetings</span></label>'),
+            );
+            greetings.alternate_greetings.forEach((greeting, idx) => {
+                greetingsSection.append(
+                    $('<textarea></textarea>')
+                        .addClass('text_pole alt-greeting')
+                        .attr('rows', '3')
+                        .attr('data-greeting-index', String(idx))
+                        .val(greeting),
+                );
+            });
+            content.append(greetingsSection);
+        }
         const avatar = wizardState.avatarUrl || wizardState.results?.avatar || '';
         if (avatar) {
             const avatarImage = content.find('#bulk_combine_avatar_image');
@@ -4087,12 +4438,29 @@ class BulkEditOverlay {
         const dynamicLorebookSourceXml = String(
             wizardState.postProcessResult || wizardState.mergedXml || '',
         );
+        const { alternate_greetings: parsedGreetings } =
+			parseGreetingsFromGeneratedOutput(dynamicLorebookSourceXml);
         const description = String(
             popupContent.find('#bulk_combine_review_description').val() ?? '',
         ).trim();
+        const descriptionWithoutGreetings = stripGreetingBlocks(description);
+        const dynamicLorebookSourceWithoutGreetings = stripGreetingBlocks(
+            dynamicLorebookSourceXml,
+        );
         const firstMes = String(
             popupContent.find('#bulk_combine_review_first_mes').val() ?? '',
         );
+        const alternateGreetings = [];
+        const alternateGreetingInputs = popupContent.find('.alt-greeting');
+        alternateGreetingInputs.each(function () {
+            const val = String($(this).val() ?? '').trim();
+            if (val) {
+                alternateGreetings.push(val);
+            }
+        });
+        if (alternateGreetingInputs.length === 0 && parsedGreetings.length > 0) {
+            alternateGreetings.push(...parsedGreetings);
+        }
         const groupName = String(
             popupContent.find('#bulk_combine_review_name').val() ??
 				wizardState.config?.groupName ??
@@ -4107,9 +4475,14 @@ class BulkEditOverlay {
         }
         BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, true);
         try {
+            const fallbackTags = wizardState.config?.summaryFallbackTags ??
+				power_user.summary_fallback_tags ?? ['summary'];
             let finalDescription = wizardState.config?.dynamicLorebook
-                ? buildDynamicSummaryDescription(dynamicLorebookSourceXml)
-                : description;
+                ? buildDynamicSummaryDescription(
+                    dynamicLorebookSourceWithoutGreetings,
+                    fallbackTags,
+                )
+                : descriptionWithoutGreetings;
             if (wizardState.config?.minify) {
                 finalDescription = minifyXml(finalDescription, {
                     compact: !wizardState.config?.minifySingleLine,
@@ -4134,6 +4507,7 @@ class BulkEditOverlay {
                             ch_name: groupName,
                             description: finalDescription,
                             first_mes: firstMes,
+                            alternate_greetings: alternateGreetings,
                             creator_notes: `Generated group card from: ${wizardMeta.sourceCharacterNames.join(', ')}\n[group_card_wizard]`,
                             extensions: {
                                 [GROUP_CARD_WIZARD_METADATA_KEY]: wizardMeta,
@@ -4157,10 +4531,12 @@ class BulkEditOverlay {
                     ),
                     wizardState.config?.fields,
                     Boolean(wizardState.config?.dynamicLorebook),
-                    dynamicLorebookSourceXml,
+                    dynamicLorebookSourceWithoutGreetings,
                     wizardMeta,
                     wizardState.config?.minify,
                     wizardState.config?.minifySingleLine,
+                    firstMes,
+                    alternateGreetings,
                 );
                 const { avatar, world } = result;
                 wizardState.createdArtifacts = { avatar, world };
@@ -4224,8 +4600,10 @@ class BulkEditOverlay {
         }
         try {
             const sourceXml = wizardState.mergedXml;
+            const fallbackTags = wizardState.config?.summaryFallbackTags ??
+				power_user.summary_fallback_tags ?? ['summary'];
             let description = wizardState.config?.dynamicLorebook
-                ? buildDynamicSummaryDescription(sourceXml)
+                ? buildDynamicSummaryDescription(sourceXml, fallbackTags)
                 : sourceXml;
 
             if (wizardState.config?.minify) {
@@ -4537,6 +4915,14 @@ class BulkEditOverlay {
         const dynamicLorebook = Boolean(dynamicLorebookToggle.prop('checked'));
         const minify = Boolean(minifyToggle.prop('checked'));
         const minifySingleLine = Boolean(minifySingleLineToggle.prop('checked'));
+        const summaryFallbackTags = String(
+            popupContent.find('#bulk_combine_fallback_tags').val() ?? '',
+        )
+            .split(',')
+            .map((tag) => tag.trim())
+            .filter(Boolean);
+        const normalizedSummaryFallbackTags =
+			summaryFallbackTags.length > 0 ? summaryFallbackTags : ['summary'];
         await Promise.all(
             wizardState.selectedCharacterIds
                 .filter((id) => characters[id]?.shallow)
@@ -4566,6 +4952,7 @@ class BulkEditOverlay {
         power_user.group_card_crop_padding = cropPadding;
         power_user.group_card_layout = layout;
         power_user.group_card_gap = gap;
+        power_user.summary_fallback_tags = normalizedSummaryFallbackTags;
         saveSettingsDebounced();
 
         wizardState.config = {
@@ -4576,6 +4963,7 @@ class BulkEditOverlay {
             dynamicLorebook,
             minify,
             minifySingleLine,
+            summaryFallbackTags: normalizedSummaryFallbackTags,
             fields: selectedFields,
             selectedOptionalFields,
             concurrency,
@@ -4650,6 +5038,7 @@ class BulkEditOverlay {
                 gap: wizardState.config?.gap,
                 fields: wizardState.config?.fields,
                 selectedOptionalFields: wizardState.config?.selectedOptionalFields,
+                summaryFallbackTags: wizardState.config?.summaryFallbackTags,
                 createLorebook: Boolean(wizardState.config?.createLorebook),
                 dynamicLorebook: Boolean(wizardState.config?.dynamicLorebook),
                 minify: Boolean(wizardState.config?.minify),
@@ -4888,6 +5277,9 @@ class BulkEditOverlay {
                 const characterSearchInput = popupContent.find(
                     '#bulk_combine_group_card_search',
                 );
+                const fallbackTagsInput = popupContent.find(
+                    '#bulk_combine_fallback_tags',
+                );
 
                 groupNameInput.val(wizardState.config?.groupName ?? '');
                 promptInput.val(
@@ -4942,8 +5334,17 @@ class BulkEditOverlay {
                 gapInput.val(String(gap));
                 gapValue.text(String(gap));
                 gapContainer.toggle(persistedLayout !== 'voronoi');
+                const fallbackTags = Array.isArray(
+                    wizardState.config?.summaryFallbackTags,
+                )
+                    ? wizardState.config.summaryFallbackTags
+                    : Array.isArray(power_user.summary_fallback_tags)
+                        ? power_user.summary_fallback_tags
+                        : ['summary'];
+                fallbackTagsInput.val(fallbackTags.join(', '));
                 wizardState.config.layout = persistedLayout;
                 wizardState.config.gap = gap;
+                wizardState.config.summaryFallbackTags = fallbackTags;
                 lorebookToggle
                     .prop('checked', Boolean(wizardState.config?.createLorebook))
                     .prop('disabled', Boolean(wizardState.config?.dynamicLorebook));
@@ -5000,6 +5401,15 @@ class BulkEditOverlay {
 
                 gapInput.on('input', () => {
                     gapValue.text(String(gapInput.val() ?? '2'));
+                });
+
+                fallbackTagsInput.on('change', function () {
+                    const tags = String($(this).val() ?? '')
+                        .split(',')
+                        .map((tag) => tag.trim())
+                        .filter(Boolean);
+                    wizardState.config.summaryFallbackTags =
+						tags.length > 0 ? tags : ['summary'];
                 });
 
                 dynamicLorebookToggle.on('change', function () {

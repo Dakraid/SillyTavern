@@ -7,6 +7,9 @@ import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { tryParse } from '../util.js';
 import { lorebookAIJobManager } from '../util/lorebook-ai-job.js';
+import { globalJobRegistry } from '../util/job-manager.js';
+
+globalJobRegistry.register('lorebook-ai', lorebookAIJobManager);
 
 /**
  * Reads a World Info file and returns its contents

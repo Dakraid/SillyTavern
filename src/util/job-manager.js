@@ -95,6 +95,7 @@ export class JobManager {
     constructor(options = {}) {
         this.ttlMs = options.ttlMs ?? JOB_TTL_MS;
         this.cleanupIntervalMs = options.cleanupIntervalMs ?? CLEANUP_INTERVAL_MS;
+        this._managerType = null;
         /** @type {Map<string, Job>} */
         this.jobs = new Map();
         this.cleanupTimer = setInterval(
@@ -221,6 +222,10 @@ export class JobManager {
         for (const client of [...job.sseClients]) {
             this.writeSseEvent(client, event.id, event.eventType, event.data);
         }
+
+        if (this._managerType) {
+            globalJobRegistry.emitGlobalEvent(this._managerType, jobId, eventType, event.data);
+        }
     }
 
     /**
@@ -321,3 +326,97 @@ export class JobManager {
         throw new Error('Not implemented');
     }
 }
+
+export class JobManagerRegistry {
+    constructor() {
+        this.managers = new Map();
+        this.globalClients = new Set();
+        this.globalEventCounter = 0;
+    }
+
+    /**
+     * @param {string} type Manager type.
+     * @param {JobManager} manager Job manager instance.
+     */
+    register(type, manager) {
+        if (!type || !manager) {
+            return;
+        }
+
+        manager._managerType = type;
+        this.managers.set(type, { manager, type });
+    }
+
+    getAllActiveJobs() {
+        const jobs = [];
+
+        for (const [, { manager, type }] of this.managers) {
+            for (const [, job] of manager.jobs) {
+                if (TERMINAL_STATUSES.has(job.status)) {
+                    continue;
+                }
+
+                jobs.push({
+                    ...manager.serializeJob(job),
+                    createdAt: job.createdAt,
+                    config: this.getPublicConfig(job.config),
+                    managerType: type,
+                });
+            }
+        }
+
+        return jobs;
+    }
+
+    /**
+     * @param {object} config Job config.
+     * @returns {object} Public-safe subset of job config.
+     */
+    getPublicConfig(config) {
+        return {
+            groupName: config?.groupName,
+            lorebookName: config?.lorebookName,
+        };
+    }
+
+    /**
+     * @param {string} managerType Manager type.
+     * @param {string} jobId Job ID.
+     * @param {string} eventType SSE event type.
+     * @param {object} data Event payload.
+     */
+    emitGlobalEvent(managerType, jobId, eventType, data) {
+        const id = ++this.globalEventCounter;
+        const payload = JSON.stringify({ managerType, jobId, eventType, data });
+
+        for (const client of [...this.globalClients]) {
+            try {
+                client.write(`id: ${id}\n`);
+                client.write(`event: ${eventType}\n`);
+                client.write(`data: ${payload}\n\n`);
+                client.flush?.();
+            } catch {
+                this.globalClients.delete(client);
+            }
+        }
+    }
+
+    /**
+     * @param {import('express').Response} response Express response.
+     */
+    addGlobalSseClient(response) {
+        response.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+        });
+        response.write('retry: 5000\n');
+        response.write(`event: state\ndata: ${JSON.stringify({ jobs: this.getAllActiveJobs() })}\n\n`);
+        response.flush?.();
+
+        this.globalClients.add(response);
+        response.on('close', () => this.globalClients.delete(response));
+    }
+}
+
+export const globalJobRegistry = new JobManagerRegistry();

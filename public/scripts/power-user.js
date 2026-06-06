@@ -374,6 +374,7 @@ export const power_user = {
     group_card_combine_prompt: DEFAULT_GROUP_CARD_COMBINE_PROMPT,
     group_card_combine_prompt_presets: [],
     group_card_combine_included_fields: ['personality'],
+    summary_fallback_tags: ['summary'],
     group_card_parallel_concurrency: 10,
     group_card_post_merge_enabled: true,
     group_card_post_merge_prompt: DEFAULT_POST_MERGE_PROMPT,
@@ -2089,13 +2090,9 @@ export async function loadPowerUserSettings(settings, data) {
         50,
     );
     $('#lorebook_ai_concurrency').val(power_user.lorebook_ai_concurrency);
-    $('#lorebook_ai_concurrency_counter').val(
-        power_user.lorebook_ai_concurrency,
-    );
+    $('#lorebook_ai_concurrency_counter').val(power_user.lorebook_ai_concurrency);
     $('#lorebook_ai_batch_size').val(power_user.lorebook_ai_batch_size);
-    $('#lorebook_ai_batch_size_counter').val(
-        power_user.lorebook_ai_batch_size,
-    );
+    $('#lorebook_ai_batch_size_counter').val(power_user.lorebook_ai_batch_size);
     $('#enable_auto_select_input').prop(
         'checked',
         power_user.enable_auto_select_input,
@@ -4254,9 +4251,7 @@ jQuery(() => {
             50,
         );
         $('#lorebook_ai_batch_size').val(power_user.lorebook_ai_batch_size);
-        $('#lorebook_ai_batch_size_counter').val(
-            power_user.lorebook_ai_batch_size,
-        );
+        $('#lorebook_ai_batch_size_counter').val(power_user.lorebook_ai_batch_size);
         saveSettingsDebounced();
     });
 

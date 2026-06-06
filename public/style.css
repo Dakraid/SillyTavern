@@ -5671,6 +5671,69 @@ body:not(.caption) .mes_img_caption {
 	font-size: calc(var(--mainFontSize) * 0.9);
 }
 
+.active-jobs-list {
+	padding: 0.5em 0;
+}
+
+.active-job-item {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	padding: 0.4em 0.5em;
+	border-bottom: 1px solid
+		var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
+}
+
+.active-job-item:last-child {
+	border-bottom: none;
+}
+
+.active-job-icon {
+	font-size: 1.1em;
+	width: 1.5em;
+	text-align: center;
+}
+
+.active-job-name {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.active-job-status {
+	font-size: 0.85em;
+	padding: 0.1em 0.4em;
+	border-radius: 0.3em;
+}
+
+.active-job-status.running {
+	background: rgba(52, 152, 219, 0.3);
+}
+
+.active-job-status.completed {
+	background: rgba(46, 204, 113, 0.3);
+}
+
+.active-job-status.failed {
+	background: rgba(231, 76, 60, 0.3);
+}
+
+.active-job-cancel {
+	cursor: pointer;
+	opacity: 0.6;
+}
+
+.active-job-cancel:hover {
+	opacity: 1;
+}
+
+.active-jobs-empty {
+	opacity: 0.5;
+	text-align: center;
+	padding: 1em;
+}
+
 /*------------ TOP SIDE SETTINGS ----------------*/
 
 #top-settings-holder {

@@ -50,11 +50,14 @@ import {
     generateVoronoiComposite,
 } from '../util/voronoi-composite.js';
 import { groupCardJobManager } from '../util/group-card-job.js';
+import { globalJobRegistry } from '../util/job-manager.js';
 import {
     createBackup as createGroupCardBackup,
     listBackups as listGroupCardBackups,
     restoreBackup as restoreGroupCardBackup,
 } from '../util/group-card-backup.js';
+
+globalJobRegistry.register('group-card', groupCardJobManager);
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue(
@@ -351,9 +354,9 @@ export async function applyAvatarCropResize(jimp, crop) {
     // Apply crop if defined
     if (
         typeof crop == 'object' &&
-		[crop.x, crop.y, crop.width, crop.height].every(
-		    (x) => typeof x === 'number',
-		)
+        [crop.x, crop.y, crop.width, crop.height].every(
+            (x) => typeof x === 'number',
+        )
     ) {
         image.crop({ x: crop.x, y: crop.y, w: crop.width, h: crop.height });
         // Apply standard resize if requested
@@ -964,13 +967,13 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
     const byafData = await new ByafParser(data).parse();
     const card = readFromV2(byafData.card);
     const fileName =
-		preservedFileName ||
-		getPngName(
-		    sanitize(byafData.character.displayName || card.name, {
-		        replacement: sanitizeSafeCharacterReplacements,
-		    }),
-		    request.user.directories,
-		);
+        preservedFileName ||
+        getPngName(
+            sanitize(byafData.character.displayName || card.name, {
+                replacement: sanitizeSafeCharacterReplacements,
+            }),
+            request.user.directories,
+        );
 
     // Don't import chats and images if the character is being replaced or updated, instead of newly imported.
     if (!preservedFileName) {
@@ -2211,6 +2214,14 @@ router.post('/group-card-job/regen', async function (request, response) {
     }
 });
 
+router.get('/jobs', function (_request, response) {
+    response.json({ jobs: globalJobRegistry.getAllActiveJobs() });
+});
+
+router.get('/jobs/events', function (_request, response) {
+    globalJobRegistry.addGlobalSseClient(response);
+});
+
 router.get('/group-card-job/:id/events', function (request, response) {
     const jobId = String(request.params.id ?? '');
     const job = groupCardJobManager.getJob(jobId);
@@ -2396,27 +2407,27 @@ router.post('/generate-voronoi-composite', async function (request, response) {
             ? request.body.offsets.map(normalizeVoronoiOffset).filter(Boolean)
             : undefined;
         const seed =
-			typeof request.body.seed === 'number' &&
-			Number.isFinite(request.body.seed)
-			    ? Math.round(request.body.seed)
-			    : undefined;
+            typeof request.body.seed === 'number' &&
+            Number.isFinite(request.body.seed)
+                ? Math.round(request.body.seed)
+                : undefined;
         const layout = normalizeVoronoiLayout(request.body.layout);
         const gap = normalizeVoronoiGap(request.body.gap);
         const result =
-			layout === 'grid-portrait' || layout === 'grid-square'
-			    ? await generateGridComposite(avatarPaths, outputPath, {
-			        cropStrategy,
-			        cropPadding,
-			        offsets,
-			        cellAspect: layout,
-			        gap,
-			    })
-			    : await generateVoronoiComposite(avatarPaths, outputPath, {
-			        cropStrategy,
-			        cropPadding,
-			        offsets,
-			        seed,
-			    });
+            layout === 'grid-portrait' || layout === 'grid-square'
+                ? await generateGridComposite(avatarPaths, outputPath, {
+                    cropStrategy,
+                    cropPadding,
+                    offsets,
+                    cellAspect: layout,
+                    gap,
+                })
+                : await generateVoronoiComposite(avatarPaths, outputPath, {
+                    cropStrategy,
+                    cropPadding,
+                    offsets,
+                    seed,
+                });
 
         const imageBuffer = fs.readFileSync(result.path);
         fs.unlinkSync(result.path); // clean up temp file immediately
