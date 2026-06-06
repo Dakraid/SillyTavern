@@ -17,8 +17,8 @@ const DEFAULT_GROUP_CARD_COMBINE_PROMPT = 'Default group card combine prompt.';
 jest.unstable_mockModule('../public/script.js', () => ({
     characterGroupOverlay: {},
     characters: mockCharacters,
-    event_types: {},
-    eventSource: { emit: jest.fn() },
+    event_types: { CHARACTER_EDITOR_OPENED: 'character_editor_opened' },
+    eventSource: { emit: jest.fn(), on: jest.fn() },
     Generate: jest.fn(),
     generateQuietPrompt: jest.fn(),
     getCharacters: jest.fn(),
@@ -34,6 +34,8 @@ jest.unstable_mockModule('../public/script.js', () => ({
     main_api: 'kobold',
     amount_gen: 200,
     max_context: 4096,
+    getVirtualCharacterList: jest.fn(() => []),
+    getEntitiesList: jest.fn(() => []),
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
@@ -173,6 +175,31 @@ describe('extractSummaryFromCharacterBlock', () => {
     });
 });
 
+describe('extractXmlBlocksByTag', () => {
+    test('returns openTag with attributes', () => {
+        expect(
+            parserMod.extractXmlBlocksByTag(
+                '<character name="Alice" species="elf"><name>Alice</name></character>',
+                'character',
+            )[0]?.openTag,
+        ).toBe('<character name="Alice" species="elf">');
+    });
+});
+
+describe('extractOpenTagAttributes', () => {
+    test('parses double and single quoted attributes', () => {
+        expect(
+            parserMod.extractOpenTagAttributes(
+                '<character name="Alice & Bob" species=\'half-elf\'>',
+            ),
+        ).toEqual({ name: 'Alice & Bob', species: 'half-elf' });
+    });
+
+    test('returns empty object for no attributes', () => {
+        expect(parserMod.extractOpenTagAttributes('<character>')).toEqual({});
+    });
+});
+
 describe('stripSummaryFromCharacterBlock', () => {
     test('removes summary cleanly', () => {
         const input =
@@ -192,6 +219,14 @@ describe('stripSummaryFromCharacterBlock', () => {
 			'<character>\n  <summary>Brief line one\nBrief line two</summary>\n  <name>Alice</name>\n  <description>Full</description>\n</character>';
         expect(parserMod.stripSummaryFromCharacterBlock(input)).toBe(
             '<character>\n  <name>Alice</name>\n  <description>Full</description>\n</character>',
+        );
+    });
+
+    test('removes summary with attributes', () => {
+        const input =
+			'<character>\n  <summary role="backstory">Brief</summary>\n  <name>Alice</name>\n</character>';
+        expect(parserMod.stripSummaryFromCharacterBlock(input)).toBe(
+            '<character>\n  <name>Alice</name>\n</character>',
         );
     });
 });
@@ -220,6 +255,22 @@ describe('buildSummaryCharacterBlock', () => {
             ),
         ).toBe(
             '<character>\n  <name>Alice</name>\n  <summary></summary>\n</character>',
+        );
+    });
+
+    test('preserves character and summary attributes', () => {
+        const input =
+			'<character name="Alice" species="elf"><name>Alice</name><summary role="backstory">An elf from...</summary></character>';
+        expect(parserMod.buildSummaryCharacterBlock(input)).toBe(
+            '<character name="Alice" species="elf">\n  <name>Alice</name>\n  <summary role="backstory">An elf from...</summary>\n</character>',
+        );
+    });
+
+    test('preserves attributes with special characters', () => {
+        const input =
+			'<character title="Alice &amp; Bob"><summary note="uses &quot;quotes&quot;">Brief</summary></character>';
+        expect(parserMod.buildSummaryCharacterBlock(input)).toBe(
+            '<character title="Alice &amp; Bob">\n  <summary note="uses &quot;quotes&quot;">Brief</summary>\n</character>',
         );
     });
 });
@@ -404,12 +455,11 @@ describe('BulkEditOverlay group card helper tests', () => {
                 worldNames: [],
                 toaster,
             }),
-        ).toBeNull();
-
-        expect(toaster.error).toHaveBeenCalledWith(
-            'Character named "Existing Group" already exists.',
-            'Combine into Group Card',
-        );
+        ).toEqual({
+            groupName: 'Existing Group',
+            characters: expect.any(Array),
+            collisions: { character: true, lorebook: false },
+        });
     });
 
     test('rejects empty names, missing character names, and lorebook name collisions', () => {
@@ -446,11 +496,11 @@ describe('BulkEditOverlay group card helper tests', () => {
                 worldNames: [' shared lore '],
                 toaster,
             }),
-        ).toBeNull();
-        expect(toaster.error).toHaveBeenCalledWith(
-            'Lorebook named "Shared Lore" already exists.',
-            'Combine into Group Card',
-        );
+        ).toEqual({
+            groupName: 'Shared Lore',
+            characters: expect.any(Array),
+            collisions: { character: false, lorebook: true },
+        });
     });
 
     test('allows lorebook name collision when lorebook creation is disabled', () => {
@@ -464,7 +514,11 @@ describe('BulkEditOverlay group card helper tests', () => {
                 toaster,
                 createLorebook: false,
             }),
-        ).toEqual({ groupName: 'Shared Lore', characters: characterList });
+        ).toEqual({
+            groupName: 'Shared Lore',
+            characters: characterList,
+            collisions: { character: false, lorebook: false },
+        });
         expect(toaster.error).not.toHaveBeenCalled();
     });
 

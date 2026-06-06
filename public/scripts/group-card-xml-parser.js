@@ -44,10 +44,10 @@ export function openTagRegexFor(tagName) {
  * Handles attributes, nested same-name tags (depth tracking), mixed content.
  * @param {string} text
  * @param {string} tagName
- * @returns {Array<{tag: string, content: string, raw: string}>}
+ * @returns {Array<{tag: string, content: string, raw: string, openTag: string}>}
  */
 export function extractXmlBlocksByTag(text, tagName) {
-    /** @type {Array<{tag: string, content: string, raw: string}>} */
+    /** @type {Array<{tag: string, content: string, raw: string, openTag: string}>} */
     const blocks = [];
     let consumedUpTo = 0;
     const closeTag = `</${tagName}>`;
@@ -95,6 +95,7 @@ export function extractXmlBlocksByTag(text, tagName) {
                 tag: tagName,
                 content: text.slice(searchStart, closeIndex),
                 raw: text.slice(blockStart, blockEnd),
+                openTag: openTagText,
             });
             consumedUpTo = blockEnd;
         }
@@ -104,10 +105,40 @@ export function extractXmlBlocksByTag(text, tagName) {
 }
 
 /**
+ * Extracts attributes from an XML opening tag.
+ * @param {string} openTagString XML opening tag.
+ * @returns {Record<string, string>} Attribute name/value map.
+ */
+export function extractOpenTagAttributes(openTagString) {
+    /** @type {Record<string, string>} */
+    const attrs = {};
+    const regex = /(\w[\w-]*)=(?:"([^"]*)"|'([^']*)')/g;
+    let m;
+
+    while ((m = regex.exec(String(openTagString ?? ''))) !== null) {
+        attrs[m[1]] = m[2] ?? m[3] ?? '';
+    }
+
+    return attrs;
+}
+
+/**
+ * Extracts the opening tag for a named XML block.
+ * @param {string} xmlString XML text.
+ * @param {string} tagName Tag name.
+ * @returns {string} Opening tag text, or a plain opening tag fallback.
+ */
+function extractOpenTag(xmlString, tagName) {
+    const regex = new RegExp(`<${tagName}(?:\\s+[^>]*[^/])?>`);
+    const match = regex.exec(String(xmlString ?? ''));
+    return match ? match[0] : `<${tagName}>`;
+}
+
+/**
  * Extracts any top-level XML blocks regardless of tag name.
  * Tries <character> first, then falls back to any tag.
  * @param {string} text
- * @returns {Array<{tag: string, content: string, raw: string}>}
+ * @returns {Array<{tag: string, content: string, raw: string, openTag: string}>}
  */
 export function extractTopLevelXmlBlocks(text) {
     const characterBlocks = extractXmlBlocksByTag(text, 'character');
@@ -116,7 +147,7 @@ export function extractTopLevelXmlBlocks(text) {
     }
 
     const anyOpenRegex = /<([a-zA-Z_][\w.-]*)(?:\s+[^>]*[^/])?>/g;
-    /** @type {Array<{tag: string, content: string, raw: string}>} */
+    /** @type {Array<{tag: string, content: string, raw: string, openTag: string}>} */
     const blocks = [];
     let consumedUpTo = 0;
     let match;
@@ -143,6 +174,7 @@ export function extractTopLevelXmlBlocks(text) {
                     tag: block.tag,
                     content: block.content,
                     raw: text.slice(blockStart, realEnd),
+                    openTag: block.openTag,
                 });
                 consumedUpTo = realEnd;
             }
@@ -277,6 +309,56 @@ export function extractFirstMessage(xmlString) {
 }
 
 /**
+ * Extracts all <greeting> blocks from XML text.
+ * @param {string} xmlString XML text.
+ * @returns {Array<{tag: string, content: string, raw: string, openTag: string}>}
+ */
+export function extractGreetingBlocks(xmlString) {
+    return extractXmlBlocksByTag(String(xmlString ?? ''), 'greeting');
+}
+
+/**
+ * Parses greeting messages from generated XML output.
+ * Extracts <greeting> blocks and returns them as first_mes + alternate_greetings.
+ * Falls back to <first_mes> when no <greeting> blocks found.
+ * @param {string} generatedXml Generated XML text.
+ * @returns {{ first_mes: string, alternate_greetings: string[] }}
+ */
+export function parseGreetingsFromGeneratedOutput(generatedXml) {
+    const text = String(generatedXml ?? '');
+    const greetingBlocks = extractGreetingBlocks(text);
+
+    if (greetingBlocks.length > 0) {
+        return {
+            first_mes: greetingBlocks[0].content,
+            alternate_greetings: greetingBlocks.slice(1).map((block) => block.content),
+        };
+    }
+
+    const firstMes = extractFirstMessage(text);
+    return {
+        first_mes: firstMes,
+        alternate_greetings: [],
+    };
+}
+
+/**
+ * Removes all <greeting> blocks from XML text.
+ * @param {string} xmlString XML text.
+ * @returns {string} XML text without greeting blocks.
+ */
+export function stripGreetingBlocks(xmlString) {
+    const text = String(xmlString ?? '');
+    return text
+        .replace(
+            /(?:[ \t]*\r?\n)?[ \t]*<greeting(?:\s+[^>]*)?>[\s\S]*?<\/greeting>[ \t]*(?:\r?\n)?/g,
+            (match) => (match.includes('\n') ? '\n' : ''),
+        )
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+/**
  * Validates and cleans generated group card XML output.
  * Falls back to raw text wrapped in <character> block when no XML found.
  * @param {string} output Raw LLM output
@@ -329,16 +411,44 @@ function getCharacterBlockContent(xmlString) {
 }
 
 /**
- * Extracts summary content from the first <summary> tag inside a character block.
+ * Extracts summary content from the first summary-like tag inside a character block.
  * @param {string} xmlString Character XML block.
+ * @param {string[]} [fallbackTags=['summary']] Tags to try in order.
  * @returns {string} Summary content, or empty string.
  */
-export function extractSummaryFromCharacterBlock(xmlString) {
-    const summaryBlocks = extractXmlBlocksByTag(
-        getCharacterBlockContent(xmlString),
-        'summary',
-    );
-    return summaryBlocks[0]?.content ?? '';
+export function extractSummaryFromCharacterBlock(
+    xmlString,
+    fallbackTags = ['summary'],
+) {
+    const content = getCharacterBlockContent(xmlString);
+    for (const tag of fallbackTags) {
+        const blocks = extractXmlBlocksByTag(content, tag);
+        if (blocks.length > 0 && blocks[0]?.content) {
+            return blocks[0].content;
+        }
+    }
+    return '';
+}
+
+/**
+ * Extracts the first summary-like block from a character block, trying fallback tags in order.
+ * Returns the full block object (with openTag for attribute preservation) or null.
+ * @param {string} xmlString Character XML block.
+ * @param {string[]} [fallbackTags=['summary']] Tags to try in order.
+ * @returns {{tag: string, content: string, raw: string, openTag: string}|null}
+ */
+export function extractSummaryBlockFromCharacterBlock(
+    xmlString,
+    fallbackTags = ['summary'],
+) {
+    const content = getCharacterBlockContent(xmlString);
+    for (const tag of fallbackTags) {
+        const blocks = extractXmlBlocksByTag(content, tag);
+        if (blocks.length > 0 && blocks[0]?.content) {
+            return blocks[0];
+        }
+    }
+    return null;
 }
 
 /**
@@ -364,20 +474,31 @@ export function stripSummaryFromCharacterBlock(xmlString) {
 /**
  * Builds a compact character block containing only name and summary.
  * @param {string} xmlString Character XML block.
+ * @param {string[]} [fallbackTags=['summary']] Tags to try in order.
  * @returns {string} Summary-only character XML block.
  */
-export function buildSummaryCharacterBlock(xmlString) {
+export function buildSummaryCharacterBlock(
+    xmlString,
+    fallbackTags = ['summary'],
+) {
+    const charOpenTag = extractOpenTag(xmlString, 'character');
     const characterContent = getCharacterBlockContent(xmlString);
     const name =
 		extractXmlBlocksByTag(characterContent, 'name')[0]?.content ?? '';
-    const summary = extractSummaryFromCharacterBlock(xmlString);
-    const lines = ['<character>'];
+    const summaryBlock = extractSummaryBlockFromCharacterBlock(
+        xmlString,
+        fallbackTags,
+    );
+    const summaryOpenTag = summaryBlock?.openTag ?? '<summary>';
+    const summaryContent = summaryBlock?.content ?? '';
+    const summaryTagName = summaryBlock?.tag ?? 'summary';
+    const lines = [charOpenTag];
 
     if (name) {
         lines.push(`  <name>${name}</name>`);
     }
 
-    lines.push(`  <summary>${summary}</summary>`);
+    lines.push(`  ${summaryOpenTag}${summaryContent}</${summaryTagName}>`);
     lines.push('</character>');
 
     return lines.join('\n');
