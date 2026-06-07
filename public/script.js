@@ -2097,6 +2097,11 @@ export async function deleteMessage(
     swipeDeletionIndex = undefined,
     askConfirmation = false,
 ) {
+    if (id < 0 || id >= chat.length || !chat[id]) {
+        console.warn(`[deleteMessage] Invalid message ID: ${id}`);
+        return;
+    }
+
     const canDeleteSwipe =
 		swipeDeletionIndex !== undefined && swipeDeletionIndex !== null;
     if (canDeleteSwipe) {
@@ -12128,6 +12133,10 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
         }
 
         const message = chat[messageId];
+        if (!message) {
+            div.classList.remove('swipes_visible', 'last_swipe');
+            return;
+        }
 
         //Chevrons should not fade-in during printMessages. //https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3539315919
         div.classList.toggle('fade', fade);
@@ -13256,6 +13265,15 @@ export async function swipe(
             delete message.extra.negative;
             delete message.extra.title;
             delete message.extra.append_title;
+            // Reset generation metadata per swipe
+            delete message.extra.reasoning;
+            delete message.extra.reasoning_duration;
+            delete message.extra.reasoning_duration_ms;
+            delete message.extra.token_count;
+            delete message.extra.tool_invocations;
+            delete message.extra.reasoning_signature;
+            delete message.extra.time_to_first_token;
+            delete message.extra.isProcessingMessage;
         }
         delete message.gen_started;
         delete message.gen_finished;

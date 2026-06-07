@@ -3586,7 +3586,6 @@ function getOpenRouterToolChoice(settings) {
     switch (toolChoice) {
         case 'none':
         case 'auto':
-        case 'required':
             return toolChoice;
         case 'ChatNamedToolChoice': {
             const name = String(settings.openrouter_tool_choice_named || '').trim();

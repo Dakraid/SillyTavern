@@ -3625,6 +3625,12 @@ async function doMesCut(_, text) {
     let cutText = '';
 
     for (let i = 0; i < totalMesToCut; i++) {
+        if (!chat[mesIDToCut]) {
+            console.warn(`[doMesCut] Message ${mesIDToCut} not found in chat array`);
+            mesIDToCut++;
+            continue;
+        }
+
         cutText += (chat[mesIDToCut]?.mes || '') + '\n';
         let mesToCut = $('#chat').find(`.mes[mesid=${mesIDToCut}]`);
 
