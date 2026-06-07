@@ -138,14 +138,14 @@ export function renderTracker(messageId, forceOrOptions = false) {
                 ? `<div class="ztracker-part-items">${value
                     .map((item, index) => {
                         const idKey =
-                                typeof partsMeta?.[partKey]?.idKey === 'string' &&
+                            typeof partsMeta?.[partKey]?.idKey === 'string' &&
                                 partsMeta[partKey].idKey.trim()
-                                    ? partsMeta[partKey].idKey.trim()
-                                    : 'name';
+                                ? partsMeta[partKey].idKey.trim()
+                                : 'name';
                         const idValue =
-                                item && typeof item === 'object' && item[idKey] !== undefined
-                                    ? String(item[idKey])
-                                    : '';
+                            item && typeof item === 'object' && item[idKey] !== undefined
+                                ? String(item[idKey])
+                                : '';
                         const safeId = idValue
                             ? ` data-ztracker-idkey="${escapeHtmlAttr(idKey)}" data-ztracker-idvalue="${escapeHtmlAttr(idValue)}"`
                             : '';
@@ -176,7 +176,7 @@ export function renderTracker(messageId, forceOrOptions = false) {
             DOMPurify.sanitize(`
         <button class="ztracker-control-button ztracker-btn-generate ztracker-regenerate-button" type="button" data-mesid="${messageId}" title="Generate Tracker for message">
             <i class="fa-solid fa-arrows-rotate"></i>
-            <span>Generate Tracker</span>
+            <span class="sr-only">Generate Tracker</span>
         </button>
         <details class="ztracker-parts-details" title="Regenerate individual parts">
             <summary class="ztracker-parts-summary fa-solid fa-list"></summary>
@@ -517,7 +517,7 @@ export function includeZTrackerMessages(
         const message = copyMessages[index];
         const trackerValue =
             getMessageExtra(message)?.[EXTENSION_KEY]?.[
-                CHAT_MESSAGE_SCHEMA_VALUE_KEY
+            CHAT_MESSAGE_SCHEMA_VALUE_KEY
             ];
         if (!trackerValue) continue;
         const { lang, text, wrapInCodeFence } = formatEmbeddedTrackerSnapshot(

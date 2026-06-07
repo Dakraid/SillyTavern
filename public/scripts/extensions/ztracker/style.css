@@ -153,6 +153,7 @@
     position: relative;
     margin: 0;
     padding: 0;
+    background: none;
 }
 
 .mes_ztracker .ztracker-parts-details summary {
@@ -295,7 +296,19 @@
     font-size: smaller;
 }
 
-.mes_ztracker .ztracker_default_mes_template table,
+.mes_ztracker .ztracker_default_mes_template details {
+    background: none;
+    padding: 0;
+}
+
+.mes_ztracker .ztracker_default_mes_template hr {
+    margin: 5px 0;
+}
+
+.mes_ztracker .ztracker_default_mes_template table {
+    padding-bottom: 5px;
+}
+
 .mes_ztracker .mes_ztracker_characters {
     padding-left: 20px;
 }
