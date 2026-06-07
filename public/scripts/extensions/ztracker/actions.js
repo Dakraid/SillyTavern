@@ -1,5 +1,10 @@
-import { chat, saveChatConditional } from '../../../script.js';
-import { getContext } from '../../st-context.js';
+import {
+    chat,
+    eventSource,
+    event_types,
+    generateRawData,
+    saveChatConditional,
+} from '../../../script.js';
 import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 import { ToolManager } from '../../tool-calling.js';
 import { getActiveSchemaPreset, getZTrackerSettings } from './config.js';
@@ -94,10 +99,111 @@ async function invokeTrackerTool(name, parameters) {
     return result;
 }
 
+function getUpdateTrackerToolDefinition() {
+    return ToolManager.tools
+        .map((tool) => tool.toFunctionOpenAI())
+        .find((tool) => tool?.function?.name === 'update_tracker');
+}
+
+function forceUpdateTrackerTool(generateData) {
+    const updateTrackerTool = getUpdateTrackerToolDefinition();
+    if (!updateTrackerTool) {
+        throw new Error('update_tracker tool is not registered.');
+    }
+
+    generateData.tools = [updateTrackerTool];
+    generateData.tool_choice = {
+        type: 'function',
+        function: { name: 'update_tracker' },
+    };
+    generateData.stream = false;
+    delete generateData.n;
+}
+
+function buildTrackerGenerationPrompt(messageId, preset, settings) {
+    const messageText = String(chat[messageId]?.mes ?? '').trim();
+    const schemaName = String(
+        preset.name ?? settings.schemaPreset ?? 'active schema',
+    );
+    const schema = JSON.stringify(preset.value, null, 2);
+    const priorMessages = chat
+        .slice(Math.max(0, messageId - 10), messageId)
+        .map((message, index) => {
+            const absoluteIndex = Math.max(0, messageId - 10) + index;
+            const speaker =
+                message?.name || (message?.is_user ? 'User' : 'Assistant');
+            return `[${absoluteIndex}] ${speaker}: ${String(message?.mes ?? '').trim()}`;
+        })
+        .filter((line) => line.trim())
+        .join('\n\n');
+
+    return [
+        {
+            role: 'system',
+            content: [
+                'You update SillyTavern zTracker metadata for exactly one existing chat message.',
+                'You must respond by calling update_tracker exactly once.',
+                'Do not produce assistant message content, prose, markdown, explanations, or confirmation text.',
+                'The tracker state is metadata stored on the target message, not chat message content.',
+                `Use tracker_data matching this JSON Schema preset (${schemaName}):\n${schema}`,
+            ].join('\n'),
+        },
+        {
+            role: 'user',
+            content: [
+                `Target message index: ${messageId}`,
+                'Call update_tracker with this exact message_index and generated tracker_data.',
+                priorMessages ? `Relevant prior chat context:\n${priorMessages}` : '',
+                `Target message content:\n${messageText}`,
+            ]
+                .filter(Boolean)
+                .join('\n\n'),
+        },
+    ];
+}
+
+async function requestTrackerToolCall(messageId, preset, settings) {
+    if (!ToolManager.isToolCallingSupported()) {
+        throw new Error('Active API does not support function tools.');
+    }
+
+    const prompt = buildTrackerGenerationPrompt(messageId, preset, settings);
+    const toolRegistrationHook = (generateData) =>
+        forceUpdateTrackerTool(generateData);
+    eventSource.once(
+        event_types.CHAT_COMPLETION_SETTINGS_READY,
+        toolRegistrationHook,
+    );
+    try {
+        const data = await generateRawData({
+            prompt,
+            api: 'openai',
+            responseLength: 1000,
+        });
+        if (!ToolManager.hasToolCalls(data)) {
+            throw new Error('Model did not call update_tracker.');
+        }
+
+        const result = await ToolManager.invokeFunctionTools(data);
+        if (result.errors.length) {
+            throw result.errors[0];
+        }
+        if (!result.stealthCalls.includes('update_tracker')) {
+            throw new Error('Model did not call update_tracker.');
+        }
+        return result;
+    } finally {
+        eventSource.removeListener(
+            event_types.CHAT_COMPLETION_SETTINGS_READY,
+            toolRegistrationHook,
+        );
+    }
+}
+
 /**
- * Ask the active model to update tracker data for one message by calling
- * the update_tracker tool. This is user-initiated, so a generation request is
- * expected; automatic retries must not call this function.
+ * Ask the active model to update tracker metadata for one message by calling
+ * the update_tracker tool in a background raw request. The raw response is
+ * parsed and applied locally; no assistant chat message is appended.
  * @param {number|string} messageIndex Chat message index.
  * @returns {Promise<{ok:boolean, errors:string[], message_index?:number}>}
  */
@@ -127,26 +233,7 @@ export async function generateTrackerForMessage(messageIndex) {
 
     activeGenerationMessageId = messageId;
     try {
-        const context = getContext();
-        const messageText = String(chat[messageId]?.mes ?? '').trim();
-        const schemaName = String(preset.name ?? settings.schemaPreset ?? 'active schema');
-        const quietPrompt = [
-            `Update the state tracker for message index ${messageId} by calling the update_tracker tool.`,
-            `Use tracker_data that matches the active zTracker schema preset: ${schemaName}.`,
-            'Base the tracker_data only on the target message and relevant prior chat context.',
-            'Do not ask for confirmation. Do not use edit_tracker. Call update_tracker exactly once for the target message index.',
-            messageText ? `Target message content:\n${messageText}` : '',
-        ]
-            .filter(Boolean)
-            .join('\n\n');
-
-        await context.generate('quiet', {
-            quiet_prompt: quietPrompt,
-            quietToLoud: false,
-            skipWIAN: false,
-            force_name2: true,
-            quietName: 'System',
-        });
+        await requestTrackerToolCall(messageId, preset, settings);
         renderTracker(messageId);
         return { ok: true, errors: [], message_index: messageId };
     } catch (error) {
