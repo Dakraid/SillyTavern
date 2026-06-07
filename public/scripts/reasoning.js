@@ -122,7 +122,7 @@ export function extractReasoningFromData(data, {
                         .filter(detail => (detail.type === 'reasoning.text' && typeof detail.text === 'string') || (detail.type === 'reasoning.summary' && typeof detail.summary === 'string'))
                         .map(detail => detail.text || detail.summary)
                         .join('');
-                    return [messageReasoning, detailsText].filter(Boolean).join('\n\n') || '';
+                    return messageReasoning || detailsText || '';
                 }
                 case chat_completion_sources.MAKERSUITE:
                 case chat_completion_sources.VERTEXAI:
@@ -566,6 +566,27 @@ export class ReasoningHandler {
     }
 
     /**
+     * Marks the message as processing tool calls without appending display trace yet.
+     * @param {number} messageId - The ID of the message to update
+     */
+    markProcessing(messageId) {
+        if (messageId == -1 || !chat[messageId]) {
+            return;
+        }
+
+        if (this.state === ReasoningState.None) {
+            this.state = this.#isHiddenReasoningModel ? ReasoningState.Hidden : ReasoningState.Thinking;
+            this.startTime = this.startTime ?? this.initialTime;
+            this.endTime = null;
+        }
+
+        this.hasToolCalls = true;
+        chat[messageId].extra = chat[messageId].extra || {};
+        chat[messageId].extra.isProcessingMessage = true;
+        this.updateDom(messageId);
+    }
+
+    /**
      * Updates the reasoning UI elements for a message.
      *
      * Toggles the CSS class, updates states, reasoning message, and duration.
@@ -654,11 +675,11 @@ export class ReasoningHandler {
             const seconds = moment.duration(duration).asSeconds();
 
             const durationStr = moment.duration(duration).locale(getCurrentLocale()).humanize({ s: 50, ss: 3 });
-            element.textContent = this.hasToolCalls ? t`Processed for ${durationStr}` : t`Thought for ${durationStr}`;
+            element.textContent = this.hasToolCalls ? t`Processing for ${durationStr}` : t`Thought for ${durationStr}`;
             data = String(seconds);
             title = `${seconds} seconds`;
         } else if ([ReasoningState.Done, ReasoningState.Hidden].includes(this.state)) {
-            element.textContent = this.hasToolCalls ? t`Processed for some time` : t`Thought for some time`;
+            element.textContent = this.hasToolCalls ? t`Processing for some time` : t`Thought for some time`;
             data = 'unknown';
         } else {
             element.textContent = this.hasToolCalls ? t`Processing...` : t`Thinking...`;

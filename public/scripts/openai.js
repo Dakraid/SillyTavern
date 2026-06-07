@@ -3189,17 +3189,23 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
         if (Array.isArray(imageUrls) && imageUrls.length > 0) {
             state.images.push(...imageUrls.filter(isDataURL));
         }
+        const isNonBlankString = (value) => typeof value === 'string' && value.length > 0;
+        const deltaReasoning = choice?.delta?.reasoning;
+        const deltaReasoningContent = choice?.delta?.reasoning_content;
+        const messageReasoning = choice?.message?.reasoning;
+        const messageReasoningContent = choice?.message?.reasoning_content;
+        const plaintextReasoning = isNonBlankString(deltaReasoning)
+            ? deltaReasoning
+            : isNonBlankString(deltaReasoningContent)
+                ? deltaReasoningContent
+                : isNonBlankString(messageReasoning)
+                    ? messageReasoning
+                    : isNonBlankString(messageReasoningContent)
+                        ? messageReasoningContent
+                        : '';
+        const hasPlaintextReasoning = plaintextReasoning.length > 0;
         if (show_thoughts) {
-            const hasDeltaReasoning = choice?.delta?.reasoning !== undefined && choice?.delta?.reasoning !== null;
-            const hasDeltaReasoningContent = choice?.delta?.reasoning_content !== undefined && choice?.delta?.reasoning_content !== null;
-            const hasMessageReasoning = choice?.message?.reasoning !== undefined && choice?.message?.reasoning !== null;
-            state.reasoning += hasDeltaReasoning
-                ? choice.delta.reasoning
-                : hasDeltaReasoningContent
-                    ? choice.delta.reasoning_content
-                    : hasMessageReasoning
-                        ? choice.message.reasoning
-                        : (choice?.message?.reasoning_content ?? '');
+            state.reasoning += plaintextReasoning;
         }
         // Extract thought signatures and plaintext reasoning from OpenRouter streaming.
         const reasoningDetails = [
@@ -3215,11 +3221,11 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
                 if (!isToolLikeId) {
                     state.signature = detail.data;
                 }
-            } else if (detail.type === 'reasoning.text' && typeof detail.text === 'string') {
+            } else if (!hasPlaintextReasoning && detail.type === 'reasoning.text' && typeof detail.text === 'string') {
                 if (show_thoughts) {
                     state.reasoning += detail.text;
                 }
-            } else if (detail.type === 'reasoning.summary' && typeof detail.summary === 'string') {
+            } else if (!hasPlaintextReasoning && detail.type === 'reasoning.summary' && typeof detail.summary === 'string') {
                 if (show_thoughts) {
                     state.reasoning += detail.summary;
                 }

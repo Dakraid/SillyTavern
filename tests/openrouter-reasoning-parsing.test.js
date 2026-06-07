@@ -59,12 +59,23 @@ global.toastr = global.toastr ?? {
 jest.unstable_mockModule('../public/lib.js', () => ({
     Fuse: class Fuse {},
     DOMPurify: { sanitize: (value) => value },
+    moment: {
+        duration: () => ({
+            asSeconds: () => 0,
+            humanize: () => '0 seconds',
+            locale() {
+                return this;
+            },
+        }),
+    },
 }));
 
 jest.unstable_mockModule('../public/script.js', () => ({
     abortStatusCheck: jest.fn(),
     cancelStatusCheck: jest.fn(),
     characters: [],
+    chat: [],
+    closeMessageEditor: jest.fn(),
     event_types: {},
     eventSource: { emit: jest.fn(), on: jest.fn(), makeLast: jest.fn() },
     extension_prompt_roles: {},
@@ -78,16 +89,21 @@ jest.unstable_mockModule('../public/script.js', () => ({
     getRequestHeaders: () => ({}),
     is_send_press: false,
     main_api: 'openai',
+    messageFormatting: (value) => value,
     name1: 'User',
     name2: 'Assistant',
     resultCheckStatus: jest.fn(),
+    saveChatConditional: jest.fn(),
+    saveChatDebounced: jest.fn(),
     saveSettingsDebounced: jest.fn(),
     setOnlineStatus: jest.fn(),
     startStatusLoading: jest.fn(),
     substituteParams: (value) => value,
     substituteParamsExtended: (value) => value,
+    syncMesToSwipe: jest.fn(),
     system_message_types: {},
     this_chid: 0,
+    updateMessageBlock: jest.fn(),
 }));
 
 jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({
@@ -104,6 +120,7 @@ jest.unstable_mockModule('../public/scripts/PromptManager.js', () => ({
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     forceCharacterEditorTokenize: false,
     getCustomStoppingStrings: () => [],
+    performFuzzySearch: () => [],
     persona_description_positions: {},
     power_user: { reasoning: {}, context: {} },
 }));
@@ -127,14 +144,21 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     getSortableDelay: () => 0,
     getStringHash: (value) => String(value).length,
     getVideoDurationFromDataURL: jest.fn(),
+    copyText: jest.fn(),
+    escapeRegex: (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
     isDataURL: (value) => typeof value === 'string' && /^data:/.test(value),
+    isFalseBoolean: (value) => value === false || value === 'false',
+    isTrueBoolean: (value) => value === true || value === 'true',
     isUuid: () => false,
     isValidUrl: () => false,
     parseJsonFile: jest.fn(),
     resetScrollHeight: jest.fn(),
+    setDatasetProperty: jest.fn(),
     stringFormat: (value, ...args) =>
         String(value).replace(/\{(\d+)\}/g, (_, i) => args[i] ?? ''),
+    stringToRange: () => null,
     textValueMatcher: () => false,
+    trimSpaces: (value) => String(value ?? '').trim(),
     uuidv4: () => '00000000-0000-4000-8000-000000000000',
 }));
 jest.unstable_mockModule('../public/scripts/tokenizers.js', () => ({
@@ -146,6 +170,20 @@ jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
 }));
 jest.unstable_mockModule('../public/scripts/logprobs.js', () => ({
     saveLogprobsForActiveMessage: jest.fn(),
+}));
+jest.unstable_mockModule(
+    '../public/scripts/extensions/regex/engine.js',
+    () => ({
+        getRegexedString: (value) => value,
+        regex_placement: { REASONING: 'reasoning' },
+    }),
+);
+jest.unstable_mockModule('../public/scripts/macros/macro-system.js', () => ({
+    MacroCategory: {},
+    macros: {},
+}));
+jest.unstable_mockModule('../public/scripts/preset-manager.js', () => ({
+    getPresetManager: () => ({}),
 }));
 jest.unstable_mockModule(
     '../public/scripts/slash-commands/SlashCommandParser.js',
@@ -160,11 +198,19 @@ jest.unstable_mockModule(
     () => ({
         ARGUMENT_TYPE: {},
         SlashCommandArgument: class SlashCommandArgument {},
+        SlashCommandNamedArgument: class SlashCommandNamedArgument {},
     }),
 );
 jest.unstable_mockModule(
     '../public/scripts/slash-commands/SlashCommandEnumValue.js',
-    () => ({ SlashCommandEnumValue: class SlashCommandEnumValue {} }),
+    () => ({
+        enumTypes: {},
+        SlashCommandEnumValue: class SlashCommandEnumValue {},
+    }),
+);
+jest.unstable_mockModule(
+    '../public/scripts/slash-commands/SlashCommandCommonEnumsProvider.js',
+    () => ({ commonEnumProviders: {}, enumIcons: {} }),
 );
 jest.unstable_mockModule('../public/scripts/templates.js', () => ({
     renderTemplateAsync: jest.fn(),
@@ -176,7 +222,9 @@ jest.unstable_mockModule('../public/scripts/popup.js', () => ({
     POPUP_TYPE: {},
 }));
 jest.unstable_mockModule('../public/scripts/i18n.js', () => ({
+    getCurrentLocale: () => 'en',
     t: (strings) => (Array.isArray(strings) ? strings.join('') : strings),
+    translate: jest.fn(async (value) => value),
 }));
 jest.unstable_mockModule('../public/scripts/tool-calling.js', () => ({
     ToolManager: class ToolManager {
@@ -198,15 +246,25 @@ jest.unstable_mockModule('../public/scripts/textgen-models.js', () => ({
     updateNanoGptProvidersWarning: jest.fn(),
     updateOpenRouterProvidersWarning: jest.fn(),
 }));
+jest.unstable_mockModule('../public/scripts/textgen-settings.js', () => ({
+    textgen_types: { OPENROUTER: 'openrouter', OLLAMA: 'ollama' },
+    textgenerationwebui_settings: { type: null },
+}));
+jest.unstable_mockModule('../public/scripts/util/stream-fadein.js', () => ({
+    applyStreamFadeIn: jest.fn(),
+}));
 jest.unstable_mockModule('../public/scripts/prompt-wrappers.js', () => ({
     wrapPromptWrapperContent: (value) => value,
 }));
 
 /** @type {import('../public/scripts/openai.js')} */
 let openai;
+/** @type {import('../public/scripts/reasoning.js')} */
+let reasoning;
 
 beforeAll(async () => {
     openai = await import('../public/scripts/openai.js');
+    reasoning = await import('../public/scripts/reasoning.js');
 });
 
 beforeEach(() => {
@@ -285,6 +343,24 @@ describe('OpenRouter Chat Completion streaming reasoning parsing', () => {
         );
     });
 
+    test('does not duplicate reasoning_details when plaintext reasoning is present', () => {
+        const { content, state } = accumulateReply(
+            fixtures.streamingDuplicatePlaintextReasoningDetails,
+        );
+
+        expect(content).toBe('');
+        expect(state.reasoning).toBe('Choose tool. Read result.');
+    });
+
+    test('uses reasoning_details when plaintext reasoning fields are blank', () => {
+        const { content, state } = accumulateReply(
+            fixtures.streamingBlankPlaintextReasoningDetails,
+        );
+
+        expect(content).toBe('');
+        expect(state.reasoning).toBe('Fallback detail text.Fallback summary.');
+    });
+
     test('does not parse final usage-only chunk as content or reasoning', () => {
         const state = makeState();
         const content = openai.getStreamingReply(fixtures.finalUsageChunk, state, {
@@ -336,5 +412,18 @@ describe('OpenRouter Chat Completion streaming reasoning parsing', () => {
         expect(content).toBe('Full public answer.');
         expect(state.reasoning).toBe('Full private reasoning.');
         expect(state.signature).toBe('nonstream-signature');
+    });
+
+    test('does not double-count non-streaming message.reasoning and reasoning_details', () => {
+        const extractedReasoning = reasoning.extractReasoningFromData(
+            fixtures.nonStreamingReasoningWithDetails,
+            {
+                mainApi: 'openai',
+                ignoreShowThoughts: true,
+                chatCompletionSource: openai.chat_completion_sources.OPENROUTER,
+            },
+        );
+
+        expect(extractedReasoning).toBe('Plain non-streaming reasoning.');
     });
 });

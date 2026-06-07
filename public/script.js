@@ -4803,6 +4803,13 @@ class StreamingProcessor {
                 }
                 // Get the updated reasoning string into the handler
                 this.reasoningHandler.updateReasoning(this.messageId, state?.reasoning);
+                if (
+                    oai_settings.chat_completion_source === chat_completion_sources.OPENROUTER &&
+                    !this.reasoningHandler.hasToolCalls &&
+                    ToolManager.hasToolCalls(toolCalls)
+                ) {
+                    this.reasoningHandler.markProcessing(this.messageId);
+                }
                 this.images = state?.images ?? [];
                 this.reasoningSignature = state?.signature ?? null;
                 await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);

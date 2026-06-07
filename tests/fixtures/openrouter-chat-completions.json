@@ -82,6 +82,74 @@
             ]
         }
     ],
+    "streamingDuplicatePlaintextReasoningDetails": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning": "Choose tool. ",
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.text",
+                                "text": "Choose tool. "
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning": "Read result.",
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.summary",
+                                "summary": "Read result."
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ],
+    "streamingBlankPlaintextReasoningDetails": [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning": "",
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.text",
+                                "text": "Fallback detail text."
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning_content": "",
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.summary",
+                                "summary": "Fallback summary."
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ],
     "streamingToolCalls": [
         {
             "choices": [
@@ -191,6 +259,28 @@
                             }
                         }
                     ]
+                }
+            }
+        ]
+    },
+    "nonStreamingReasoningWithDetails": {
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "reasoning": "Plain non-streaming reasoning.",
+                    "reasoning_details": [
+                        {
+                            "type": "reasoning.text",
+                            "text": "Duplicate non-streaming detail."
+                        },
+                        {
+                            "type": "reasoning.summary",
+                            "summary": "Duplicate non-streaming summary."
+                        }
+                    ],
+                    "content": "Non-streaming public answer."
                 }
             }
         ]
