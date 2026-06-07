@@ -1963,15 +1963,17 @@ export async function redisplayChat({
     const messages = targetChat.slice(startIndex);
 
     if (messages.length > 0) {
-        const newMessageElements = messages.map((message, offset) => {
-            const i = startIndex + offset;
-            if (message?.extra?.isToolResult) {
-                return null;
-            }
-            const messageElement = updateMessageElement(message, { messageId: i });
+        const newMessageElements = messages
+            .map((message, offset) => {
+                const i = startIndex + offset;
+                if (message?.extra?.isToolResult) {
+                    return null;
+                }
+                const messageElement = updateMessageElement(message, { messageId: i });
 
-            return messageElement[0];
-        }).filter(Boolean);
+                return messageElement[0];
+            })
+            .filter(Boolean);
 
         if (newMessageElements.length === 0) {
             refreshSwipeButtons(false, fade);
@@ -4811,9 +4813,10 @@ class StreamingProcessor {
                 // Get the updated reasoning string into the handler
                 this.reasoningHandler.updateReasoning(this.messageId, state?.reasoning);
                 if (
-                    oai_settings.chat_completion_source === chat_completion_sources.OPENROUTER &&
-                    !this.reasoningHandler.hasToolCalls &&
-                    ToolManager.hasToolCalls(toolCalls)
+                    oai_settings.chat_completion_source ===
+						chat_completion_sources.OPENROUTER &&
+					!this.reasoningHandler.hasToolCalls &&
+					ToolManager.hasToolCalls(toolCalls)
                 ) {
                     this.reasoningHandler.markProcessing(this.messageId);
                 }
@@ -6949,8 +6952,10 @@ export async function Generate(
                     },
                 );
                 const shouldStopGeneration =
-					(!invocationResult.invocations.length && !invocationResult.errors.length) ||
-					(invocationResult.stealthCalls.length && !invocationResult.invocations.length);
+					(!invocationResult.invocations.length &&
+						!invocationResult.errors.length) ||
+					(invocationResult.stealthCalls.length &&
+						!invocationResult.invocations.length);
                 if (hasToolCalls) {
                     if (shouldStopGeneration) {
                         unblockGeneration(type);
@@ -6974,7 +6979,9 @@ export async function Generate(
                     streamingProcessor.messageDom?.classList.remove('displayNone');
                     streamingProcessor = null;
                     depth = depth + 1;
-                    const isHiddenToolFlow = oai_settings.chat_completion_source === chat_completion_sources.OPENROUTER;
+                    const isHiddenToolFlow =
+						oai_settings.chat_completion_source ===
+						chat_completion_sources.OPENROUTER;
                     await ToolManager.saveFunctionToolInvocations(
                         invocationResult.invocations,
                         { visible: !isHiddenToolFlow },
@@ -7153,8 +7160,11 @@ export async function Generate(
                 reasoningText: reasoning,
             });
             const shouldStopGeneration =
-				(!invocationResult.invocations.length && !invocationResult.errors.length && shouldDeleteMessage) ||
-				(invocationResult.stealthCalls.length && !invocationResult.invocations.length);
+				(!invocationResult.invocations.length &&
+					!invocationResult.errors.length &&
+					shouldDeleteMessage) ||
+				(invocationResult.stealthCalls.length &&
+					!invocationResult.invocations.length);
             if (hasToolCalls) {
                 if (shouldStopGeneration) {
                     unblockGeneration(type);
@@ -7180,7 +7190,9 @@ export async function Generate(
                     updateReasoningUI(currentProcessingMessageId);
                 }
                 depth = depth + 1;
-                const isHiddenToolFlow = oai_settings.chat_completion_source === chat_completion_sources.OPENROUTER;
+                const isHiddenToolFlow =
+					oai_settings.chat_completion_source ===
+					chat_completion_sources.OPENROUTER;
                 await ToolManager.saveFunctionToolInvocations(
                     invocationResult.invocations,
                     { visible: !isHiddenToolFlow },
@@ -11958,11 +11970,11 @@ function isZTrackerToolResultMessage(message) {
     const invocations = message?.extra?.tool_invocations;
     return Boolean(
         message?.extra?.isToolResult &&
-        Array.isArray(invocations) &&
-        invocations.length > 0 &&
-        invocations.every((invocation) =>
-            ZTRACKER_TOOL_NAMES.has(invocation?.name),
-        ),
+			Array.isArray(invocations) &&
+			invocations.length > 0 &&
+			invocations.every((invocation) =>
+			    ZTRACKER_TOOL_NAMES.has(invocation?.name),
+			),
     );
 }
 

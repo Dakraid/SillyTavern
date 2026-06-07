@@ -131,7 +131,7 @@ function buildTrackerGenerationPrompt(messageId, preset, settings) {
         .map((message, index) => {
             const absoluteIndex = Math.max(0, messageId - 10) + index;
             const speaker =
-                message?.name || (message?.is_user ? 'User' : 'Assistant');
+				message?.name || (message?.is_user ? 'User' : 'Assistant');
             return `[${absoluteIndex}] ${speaker}: ${String(message?.mes ?? '').trim()}`;
         })
         .filter((line) => line.trim())
@@ -191,9 +191,7 @@ async function requestTrackerToolCall(messageId, preset, settings) {
         if (!updateTrackerInvocation) {
             throw new Error('Model did not call update_tracker.');
         }
-        const updateTrackerResult = parseToolResult(
-            updateTrackerInvocation.result,
-        );
+        const updateTrackerResult = parseToolResult(updateTrackerInvocation.result);
         if (updateTrackerInvocation.error || !updateTrackerResult?.ok) {
             const errors = Array.isArray(updateTrackerResult?.errors)
                 ? updateTrackerResult.errors.join('\n')
@@ -307,11 +305,11 @@ async function recreateTrackerField(messageId, button) {
     const idValue = button.dataset.ztrackerIdvalue;
 
     const initialValue =
-        fieldKey && Array.isArray(value)
-            ? value[Number(index)]?.[fieldKey]
-            : index !== undefined && Array.isArray(value)
-                ? value[Number(index)]
-                : value;
+		fieldKey && Array.isArray(value)
+		    ? value[Number(index)]?.[fieldKey]
+		    : index !== undefined && Array.isArray(value)
+		        ? value[Number(index)]
+		        : value;
     const newValue = await promptJson(
         `Update ${partKey}${fieldKey ? `.${fieldKey}` : ''}`,
         initialValue,
@@ -363,8 +361,8 @@ async function onZTrackerClick(event) {
     try {
         if (
             button.matches('.ztracker-part-regenerate-button') ||
-            button.matches('.ztracker-array-item-regenerate-button') ||
-            button.matches('.ztracker-array-item-field-regenerate-button')
+			button.matches('.ztracker-array-item-regenerate-button') ||
+			button.matches('.ztracker-array-item-field-regenerate-button')
         ) {
             await recreateTrackerField(messageId, button);
         } else if (button.matches('.ztracker-edit-button')) {
@@ -391,7 +389,7 @@ function createMessageButton() {
     const button = document.createElement('div');
     button.title = 'Generate Tracker for message';
     button.className =
-        'mes_button mes_ztracker_button fa-solid fa-truck-moving interactable';
+		'mes_button mes_ztracker_button fa-solid fa-truck-moving interactable';
     button.tabIndex = 0;
     return button;
 }
@@ -399,15 +397,17 @@ function createMessageButton() {
 export function ensureZTrackerMessageButton(messageId) {
     const messageBlock = getMessageElement(messageId);
     if (!messageBlock) return;
-    const existingButton = messageBlock.querySelector('.mes_buttons .mes_ztracker_button');
+    const existingButton = messageBlock.querySelector(
+        '.mes_buttons .mes_ztracker_button',
+    );
     if (existingButton) {
         existingButton.setAttribute('data-mesid', String(messageId));
         return;
     }
 
     const host =
-        messageBlock.querySelector('.mes_buttons .extraMesButtons') ??
-        messageBlock.querySelector('.mes_buttons');
+		messageBlock.querySelector('.mes_buttons .extraMesButtons') ??
+		messageBlock.querySelector('.mes_buttons');
     const button = createMessageButton();
     button.dataset.mesid = String(messageId);
     host?.append(button);
