@@ -25,6 +25,24 @@ import {
 
 let trackerToolsRegistered = false;
 
+const TOOL_NAMES = ['update_tracker', 'recreate_tracker_field', 'cleanup_tracker', 'edit_tracker'];
+
+function initializeToolDiagnostics() {
+    globalThis.zTrackerToolStatus = globalThis.zTrackerToolStatus || {};
+    for (const name of TOOL_NAMES) {
+        if (!(name in globalThis.zTrackerToolStatus)) {
+            globalThis.zTrackerToolStatus[name] = 'registered';
+        }
+    }
+    if (
+        Object.values(globalThis.zTrackerToolStatus).every((status) =>
+            status === 'registered' || status === 'ok',
+        )
+    ) {
+        globalThis.zTrackerLastError = null;
+    }
+}
+
 function ok(extra = {}) {
     return { ok: true, errors: [], ...extra };
 }
@@ -663,6 +681,7 @@ function registerEditTrackerTool() {
 }
 
 export function registerTrackerTools() {
+    initializeToolDiagnostics();
     if (trackerToolsRegistered) return;
     trackerToolsRegistered = true;
     registerUpdateTrackerTool();

@@ -1,0 +1,34 @@
+.ztracker-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    margin-bottom: 0.5rem;
+}
+
+.ztracker-control-button,
+.ztracker-btn-generate {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 4px;
+    background: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    line-height: 1.2;
+}
+
+.ztracker-control-button:hover,
+.ztracker-btn-generate:hover {
+    filter: brightness(1.1);
+}
+
+.ztracker-control-button:disabled,
+.ztracker-btn-generate:disabled,
+.ztracker-button-busy {
+    cursor: wait;
+    opacity: 0.65;
+}

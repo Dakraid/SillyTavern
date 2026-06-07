@@ -7364,3 +7364,27 @@ body:not(.movingUI) .drawer-content.maximized {
 		grid-template-columns: 1fr;
 	}
 }
+
+/* Reasoning block layout fix */
+.mes_reasoning_details {
+    margin-right: 0;
+    padding: 0;
+    background: none;
+    border-radius: 4px;
+}
+
+.mes_reasoning {
+    border-radius: 4px;
+}
+
+.mes_reasoning_details .mes_reasoning_summary {
+    margin-right: 0;
+}
+
+.mes_reasoning_header {
+    flex-grow: 1;
+}
+
+.mes_reasoning_actions {
+    align-content: center;
+}

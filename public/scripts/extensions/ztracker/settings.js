@@ -418,6 +418,15 @@ function restoreDefaultSchema() {
     renderSettings();
 }
 
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function renderDiagnostics() {
     const diagnostics = byId('ztracker_diagnostics');
     if (!diagnostics) {
@@ -425,21 +434,27 @@ function renderDiagnostics() {
     }
     const settings = getSettings();
     const status = globalThis.zTrackerToolStatus ?? {};
+    const toolLines = TOOL_NAMES.map((toolName) => {
+        const toolStatus = status[toolName];
+        let displayStatus;
+        if (toolStatus === 'ok' || toolStatus === 'registered') {
+            displayStatus = '<span class="success">✓ registered</span>';
+        } else if (toolStatus === 'error') {
+            displayStatus = '<span class="error">✗ error</span>';
+        } else {
+            displayStatus = '<span class="warning">? unknown</span>';
+        }
+        return `- ${escapeHtml(toolName)}: ${displayStatus}`;
+    });
     const lines = [
         `Enabled: ${settings.enabled ? 'yes' : 'no'}`,
-        `Active schema: ${settings.schemaPreset}`,
-        `Current chat schema: ${getCurrentChatSchemaKey(settings)}`,
+        `Active schema: ${escapeHtml(settings.schemaPreset)}`,
+        `Current chat schema: ${escapeHtml(getCurrentChatSchemaKey(settings))}`,
         'Tools registered:',
-        ...TOOL_NAMES.map((name) => {
-            const toolStatus = status[name];
-            if (toolStatus === undefined) {
-                return `- ${name}: pending integration`;
-            }
-            return `- ${name}: ${toolStatus ? 'registered' : 'not registered'}`;
-        }),
-        `Last error: ${globalThis.zTrackerLastError ?? 'none'}`,
+        ...toolLines,
+        `Last error: ${escapeHtml(globalThis.zTrackerLastError ?? 'none')}`,
     ];
-    diagnostics.textContent = lines.join('\n');
+    diagnostics.innerHTML = lines.join('<br>');
 }
 
 function bindEvents() {
