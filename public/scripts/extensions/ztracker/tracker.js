@@ -138,14 +138,14 @@ export function renderTracker(messageId, forceOrOptions = false) {
                 ? `<div class="ztracker-part-items">${value
                     .map((item, index) => {
                         const idKey =
-                            typeof partsMeta?.[partKey]?.idKey === 'string' &&
+                                typeof partsMeta?.[partKey]?.idKey === 'string' &&
                                 partsMeta[partKey].idKey.trim()
-                                ? partsMeta[partKey].idKey.trim()
-                                : 'name';
+                                    ? partsMeta[partKey].idKey.trim()
+                                    : 'name';
                         const idValue =
-                            item && typeof item === 'object' && item[idKey] !== undefined
-                                ? String(item[idKey])
-                                : '';
+                                item && typeof item === 'object' && item[idKey] !== undefined
+                                    ? String(item[idKey])
+                                    : '';
                         const safeId = idValue
                             ? ` data-ztracker-idkey="${escapeHtmlAttr(idKey)}" data-ztracker-idvalue="${escapeHtmlAttr(idValue)}"`
                             : '';
@@ -517,7 +517,7 @@ export function includeZTrackerMessages(
         const message = copyMessages[index];
         const trackerValue =
             getMessageExtra(message)?.[EXTENSION_KEY]?.[
-            CHAT_MESSAGE_SCHEMA_VALUE_KEY
+                CHAT_MESSAGE_SCHEMA_VALUE_KEY
             ];
         if (!trackerValue) continue;
         const { lang, text, wrapInCodeFence } = formatEmbeddedTrackerSnapshot(

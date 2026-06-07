@@ -312,3 +312,21 @@
 .mes_ztracker .mes_ztracker_characters {
     padding-left: 20px;
 }
+.mes_buttons .mes_ztracker_button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mes_buttons .mes_ztracker_button.ztracker-button-busy,
+.mes_buttons .mes_ztracker_button.spinning {
+    cursor: wait;
+    opacity: 0.65;
+}
+
+.ztracker-json-editor {
+    width: 100%;
+    min-height: 320px;
+    font-family: var(--monoFontFamily, monospace);
+    resize: vertical;
+}

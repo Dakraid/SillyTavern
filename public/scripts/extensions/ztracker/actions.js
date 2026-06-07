@@ -1,6 +1,8 @@
-import { chat } from '../../../script.js';
-import { getContext } from '../../extensions.js';
+import { chat, saveChatConditional } from '../../../script.js';
+import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
+import { ToolManager } from '../../tool-calling.js';
 import { getActiveSchemaPreset, getZTrackerSettings } from './config.js';
+import { CHAT_MESSAGE_SCHEMA_VALUE_KEY, EXTENSION_KEY } from './metadata.js';
 import { renderTracker } from './tracker.js';
 
 let initialized = false;
@@ -17,31 +19,137 @@ function resolveMessageIndex(messageIndex) {
     return numericIndex;
 }
 
-function getGenerateFunction(context) {
-    if (typeof context?.generate === 'function') {
-        return context.generate.bind(context);
-    }
-    /** @type {any} */
-    const globalContext = globalThis.SillyTavern?.getContext?.();
-    const globalGenerate = globalContext?.generate;
-    if (typeof globalGenerate === 'function') {
-        return globalGenerate.bind(globalContext);
-    }
-    throw new Error('SillyTavern generate() is unavailable.');
+function getMessageElement(messageId) {
+    return document.querySelector(`.mes[mesid="${messageId}"]`);
 }
 
-function buildTrackerGenerationPrompt(messageId) {
-    return [
-        `Update zTracker state for chat message index ${messageId}.`,
-        `Call the update_tracker tool with message_index ${messageId}.`,
-        'Use complete tracker_data matching the active zTracker schema.',
-        'If existing tracker data is present, update it from the current conversation context.',
-        'Do not ask the user for confirmation before calling update_tracker.',
-    ].join('\n');
+function getMessageIdFromButton(button) {
+    const raw = button?.dataset?.mesid;
+    if (raw !== undefined) {
+        return Number(raw);
+    }
+    const messageBlock = button?.closest?.('.mes');
+    return Number(messageBlock?.getAttribute?.('mesid'));
+}
+
+function getTrackerData(messageId) {
+    return chat[messageId]?.extra?.[EXTENSION_KEY]?.[
+        CHAT_MESSAGE_SCHEMA_VALUE_KEY
+    ];
+}
+
+function makeEmptyValueForSchema(schema) {
+    if (!schema || typeof schema !== 'object') return null;
+    if (schema.default !== undefined) return structuredClone(schema.default);
+    if (Array.isArray(schema.enum) && schema.enum.length) return schema.enum[0];
+    switch (schema.type) {
+        case 'object': {
+            const result = {};
+            const properties =
+                schema.properties && typeof schema.properties === 'object'
+                    ? schema.properties
+                    : {};
+            for (const key of Object.keys(properties)) {
+                result[key] = makeEmptyValueForSchema(properties[key]);
+            }
+            return result;
+        }
+        case 'array':
+            return [];
+        case 'string':
+            return '';
+        case 'number':
+        case 'integer':
+            return 0;
+        case 'boolean':
+            return false;
+        default:
+            return null;
+    }
+}
+
+function getInitialTrackerData(messageId) {
+    const existing = getTrackerData(messageId);
+    if (existing && typeof existing === 'object') {
+        return structuredClone(existing);
+    }
+
+    const preset = getActiveSchemaPreset(getZTrackerSettings());
+    const schema = preset?.value;
+    return makeEmptyValueForSchema(schema);
+}
+
+async function confirmAction(message) {
+    return callGenericPopup(message, POPUP_TYPE.CONFIRM);
+}
+
+async function promptJson(title, value) {
+    const textarea = document.createElement('textarea');
+    textarea.className = 'text_pole textarea_compact ztracker-json-editor';
+    textarea.value = JSON.stringify(value ?? {}, null, 4);
+    textarea.rows = 18;
+    textarea.spellcheck = false;
+
+    const wrapper = document.createElement('div');
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    const hint = document.createElement('p');
+    hint.textContent = 'Edit JSON, then confirm to update zTracker state.';
+    wrapper.append(heading, hint, textarea);
+
+    const confirmed = await callGenericPopup(wrapper, POPUP_TYPE.CONFIRM, '', {
+        wide: true,
+        large: true,
+        okButton: 'Update Tracker',
+        cancelButton: 'Cancel',
+    });
+    if (!confirmed) return undefined;
+    return JSON.parse(textarea.value || '{}');
+}
+
+function parseToolResult(result) {
+    if (result instanceof Error) {
+        return { ok: false, errors: [result.message] };
+    }
+    if (typeof result === 'string') {
+        try {
+            return JSON.parse(result);
+        } catch {
+            return { ok: true, errors: [], message: result };
+        }
+    }
+    return result ?? { ok: true, errors: [] };
+}
+
+async function invokeTrackerTool(name, parameters) {
+    const result = parseToolResult(
+        await ToolManager.invokeFunctionTool(name, parameters),
+    );
+    if (!result?.ok) {
+        const errors = Array.isArray(result?.errors)
+            ? result.errors.join('\n')
+            : String(result?.errors ?? 'Unknown zTracker error');
+        throw new Error(errors);
+    }
+    return result;
+}
+
+async function updateTrackerFromJson(messageId, initialData, title) {
+    const trackerData = await promptJson(title, initialData);
+    if (trackerData === undefined) {
+        return { ok: false, errors: ['cancelled'] };
+    }
+    const result = await invokeTrackerTool('update_tracker', {
+        message_index: messageId,
+        tracker_data: trackerData,
+    });
+    renderTracker(messageId);
+    return result;
 }
 
 /**
- * Trigger a model pass that updates tracker data for one message through the update_tracker tool.
+ * Safely update tracker data for one message. This intentionally avoids
+ * `context.generate()` because that creates a visible assistant continuation.
  * @param {number|string} messageIndex Chat message index.
  * @returns {Promise<{ok:boolean, errors:string[], message_index?:number}>}
  */
@@ -64,65 +172,203 @@ export async function generateTrackerForMessage(messageIndex) {
         return {
             ok: false,
             errors: [
-                `Tracker generation already in progress for message ${activeGenerationMessageId}.`,
+                `Tracker update already in progress for message ${activeGenerationMessageId}.`,
             ],
         };
     }
 
-    const context = getContext?.() ?? globalThis.SillyTavern?.getContext?.();
-    const generate = getGenerateFunction(context);
     activeGenerationMessageId = messageId;
-
     try {
-        await generate(undefined, {
-            automatic_trigger: true,
-            quiet_prompt: buildTrackerGenerationPrompt(messageId),
-            quietToLoud: true,
-        });
-        renderTracker(messageId);
-        return { ok: true, errors: [], message_index: messageId };
+        const result = await updateTrackerFromJson(
+            messageId,
+            getInitialTrackerData(messageId),
+            `Update zTracker for message ${messageId}`,
+        );
+        return { ok: true, errors: [], message_index: messageId, ...result };
     } catch (error) {
-        console.error('zTracker Generate Tracker failed:', error);
+        console.error('zTracker update failed:', error);
         return { ok: false, errors: [String(error?.message ?? error)] };
     } finally {
         activeGenerationMessageId = null;
     }
 }
 
-function getMessageIdFromButton(button) {
-    const raw = button?.dataset?.mesid;
-    if (raw !== undefined) {
-        return Number(raw);
-    }
-    const messageBlock = button?.closest?.('.mes');
-    return Number(messageBlock?.getAttribute?.('mesid'));
+async function editTracker(messageId) {
+    const existing = getTrackerData(messageId);
+    if (!existing) return generateTrackerForMessage(messageId);
+    const trackerData = await promptJson(
+        `Edit zTracker data for message ${messageId}`,
+        existing,
+    );
+    if (trackerData === undefined) return;
+    await invokeTrackerTool('edit_tracker', {
+        message_index: messageId,
+        tracker_data: trackerData,
+    });
+    renderTracker(messageId);
 }
 
-async function onGenerateButtonClick(event) {
-    const button = event.target?.closest?.('.ztracker-btn-generate');
-    if (!button) {
-        return;
+async function deleteTracker(messageId) {
+    const confirmed = await confirmAction(
+        `Delete zTracker data for message ${messageId}?`,
+    );
+    if (!confirmed) return;
+    await deleteTrackerData(messageId);
+}
+
+async function cleanupTracker(messageId) {
+    const tracker = chat[messageId]?.extra?.[EXTENSION_KEY];
+    const data = tracker?.[CHAT_MESSAGE_SCHEMA_VALUE_KEY];
+    if (!data || typeof data !== 'object') return;
+    const confirmed = await confirmAction(
+        `Clear zTracker data for message ${messageId}?`,
+    );
+    if (!confirmed) return;
+    await deleteTrackerData(messageId);
+}
+
+async function deleteTrackerData(messageId) {
+    const message = chat[messageId];
+    if (message?.extra?.[EXTENSION_KEY]) {
+        delete message.extra[EXTENSION_KEY];
+        getMessageElement(messageId)?.querySelector('.mes_ztracker')?.remove();
+        await saveChatConditional();
     }
+}
+
+async function recreateTrackerField(messageId, button) {
+    const partKey = button?.dataset?.ztrackerPart;
+    if (!partKey) return;
+    const trackerData = getTrackerData(messageId) ?? {};
+    const value = trackerData?.[partKey];
+    const index = button.dataset.ztrackerIndex;
+    const fieldKey = button.dataset.ztrackerField;
+    const idKey = button.dataset.ztrackerIdkey;
+    const idValue = button.dataset.ztrackerIdvalue;
+
+    const initialValue =
+        fieldKey && Array.isArray(value)
+            ? value[Number(index)]?.[fieldKey]
+            : index !== undefined && Array.isArray(value)
+                ? value[Number(index)]
+                : value;
+    const newValue = await promptJson(
+        `Update ${partKey}${fieldKey ? `.${fieldKey}` : ''}`,
+        initialValue,
+    );
+    if (newValue === undefined) return;
+
+    await invokeTrackerTool('recreate_tracker_field', {
+        message_index: messageId,
+        part_key: partKey,
+        ...(index !== undefined ? { index: Number(index) } : {}),
+        ...(idKey ? { id_key: idKey } : {}),
+        ...(idValue ? { id_value: idValue } : {}),
+        ...(fieldKey ? { field_key: fieldKey } : {}),
+        new_value: newValue,
+    });
+    renderTracker(messageId);
+}
+
+function setBusy(button, busy) {
+    if (!button) return;
+    button.classList.toggle('ztracker-button-busy', busy);
+    button.classList.toggle('spinning', busy);
+    if ('disabled' in button) button.disabled = busy;
+}
+
+async function onZTrackerClick(event) {
+    const target = event.target;
+    const button = target?.closest?.(
+        [
+            '.ztracker-btn-generate',
+            '.mes_ztracker_button',
+            '.ztracker-edit-button',
+            '.ztracker-delete-button',
+            '.ztracker-cleanup-button',
+            '.ztracker-part-regenerate-button',
+            '.ztracker-array-item-regenerate-button',
+            '.ztracker-array-item-field-regenerate-button',
+        ].join(','),
+    );
+    if (!button) return;
+
+    const messageId = getMessageIdFromButton(button);
+    if (!Number.isInteger(messageId)) return;
 
     event.preventDefault();
     event.stopPropagation();
 
-    const messageId = getMessageIdFromButton(button);
-    button.disabled = true;
-    button.classList.add('ztracker-button-busy');
+    setBusy(button, true);
     try {
-        const result = await generateTrackerForMessage(messageId);
-        if (!result.ok) {
-            console.warn('zTracker Generate Tracker failed:', result.errors);
+        if (
+            button.matches('.ztracker-part-regenerate-button') ||
+            button.matches('.ztracker-array-item-regenerate-button') ||
+            button.matches('.ztracker-array-item-field-regenerate-button')
+        ) {
+            await recreateTrackerField(messageId, button);
+        } else if (button.matches('.ztracker-edit-button')) {
+            await editTracker(messageId);
+        } else if (button.matches('.ztracker-delete-button')) {
+            await deleteTracker(messageId);
+        } else if (button.matches('.ztracker-cleanup-button')) {
+            await cleanupTracker(messageId);
+        } else {
+            const result = await generateTrackerForMessage(messageId);
+            if (!result.ok && !result.errors.includes('cancelled')) {
+                console.warn('zTracker Generate Tracker failed:', result.errors);
+            }
         }
+    } catch (error) {
+        console.error('zTracker button action failed:', error);
+        globalThis.zTrackerLastError = String(error?.message ?? error);
     } finally {
-        button.disabled = false;
-        button.classList.remove('ztracker-button-busy');
+        setBusy(button, false);
     }
+}
+
+function createMessageButton() {
+    const button = document.createElement('div');
+    button.title = 'Generate Tracker for message';
+    button.className =
+        'mes_button mes_ztracker_button fa-solid fa-truck-moving interactable';
+    button.tabIndex = 0;
+    return button;
+}
+
+export function ensureZTrackerMessageButton(messageId) {
+    const messageBlock = getMessageElement(messageId);
+    if (!messageBlock) return;
+    if (messageBlock.querySelector('.mes_buttons .mes_ztracker_button')) return;
+
+    const host =
+        messageBlock.querySelector('.mes_buttons .extraMesButtons') ??
+        messageBlock.querySelector('.mes_buttons');
+    host?.prepend(createMessageButton());
+}
+
+function ensureMessageTemplateButton() {
+    const templateHost =
+        document.querySelector('#message_template .mes_buttons .extraMesButtons') ??
+        document.querySelector('#message_template .mes_buttons');
+    if (!templateHost) return;
+    if (templateHost.querySelector('.mes_ztracker_button')) return;
+    templateHost.prepend(createMessageButton());
+}
+
+export function syncZTrackerMessageButtons() {
+    ensureMessageTemplateButton();
+    document.querySelectorAll('.mes[mesid]').forEach((messageBlock) => {
+        const messageId = Number(messageBlock.getAttribute('mesid'));
+        if (Number.isInteger(messageId)) {
+            ensureZTrackerMessageButton(messageId);
+        }
+    });
 }
 
 export function initZTrackerActions() {
     if (initialized) return;
     initialized = true;
-    document.addEventListener('click', onGenerateButtonClick);
+    document.addEventListener('click', onZTrackerClick);
+    syncZTrackerMessageButtons();
 }

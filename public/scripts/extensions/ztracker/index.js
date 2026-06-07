@@ -10,7 +10,11 @@ import { EXTENSION_KEY } from './metadata.js';
 import { renderTracker } from './tracker.js';
 import { registerTrackerTools } from './tools.js';
 import { initAutoRetry } from './auto-retry.js';
-import { initZTrackerActions } from './actions.js';
+import {
+    ensureZTrackerMessageButton,
+    initZTrackerActions,
+    syncZTrackerMessageButtons,
+} from './actions.js';
 import { initZTrackerSettings } from './settings.js';
 
 let initialized = false;
@@ -41,13 +45,17 @@ export async function initZTracker() {
 
     eventSource?.on?.(event_types.CHAT_CHANGED, () => {
         ensureChatMetadata();
-        setTimeout(rerenderTrackersForCurrentChat, 0);
+        setTimeout(() => {
+            syncZTrackerMessageButtons();
+            rerenderTrackersForCurrentChat();
+        }, 0);
     });
     const renderMessageTracker = (messageId) => {
-        if (
-            typeof messageId === 'number' &&
-            chat[messageId]?.extra?.[EXTENSION_KEY]
-        ) {
+        if (typeof messageId !== 'number') {
+            return;
+        }
+        ensureZTrackerMessageButton(messageId);
+        if (chat[messageId]?.extra?.[EXTENSION_KEY]) {
             renderTracker(messageId);
         }
     };

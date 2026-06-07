@@ -82,14 +82,12 @@ async function retryTrackerUpdate(messageId) {
     retriedMessageIds.add(messageId);
 
     try {
-        const context = getContext?.();
-        if (typeof context?.generate !== 'function') {
-            throw new Error('SillyTavern context.generate is unavailable');
-        }
-
-        await context.generate(undefined, { automatic_trigger: true });
-    } catch (error) {
-        console.error('zTracker auto-retry failed:', error);
+        const message =
+            'zTracker auto-retry skipped: no safe invisible tool-only generation API is available.';
+        globalThis.zTrackerAutoRetryStatus =
+            'disabled_no_safe_tool_only_generation';
+        globalThis.zTrackerLastError = message;
+        console.warn(message, { messageId });
     } finally {
         retryInProgress = false;
     }
