@@ -3227,9 +3227,8 @@ export function addOneMessage(
         }
     }
 
-    //last_mes should always be updated.
-    chatElement.find('.mes').removeClass('last_mes');
-    chatElement.find('.mes').last().addClass('last_mes');
+    //last_mes should always be updated based on the last visible chat message.
+    updateLastMessageClass();
 
     if (showSwipes) refreshSwipeButtons();
     // Don't scroll if not inserting last
@@ -11978,13 +11977,33 @@ function isZTrackerToolResultMessage(message) {
     );
 }
 
-function getLastNonZTrackerToolResultIndex() {
+function isHiddenToolResultMessage(message) {
+    return Boolean(message?.extra?.isToolResult);
+}
+
+function getLastVisibleMessageId() {
     for (let index = chat.length - 1; index >= 0; index--) {
-        if (!isZTrackerToolResultMessage(chat[index])) {
+        if (!isHiddenToolResultMessage(chat[index])) {
             return index;
         }
     }
     return -1;
+}
+
+function updateLastMessageClass() {
+    const messageElements = chatElement.find('.mes');
+    messageElements.removeClass('last_mes');
+
+    const lastVisibleMessageId = getLastVisibleMessageId();
+    const lastVisibleElement = messageElements.filter(
+        `.mes[mesid="${lastVisibleMessageId}"]`,
+    );
+    if (lastVisibleElement.length) {
+        lastVisibleElement.addClass('last_mes');
+        return;
+    }
+
+    messageElements.last().addClass('last_mes');
 }
 
 async function cleanupTemporaryZTrackerToolResults() {
@@ -12026,7 +12045,7 @@ export function isMessageSwipeable(messageId, message = undefined) {
         messageId > (this_edit_mes_id ?? -1) &&
 		swipeState != SWIPE_STATE.EDITING &&
 		//If the message is the last visible message, and it exists.
-		messageId == getLastNonZTrackerToolResultIndex() &&
+		messageId == getLastVisibleMessageId() &&
 		message &&
 		//Small system messages cannot be swiped.
 		!message?.extra?.isSmallSys &&
@@ -12100,13 +12119,13 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
     //Non-messages can appear in chat. '.mes' is required.
     const messageElements = chatElement.children('.mes[mesid]');
 
-    const firstDisplayedMesId = Number(messageElements.first().attr('mesid'));
-
     //Group each message.
-    messageElements.each((index, div) => {
-        //This assumes the messages are in order and their Id's are accurate.
-        const messageId = firstDisplayedMesId + index;
-        //Number($(div).attr('mesid')); Would not misscount due to a missing div, but is much slower.
+    messageElements.each((_index, div) => {
+        const messageId = Number(div.getAttribute('mesid'));
+        if (!Number.isInteger(messageId)) {
+            div.classList.remove('swipes_visible', 'last_swipe');
+            return;
+        }
 
         const message = chat[messageId];
 
@@ -12362,16 +12381,22 @@ export async function importCharacterChat(formData, { refresh = true } = {}) {
 
 export function updateViewMessageIds(startIndex = null) {
     const minId = startIndex ?? getFirstDisplayedMessageId();
+    let nextMessageId = minId;
 
-    chatElement.find('.mes').each(function (index, element) {
-        $(element).attr('mesid', minId + index);
-        $(element)
-            .find('.mesIDDisplay')
-            .text(`#${minId + index}`);
+    chatElement.find('.mes').each(function (_index, element) {
+        while (
+            nextMessageId < chat.length &&
+			isHiddenToolResultMessage(chat[nextMessageId])
+        ) {
+            nextMessageId++;
+        }
+
+        $(element).attr('mesid', nextMessageId);
+        $(element).find('.mesIDDisplay').text(`#${nextMessageId}`);
+        nextMessageId++;
     });
 
-    chatElement.find('.mes').removeClass('last_mes');
-    chatElement.find('.mes').last().addClass('last_mes');
+    updateLastMessageClass();
 
     updateEditArrowClasses();
 }
@@ -15193,8 +15218,7 @@ jQuery(async function () {
             await saveChatConditional();
             chatElement.scrollTop(chatElement[0].scrollHeight);
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
-            chatElement.find('.mes').removeClass('last_mes');
-            chatElement.find('.mes').last().addClass('last_mes');
+            updateLastMessageClass();
         } else {
             console.log('this_del_mes is not >= 0, not deleting');
         }
