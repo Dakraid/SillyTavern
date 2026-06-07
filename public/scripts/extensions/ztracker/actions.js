@@ -1,4 +1,5 @@
 import { chat, saveChatConditional } from '../../../script.js';
+import { getContext } from '../../st-context.js';
 import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 import { ToolManager } from '../../tool-calling.js';
 import { getActiveSchemaPreset, getZTrackerSettings } from './config.js';
@@ -36,47 +37,6 @@ function getTrackerData(messageId) {
     return chat[messageId]?.extra?.[EXTENSION_KEY]?.[
         CHAT_MESSAGE_SCHEMA_VALUE_KEY
     ];
-}
-
-function makeEmptyValueForSchema(schema) {
-    if (!schema || typeof schema !== 'object') return null;
-    if (schema.default !== undefined) return structuredClone(schema.default);
-    if (Array.isArray(schema.enum) && schema.enum.length) return schema.enum[0];
-    switch (schema.type) {
-        case 'object': {
-            const result = {};
-            const properties =
-                schema.properties && typeof schema.properties === 'object'
-                    ? schema.properties
-                    : {};
-            for (const key of Object.keys(properties)) {
-                result[key] = makeEmptyValueForSchema(properties[key]);
-            }
-            return result;
-        }
-        case 'array':
-            return [];
-        case 'string':
-            return '';
-        case 'number':
-        case 'integer':
-            return 0;
-        case 'boolean':
-            return false;
-        default:
-            return null;
-    }
-}
-
-function getInitialTrackerData(messageId) {
-    const existing = getTrackerData(messageId);
-    if (existing && typeof existing === 'object') {
-        return structuredClone(existing);
-    }
-
-    const preset = getActiveSchemaPreset(getZTrackerSettings());
-    const schema = preset?.value;
-    return makeEmptyValueForSchema(schema);
 }
 
 async function confirmAction(message) {
@@ -134,22 +94,10 @@ async function invokeTrackerTool(name, parameters) {
     return result;
 }
 
-async function updateTrackerFromJson(messageId, initialData, title) {
-    const trackerData = await promptJson(title, initialData);
-    if (trackerData === undefined) {
-        return { ok: false, errors: ['cancelled'] };
-    }
-    const result = await invokeTrackerTool('update_tracker', {
-        message_index: messageId,
-        tracker_data: trackerData,
-    });
-    renderTracker(messageId);
-    return result;
-}
-
 /**
- * Safely update tracker data for one message. This intentionally avoids
- * `context.generate()` because that creates a visible assistant continuation.
+ * Ask the active model to update tracker data for one message by calling
+ * the update_tracker tool. This is user-initiated, so a generation request is
+ * expected; automatic retries must not call this function.
  * @param {number|string} messageIndex Chat message index.
  * @returns {Promise<{ok:boolean, errors:string[], message_index?:number}>}
  */
@@ -179,12 +127,28 @@ export async function generateTrackerForMessage(messageIndex) {
 
     activeGenerationMessageId = messageId;
     try {
-        const result = await updateTrackerFromJson(
-            messageId,
-            getInitialTrackerData(messageId),
-            `Update zTracker for message ${messageId}`,
-        );
-        return { ok: true, errors: [], message_index: messageId, ...result };
+        const context = getContext();
+        const messageText = String(chat[messageId]?.mes ?? '').trim();
+        const schemaName = String(preset.name ?? settings.schemaPreset ?? 'active schema');
+        const quietPrompt = [
+            `Update the state tracker for message index ${messageId} by calling the update_tracker tool.`,
+            `Use tracker_data that matches the active zTracker schema preset: ${schemaName}.`,
+            'Base the tracker_data only on the target message and relevant prior chat context.',
+            'Do not ask for confirmation. Do not use edit_tracker. Call update_tracker exactly once for the target message index.',
+            messageText ? `Target message content:\n${messageText}` : '',
+        ]
+            .filter(Boolean)
+            .join('\n\n');
+
+        await context.generate('quiet', {
+            quiet_prompt: quietPrompt,
+            quietToLoud: false,
+            skipWIAN: false,
+            force_name2: true,
+            quietName: 'System',
+        });
+        renderTracker(messageId);
+        return { ok: true, errors: [], message_index: messageId };
     } catch (error) {
         console.error('zTracker update failed:', error);
         return { ok: false, errors: [String(error?.message ?? error)] };
