@@ -2267,6 +2267,14 @@ router.post('/generate', async function (request, response) {
                 bodyParams['verbosity'] = request.body.verbosity;
             }
 
+            if (!isTextCompletion && request.body.parallel_tool_calls !== undefined) {
+                bodyParams['parallel_tool_calls'] = Boolean(request.body.parallel_tool_calls);
+            }
+
+            if (!isTextCompletion && request.body.tool_choice !== undefined) {
+                bodyParams['tool_choice'] = request.body.tool_choice;
+            }
+
             if (request.body.json_schema) {
                 bodyParams['response_format'] = {
                     type: 'json_schema',

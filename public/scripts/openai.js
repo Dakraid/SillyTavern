@@ -323,6 +323,10 @@ export const settingsToUpdate = {
     openrouter_quantizations: ['#openrouter_quantizations_chat', 'openrouter_quantizations', false, true],
     openrouter_allow_fallbacks: ['#openrouter_allow_fallbacks', 'openrouter_allow_fallbacks', true, true],
     openrouter_middleout: ['#openrouter_middleout', 'openrouter_middleout', false, true],
+    openrouter_parallel_tool_calls: ['#openrouter_parallel_tool_calls', 'openrouter_parallel_tool_calls', true, true],
+    openrouter_tool_choice: ['#openrouter_tool_choice', 'openrouter_tool_choice', false, true],
+    openrouter_tool_choice_named: ['#openrouter_tool_choice_named', 'openrouter_tool_choice_named', false, true],
+    openrouter_tool_choice_json: ['#openrouter_tool_choice_json', 'openrouter_tool_choice_json', false, true],
     tool_reasoning_mode: ['#tool_reasoning_mode', 'tool_reasoning_mode', false, false],
     ai21_model: ['#model_ai21_select', 'ai21_model', false, true],
     mistralai_model: ['#model_mistralai_select', 'mistralai_model', false, true],
@@ -482,6 +486,10 @@ const default_settings = {
     openrouter_quantizations: [],
     openrouter_allow_fallbacks: true,
     openrouter_middleout: openrouter_middleout_types.ON,
+    openrouter_parallel_tool_calls: true,
+    openrouter_tool_choice: 'auto',
+    openrouter_tool_choice_named: '',
+    openrouter_tool_choice_json: '',
     tool_reasoning_mode: tool_reasoning_modes.DISABLED,
     reverse_proxy: '',
     chat_completion_source: chat_completion_sources.OPENAI,
@@ -2647,6 +2655,39 @@ function getVerbosity(settings = null) {
     return settings.verbosity;
 }
 
+function getOpenRouterToolChoice(settings) {
+    const toolChoice = String(settings.openrouter_tool_choice || 'auto');
+    switch (toolChoice) {
+        case 'none':
+        case 'auto':
+        case 'required':
+            return toolChoice;
+        case 'ChatNamedToolChoice': {
+            const name = String(settings.openrouter_tool_choice_named || '').trim();
+            if (!name) return 'auto';
+            return { type: 'function', function: { name } };
+        }
+        case 'ChatServerToolChoice': {
+            const json = String(settings.openrouter_tool_choice_json || '').trim();
+            if (!json) return 'auto';
+            try {
+                return JSON.parse(json);
+            } catch (error) {
+                console.warn('Invalid OpenRouter tool_choice JSON:', error);
+                return 'auto';
+            }
+        }
+        default:
+            return 'auto';
+    }
+}
+
+function setOpenRouterToolChoiceControls() {
+    const choice = String(oai_settings.openrouter_tool_choice || 'auto');
+    $('#openrouter_tool_choice_named_block').toggle(choice === 'ChatNamedToolChoice');
+    $('#openrouter_tool_choice_json_block').toggle(choice === 'ChatServerToolChoice');
+}
+
 /**
  * Build the generation parameter object for an OAI request.
  * @param {ChatCompletionSettings} settings Initial chat completion settings
@@ -2844,6 +2885,8 @@ export async function createGenerationParameters(settings, model, type, messages
         generate_data.quantizations = settings.openrouter_quantizations;
         generate_data.allow_fallbacks = settings.openrouter_allow_fallbacks;
         generate_data.middleout = settings.openrouter_middleout;
+        generate_data.parallel_tool_calls = Boolean(settings.openrouter_parallel_tool_calls);
+        generate_data.tool_choice = getOpenRouterToolChoice(settings);
     }
 
     if (settings.chat_completion_source === chat_completion_sources.NANOGPT) {
@@ -4335,6 +4378,7 @@ function loadOpenAISettings(data, settings) {
     setNamesBehaviorControls();
     setContinuePostfixControls();
     setToolReasoningControls();
+    setOpenRouterToolChoiceControls();
     ToolManager.RECURSE_LIMIT = oai_settings.tool_call_recurse_limit;
 
     $('#openrouter_providers_chat').trigger('change');
@@ -6928,6 +6972,27 @@ export function initOpenAI() {
 
     $('#openrouter_middleout').on('input', function () {
         oai_settings.openrouter_middleout = String($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $('#openrouter_parallel_tool_calls').on('input', function () {
+        oai_settings.openrouter_parallel_tool_calls = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#openrouter_tool_choice').on('input', function () {
+        oai_settings.openrouter_tool_choice = String($(this).val() || 'auto');
+        setOpenRouterToolChoiceControls();
+        saveSettingsDebounced();
+    });
+
+    $('#openrouter_tool_choice_named').on('input', function () {
+        oai_settings.openrouter_tool_choice_named = String($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $('#openrouter_tool_choice_json').on('input', function () {
+        oai_settings.openrouter_tool_choice_json = String($(this).val());
         saveSettingsDebounced();
     });
 

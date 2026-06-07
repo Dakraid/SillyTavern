@@ -788,6 +788,13 @@ export const isGenerating = () => is_send_press || is_group_generating;
 
 let this_del_mes = -1;
 
+const ZTRACKER_TOOL_NAMES = new Set([
+    'update_tracker',
+    'recreate_tracker_field',
+    'cleanup_tracker',
+    'edit_tracker',
+]);
+
 /** @type {string} */
 let this_edit_mes_chname = '';
 /** @type {number|undefined} */
@@ -6972,23 +6979,27 @@ export async function Generate(
                         invocationResult.invocations,
                         { visible: !isHiddenToolFlow },
                     );
-                    return Generate(
-                        'normal',
-                        {
-                            automatic_trigger,
-                            force_name2,
-                            quiet_prompt,
-                            quietToLoud,
-                            skipWIAN,
-                            force_chid,
-                            signal,
-                            quietImage,
-                            quietName,
-                            depth,
-                            processingMessageId,
-                        },
-                        dryRun,
-                    );
+                    try {
+                        return await Generate(
+                            'normal',
+                            {
+                                automatic_trigger,
+                                force_name2,
+                                quiet_prompt,
+                                quietToLoud,
+                                skipWIAN,
+                                force_chid,
+                                signal,
+                                quietImage,
+                                quietName,
+                                depth,
+                                processingMessageId,
+                            },
+                            dryRun,
+                        );
+                    } finally {
+                        await cleanupTemporaryZTrackerToolResults();
+                    }
                 }
             }
 
@@ -7174,23 +7185,27 @@ export async function Generate(
                     invocationResult.invocations,
                     { visible: !isHiddenToolFlow },
                 );
-                return Generate(
-                    'normal',
-                    {
-                        automatic_trigger,
-                        force_name2,
-                        quiet_prompt,
-                        quietToLoud,
-                        skipWIAN,
-                        force_chid,
-                        signal,
-                        quietImage,
-                        quietName,
-                        depth,
-                        processingMessageId: currentProcessingMessageId,
-                    },
-                    dryRun,
-                );
+                try {
+                    return await Generate(
+                        'normal',
+                        {
+                            automatic_trigger,
+                            force_name2,
+                            quiet_prompt,
+                            quietToLoud,
+                            skipWIAN,
+                            force_chid,
+                            signal,
+                            quietImage,
+                            quietName,
+                            depth,
+                            processingMessageId: currentProcessingMessageId,
+                        },
+                        dryRun,
+                    );
+                } finally {
+                    await cleanupTemporaryZTrackerToolResults();
+                }
             }
         }
 
@@ -11939,6 +11954,45 @@ export function isSwipingAllowed() {
     );
 }
 
+function isZTrackerToolResultMessage(message) {
+    const invocations = message?.extra?.tool_invocations;
+    return Boolean(
+        message?.extra?.isToolResult &&
+        Array.isArray(invocations) &&
+        invocations.length > 0 &&
+        invocations.every((invocation) =>
+            ZTRACKER_TOOL_NAMES.has(invocation?.name),
+        ),
+    );
+}
+
+function getLastNonZTrackerToolResultIndex() {
+    for (let index = chat.length - 1; index >= 0; index--) {
+        if (!isZTrackerToolResultMessage(chat[index])) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+async function cleanupTemporaryZTrackerToolResults() {
+    let removed = false;
+    for (let index = chat.length - 1; index >= 0; index--) {
+        if (!isZTrackerToolResultMessage(chat[index])) {
+            continue;
+        }
+        chat.splice(index, 1);
+        deleteItemizedPromptForMessage(index);
+        removed = true;
+    }
+    if (!removed) {
+        return;
+    }
+    updateViewMessageIds();
+    refreshSwipeButtons(true);
+    await saveChatConditional();
+}
+
 /**
  * Returns true if the message is swipeable.
  * This does not check if messages are generally swipeable. See isSwipingAllowed().
@@ -11959,8 +12013,8 @@ export function isMessageSwipeable(messageId, message = undefined) {
     //Only messages below the currently edited message can be swiped, if it's not mid-swipe edit.
         messageId > (this_edit_mes_id ?? -1) &&
 		swipeState != SWIPE_STATE.EDITING &&
-		//If the message is the last message, and it exists.
-		messageId == chat.length - 1 &&
+		//If the message is the last visible message, and it exists.
+		messageId == getLastNonZTrackerToolResultIndex() &&
 		message &&
 		//Small system messages cannot be swiped.
 		!message?.extra?.isSmallSys &&

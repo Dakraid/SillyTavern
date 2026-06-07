@@ -399,14 +399,18 @@ function createMessageButton() {
 export function ensureZTrackerMessageButton(messageId) {
     const messageBlock = getMessageElement(messageId);
     if (!messageBlock) return;
-    if (messageBlock.querySelector('.mes_buttons .mes_ztracker_button')) return;
+    const existingButton = messageBlock.querySelector('.mes_buttons .mes_ztracker_button');
+    if (existingButton) {
+        existingButton.setAttribute('data-mesid', String(messageId));
+        return;
+    }
 
     const host =
         messageBlock.querySelector('.mes_buttons .extraMesButtons') ??
         messageBlock.querySelector('.mes_buttons');
     const button = createMessageButton();
     button.dataset.mesid = String(messageId);
-    host?.prepend(button);
+    host?.append(button);
 }
 
 export function syncZTrackerMessageButtons() {
