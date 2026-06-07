@@ -211,4 +211,55 @@ describe('OpenRouter Chat Completion tool call parsing', () => {
             },
         ]);
     });
+
+    test('keeps non-stealth tool errors as invocations for retry context', async () => {
+        ToolManager.registerFunctionTool({
+            name: 'failing_lookup',
+            displayName: 'Failing Lookup',
+            description: 'Fails fixture lookup',
+            parameters: {},
+            action: async () => {
+                throw new Error('missing required id');
+            },
+        });
+        const consoleErrorSpy = jest
+            .spyOn(console, 'error')
+            .mockImplementation(() => {});
+
+        const invocation = await ToolManager.invokeFunctionTools({
+            choices: [
+                {
+                    index: 0,
+                    message: {
+                        tool_calls: [
+                            {
+                                id: 'call_failing_lookup',
+                                type: 'function',
+                                function: {
+                                    name: 'failing_lookup',
+                                    arguments: '{"id":null}',
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        });
+        consoleErrorSpy.mockRestore();
+
+        expect(invocation.errors).toHaveLength(1);
+        expect(invocation.stealthCalls).toEqual([]);
+        expect(invocation.invocations).toEqual([
+            {
+                id: 'call_failing_lookup',
+                displayName: 'Failing Lookup',
+                name: 'failing_lookup',
+                parameters: '{"id":null}',
+                result: 'Error: missing required id',
+                error: true,
+                signature: null,
+                reasoning: null,
+            },
+        ]);
+    });
 });

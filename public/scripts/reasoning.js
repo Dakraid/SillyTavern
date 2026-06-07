@@ -664,7 +664,7 @@ export class ReasoningHandler {
      * Updates the reasoning time display in the UI.
      *
      * Shows the duration in a human-readable format with a tooltip for exact seconds.
-     * Displays "Processing..." for tool-call processing or "Thinking..." for reasoning-only work.
+     * Displays Processing labels for all reasoning work.
      */
     #updateReasoningTimeUI() {
         const element = this.messageReasoningHeaderDom;
@@ -675,14 +675,14 @@ export class ReasoningHandler {
             const seconds = moment.duration(duration).asSeconds();
 
             const durationStr = moment.duration(duration).locale(getCurrentLocale()).humanize({ s: 50, ss: 3 });
-            element.textContent = this.hasToolCalls ? t`Processing for ${durationStr}` : t`Thought for ${durationStr}`;
+            element.textContent = t`Processed for ${durationStr}`;
             data = String(seconds);
             title = `${seconds} seconds`;
         } else if ([ReasoningState.Done, ReasoningState.Hidden].includes(this.state)) {
-            element.textContent = this.hasToolCalls ? t`Processing for some time` : t`Thought for some time`;
+            element.textContent = t`Processed for some time`;
             data = 'unknown';
         } else {
-            element.textContent = this.hasToolCalls ? t`Processing...` : t`Thinking...`;
+            element.textContent = t`Processing...`;
             data = null;
         }
 

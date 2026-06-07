@@ -6942,16 +6942,10 @@ export async function Generate(
                     },
                 );
                 const shouldStopGeneration =
-					!invocationResult.invocations.length ||
-					invocationResult.stealthCalls.length;
+					(!invocationResult.invocations.length && !invocationResult.errors.length) ||
+					(invocationResult.stealthCalls.length && !invocationResult.invocations.length);
                 if (hasToolCalls) {
                     if (shouldStopGeneration) {
-                        if (
-                            Array.isArray(invocationResult.errors) &&
-							invocationResult.errors.length
-                        ) {
-                            ToolManager.showToolCallError(invocationResult.errors);
-                        }
                         unblockGeneration(type);
                         streamingProcessor = null;
                         return;
@@ -7148,16 +7142,10 @@ export async function Generate(
                 reasoningText: reasoning,
             });
             const shouldStopGeneration =
-				(!invocationResult.invocations.length && shouldDeleteMessage) ||
-				invocationResult.stealthCalls.length;
+				(!invocationResult.invocations.length && !invocationResult.errors.length && shouldDeleteMessage) ||
+				(invocationResult.stealthCalls.length && !invocationResult.invocations.length);
             if (hasToolCalls) {
                 if (shouldStopGeneration) {
-                    if (
-                        Array.isArray(invocationResult.errors) &&
-						invocationResult.errors.length
-                    ) {
-                        ToolManager.showToolCallError(invocationResult.errors);
-                    }
                     unblockGeneration(type);
                     return;
                 }

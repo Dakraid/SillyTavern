@@ -3361,7 +3361,7 @@ async function generatePicture(initiator, args, trigger, message, callback) {
     ensureSelectionExists('model', '#sd_model');
 
     trigger = trigger.trim();
-    const generationType = getGenerationType(trigger);
+    const generationType = Number.isInteger(args?.generationType) ? args.generationType : getGenerationType(trigger);
     const generationTypeKey = Object.keys(generationMode).find(key => generationMode[key] === generationType);
     console.log(`Image generation mode ${generationTypeKey} triggered with "${trigger}"`);
 
@@ -5877,6 +5877,11 @@ function registerFunctionTool() {
                     type: 'string',
                     description: extension_settings.sd.prompts[generationMode.TOOL] || promptTemplates[generationMode.TOOL],
                 },
+                type: {
+                    type: 'string',
+                    enum: ['character', 'user', 'background'],
+                    description: 'Type of image to generate. Use "background" to set the result as the active chat background.',
+                },
             },
             required: [
                 'prompt',
@@ -5886,7 +5891,19 @@ function registerFunctionTool() {
             if (!isValidState()) throw new Error('Image generation is not configured.');
             if (!args) throw new Error('Missing arguments');
             if (!args.prompt) throw new Error('Missing prompt');
-            const url = await generatePicture(initiators.tool, {}, args.prompt);
+
+            const generationTypeMap = {
+                character: generationMode.CHARACTER,
+                user: generationMode.USER,
+                background: generationMode.BACKGROUND,
+            };
+            const requestedType = typeof args.type === 'string' ? args.type.toLowerCase() : '';
+            const generationType = requestedType ? generationTypeMap[requestedType] : undefined;
+            if (requestedType && generationType === undefined) {
+                throw new Error(`Invalid image type: ${args.type}`);
+            }
+
+            const url = await generatePicture(initiators.tool, { generationType }, args.prompt);
             return encodeURI(url);
         },
     });

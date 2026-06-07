@@ -1,8 +1,5 @@
-import { DOMPurify } from '../lib.js';
-
 import { addOneMessage, chat, event_types, eventSource, getGeneratingApi, getGeneratingModel, main_api, saveChatConditional, system_avatar, systemUserName } from '../script.js';
 import { chat_completion_sources, custom_prompt_post_processing_types, getChatCompletionModel, model_list, oai_settings } from './openai.js';
-import { Popup } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
 import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
@@ -795,10 +792,8 @@ export class ToolManager {
             const name = toolCall.function.name;
             const displayName = ToolManager.getDisplayName(name);
             const isStealth = ToolManager.isStealthTool(name);
-            const message = await ToolManager.formatToolCallMessage(name, parameters);
-            const toast = message && toastr.info(message, 'Tool Calling', { timeOut: 0 });
+            await ToolManager.formatToolCallMessage(name, parameters);
             const toolResult = await ToolManager.invokeFunctionTool(name, parameters);
-            toastr.clear(toast);
             console.log('[ToolManager] Function tool result:', result);
 
             // Handle tool errors — still create an invocation so the LLM sees the failure
@@ -881,6 +876,72 @@ export class ToolManager {
     }
 
     /**
+     * Formats a value for JSON/code display.
+     * @param {any} value Value to format.
+     * @returns {string} Formatted value.
+     */
+    static #formatToolTraceValue(value) {
+        const parsed = tryParse(value);
+        if (typeof parsed === 'string') {
+            return parsed;
+        }
+        return JSON.stringify(parsed, null, 2);
+    }
+
+    /**
+     * Gets a short one-line preview for tool call parameters.
+     * @param {any} parameters Tool call parameters.
+     * @returns {string} Parameter preview.
+     */
+    static #getToolParametersPreview(parameters) {
+        const parsed = tryParse(parameters);
+        const truncate = (text) => text.length > 80 ? `${text.slice(0, 77)}...` : text;
+
+        if (parsed === null || parsed === undefined || parsed === '') {
+            return '';
+        }
+
+        if (typeof parsed !== 'object') {
+            return truncate(String(parsed));
+        }
+
+        const parts = [];
+        const priorityKeys = ['action', 'type', 'name', 'query', 'prompt', 'text', 'subject'];
+        for (const key of priorityKeys) {
+            const value = parsed[key];
+            if (typeof value === 'string' && value.trim()) {
+                parts.push(value.trim());
+            }
+            if (parts.length >= 2) {
+                break;
+            }
+        }
+
+        if (parts.length > 0) {
+            return truncate(parts.join(' '));
+        }
+
+        return truncate(JSON.stringify(parsed));
+    }
+
+    /**
+     * Gets a short one-line error message for a failed tool call.
+     * @param {any} result Tool call result/error value.
+     * @returns {string} Error preview.
+     */
+    static #getToolErrorPreview(result) {
+        const parsed = tryParse(result);
+        if (parsed instanceof Error) {
+            return parsed.message;
+        }
+        if (typeof parsed === 'object' && parsed !== null) {
+            return parsed.message || parsed.error || JSON.stringify(parsed);
+        }
+        const text = String(parsed ?? 'Tool call failed');
+        return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+    }
+
+    /**
      * Formats tool invocations for embedding inside a reasoning/processing block.
      * @param {ToolInvocation[]} invocations Tool invocations.
      * @returns {string} Formatted processing trace HTML.
@@ -896,23 +957,60 @@ export class ToolManager {
         invocations.forEach((invocation) => {
             const detailsElement = document.createElement('details');
             detailsElement.classList.add('tool-call-trace-item');
+            if (invocation.error) {
+                detailsElement.classList.add('tool-call-trace-error');
+            }
+
             const summaryElement = document.createElement('summary');
-            const preElement = document.createElement('pre');
-            const codeElement = document.createElement('code');
-            codeElement.classList.add('language-json');
+            summaryElement.classList.add('tool-call-trace-summary');
 
             const displayName = invocation.displayName || invocation.name || 'Unknown tool';
-            summaryElement.textContent = invocation.error
-                ? `Tool call failed: ${displayName}`
-                : `Tool call: ${displayName}`;
+            const statusElement = document.createElement('span');
+            statusElement.classList.add('tool-call-status', invocation.error ? 'tool-call-error' : 'tool-call-success');
+            statusElement.textContent = invocation.error ? '✗' : '✓';
 
-            const data = structuredClone(invocation);
-            data.parameters = tryParse(data.parameters);
-            data.result = tryParse(data.result);
-            codeElement.textContent = JSON.stringify(data, null, 2);
+            const nameElement = document.createElement('span');
+            nameElement.classList.add('tool-call-name');
+            nameElement.textContent = displayName;
 
-            preElement.append(codeElement);
-            detailsElement.append(summaryElement, preElement);
+            const previewElement = document.createElement('span');
+            previewElement.classList.add(invocation.error ? 'tool-call-error-text' : 'tool-call-params-preview');
+            previewElement.textContent = invocation.error
+                ? `Error: ${ToolManager.#getToolErrorPreview(invocation.result)}`
+                : ToolManager.#getToolParametersPreview(invocation.parameters);
+
+            summaryElement.append(statusElement, nameElement, previewElement);
+
+            const detailsContent = document.createElement('div');
+            detailsContent.classList.add('tool-call-details');
+
+            const parametersBlock = document.createElement('div');
+            parametersBlock.classList.add('tool-call-params');
+            const parametersLabel = document.createElement('strong');
+            parametersLabel.textContent = 'Parameters:';
+            const parametersPre = document.createElement('pre');
+            const parametersCode = document.createElement('code');
+            parametersCode.classList.add('language-json');
+            parametersCode.textContent = ToolManager.#formatToolTraceValue(invocation.parameters);
+            parametersPre.append(parametersCode);
+            parametersBlock.append(parametersLabel, parametersPre);
+
+            const resultBlock = document.createElement('div');
+            resultBlock.classList.add('tool-call-result');
+            if (invocation.error) {
+                resultBlock.classList.add('tool-call-error-result');
+            }
+            const resultLabel = document.createElement('strong');
+            resultLabel.textContent = invocation.error ? 'Error:' : 'Result:';
+            const resultPre = document.createElement('pre');
+            const resultCode = document.createElement('code');
+            resultCode.classList.add('language-json');
+            resultCode.textContent = ToolManager.#formatToolTraceValue(invocation.result);
+            resultPre.append(resultCode);
+            resultBlock.append(resultLabel, resultPre);
+
+            detailsContent.append(parametersBlock, resultBlock);
+            detailsElement.append(summaryElement, detailsContent);
             container.append(detailsElement);
         });
 
@@ -958,10 +1056,11 @@ export class ToolManager {
      * @returns {void}
      */
     static showToolCallError(errors) {
-        toastr.error('An error occurred while invoking function tools. Click here for more details.', 'Tool Calling', {
-            onclick: () => Popup.show.text('Tool Calling Errors', DOMPurify.sanitize(errors.map(e => `${e.cause}: ${e.message}`).join('<br>'))),
-            timeOut: 5000,
-        });
+        if (!Array.isArray(errors) || !errors.length) {
+            return;
+        }
+
+        console.warn('[ToolManager] Tool call errors:', errors);
     }
 
     static initToolSlashCommands() {
