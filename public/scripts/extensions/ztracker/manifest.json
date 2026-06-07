@@ -1,0 +1,15 @@
+{
+    "display_name": "zTracker",
+    "loading_order": 300,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "",
+    "author": "Zaakh",
+    "version": "1.0.0",
+    "homePage": "https://github.com/SillyTavern/SillyTavern",
+    "generate_interceptor": "ztrackerGenerateInterceptor",
+    "hooks": {
+        "activate": "init"
+    }
+}
