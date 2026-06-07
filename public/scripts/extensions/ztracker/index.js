@@ -46,7 +46,7 @@ export async function initZTracker() {
     const renderMessageTracker = (messageId) => {
         if (
             typeof messageId === 'number' &&
-			chat[messageId]?.extra?.[EXTENSION_KEY]
+            chat[messageId]?.extra?.[EXTENSION_KEY]
         ) {
             renderTracker(messageId);
         }

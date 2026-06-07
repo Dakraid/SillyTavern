@@ -166,7 +166,7 @@
 }
 
 .mes_ztracker .ztracker-parts-details summary::marker {
-    content: '';
+    content: "";
 }
 
 .mes_ztracker .ztracker-parts-details summary::-webkit-details-marker {
@@ -227,7 +227,7 @@
 }
 
 .ztracker-part-regenerate-button:hover {
-    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.10));
+    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.1));
 }
 
 .ztracker-part-items {
@@ -258,7 +258,7 @@
 }
 
 .ztracker-array-item-regenerate-button:hover {
-    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.10));
+    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.1));
 }
 
 .ztracker-array-item-fields {
@@ -281,7 +281,7 @@
 }
 
 .ztracker-array-item-field-regenerate-button:hover {
-    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.10));
+    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.1));
 }
 
 .ztracker-part-regenerate-button.is-pending-redaction,

@@ -54,13 +54,18 @@ export async function generateTrackerForMessage(messageIndex) {
 
     const preset = getActiveSchemaPreset(settings);
     if (!preset?.value || typeof preset.value !== 'object') {
-        return { ok: false, errors: ['No active zTracker schema preset configured.'] };
+        return {
+            ok: false,
+            errors: ['No active zTracker schema preset configured.'],
+        };
     }
 
     if (activeGenerationMessageId !== null) {
         return {
             ok: false,
-            errors: [`Tracker generation already in progress for message ${activeGenerationMessageId}.`],
+            errors: [
+                `Tracker generation already in progress for message ${activeGenerationMessageId}.`,
+            ],
         };
     }
 
