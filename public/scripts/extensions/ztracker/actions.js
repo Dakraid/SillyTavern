@@ -185,11 +185,20 @@ async function requestTrackerToolCall(messageId, preset, settings) {
         }
 
         const result = await ToolManager.invokeFunctionTools(data);
-        if (result.errors.length) {
-            throw result.errors[0];
-        }
-        if (!result.stealthCalls.includes('update_tracker')) {
+        const updateTrackerInvocation = result.invocations.find(
+            (invocation) => invocation.name === 'update_tracker',
+        );
+        if (!updateTrackerInvocation) {
             throw new Error('Model did not call update_tracker.');
+        }
+        const updateTrackerResult = parseToolResult(
+            updateTrackerInvocation.result,
+        );
+        if (updateTrackerInvocation.error || !updateTrackerResult?.ok) {
+            const errors = Array.isArray(updateTrackerResult?.errors)
+                ? updateTrackerResult.errors.join('\n')
+                : updateTrackerInvocation.result;
+            throw new Error(errors);
         }
         return result;
     } finally {
@@ -395,20 +404,12 @@ export function ensureZTrackerMessageButton(messageId) {
     const host =
         messageBlock.querySelector('.mes_buttons .extraMesButtons') ??
         messageBlock.querySelector('.mes_buttons');
-    host?.prepend(createMessageButton());
-}
-
-function ensureMessageTemplateButton() {
-    const templateHost =
-        document.querySelector('#message_template .mes_buttons .extraMesButtons') ??
-        document.querySelector('#message_template .mes_buttons');
-    if (!templateHost) return;
-    if (templateHost.querySelector('.mes_ztracker_button')) return;
-    templateHost.prepend(createMessageButton());
+    const button = createMessageButton();
+    button.dataset.mesid = String(messageId);
+    host?.prepend(button);
 }
 
 export function syncZTrackerMessageButtons() {
-    ensureMessageTemplateButton();
     document.querySelectorAll('.mes[mesid]').forEach((messageBlock) => {
         const messageId = Number(messageBlock.getAttribute('mesid'));
         if (Number.isInteger(messageId)) {

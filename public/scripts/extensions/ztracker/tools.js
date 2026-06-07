@@ -452,7 +452,7 @@ function registerUpdateTrackerTool() {
             }
         },
         shouldRegister: shouldRegisterTrackerTool,
-        stealth: true,
+        stealth: false,
         formatMessage: (args) =>
             `Updating tracker for message ${args?.message_index ?? 'unknown'}`,
     });
@@ -524,7 +524,7 @@ function registerRecreateTrackerFieldTool() {
             }
         },
         shouldRegister: shouldRegisterTrackerTool,
-        stealth: true,
+        stealth: false,
     });
 }
 
@@ -614,7 +614,7 @@ function registerCleanupTrackerTool() {
             }
         },
         shouldRegister: shouldRegisterTrackerTool,
-        stealth: true,
+        stealth: false,
     });
 }
 
