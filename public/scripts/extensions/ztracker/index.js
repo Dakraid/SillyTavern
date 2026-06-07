@@ -10,6 +10,7 @@ import { EXTENSION_KEY } from './metadata.js';
 import { renderTracker } from './tracker.js';
 import { registerTrackerTools } from './tools.js';
 import { initAutoRetry } from './auto-retry.js';
+import { initZTrackerActions } from './actions.js';
 import { initZTrackerSettings } from './settings.js';
 
 let initialized = false;
@@ -35,6 +36,7 @@ export async function initZTracker() {
     initZTrackerEmbedInterceptor({ getSettings: getZTrackerSettings });
     registerTrackerTools();
     initAutoRetry();
+    initZTrackerActions();
     await initZTrackerSettings();
 
     eventSource?.on?.(event_types.CHAT_CHANGED, () => {

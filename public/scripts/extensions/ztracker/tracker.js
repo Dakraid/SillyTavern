@@ -174,7 +174,10 @@ export function renderTracker(messageId, forceOrOptions = false) {
     controls.append(
         doc.createRange().createContextualFragment(
             DOMPurify.sanitize(`
-        <div class="ztracker-regenerate-button fa-solid fa-arrows-rotate" title="Regenerate Tracker"></div>
+        <button class="ztracker-control-button ztracker-btn-generate ztracker-regenerate-button" type="button" data-mesid="${messageId}" title="Generate Tracker for message">
+            <i class="fa-solid fa-arrows-rotate"></i>
+            <span>Generate Tracker</span>
+        </button>
         <details class="ztracker-parts-details" title="Regenerate individual parts">
             <summary class="ztracker-parts-summary fa-solid fa-list"></summary>
             <div class="ztracker-parts-list">${partsButtons}</div>
