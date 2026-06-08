@@ -50,6 +50,7 @@ import {
     validateGeneratedGroupCardDescription,
     extractTopLevelXmlBlocks,
     extractXmlBlocksByTag,
+    extractOpenTagAttributes,
     countXmlCorpus,
     autoFixXml,
     extractFirstMessage,
@@ -314,12 +315,12 @@ function buildLorebookEntry(character, index, fields, allCharacters = null) {
     const name = getCoreCharacterField(character, 'name').trim();
     const avatar = String(character?.avatar ?? '').replace(/\.[^/.]+$/, '');
     const hasNameCollision =
-        Array.isArray(allCharacters) &&
-        allCharacters.some(
-            (other, otherIndex) =>
-                otherIndex !== index &&
-                getCoreCharacterField(other, 'name').trim() === name,
-        );
+		Array.isArray(allCharacters) &&
+		allCharacters.some(
+		    (other, otherIndex) =>
+		        otherIndex !== index &&
+				getCoreCharacterField(other, 'name').trim() === name,
+		);
     const displayName = hasNameCollision && avatar ? `${name} (${avatar})` : name;
     const uid = Number.isInteger(index) && index >= 0 ? index : 0;
 
@@ -408,23 +409,104 @@ function extractAllTopLevelXmlBlocks(xmlString) {
 }
 
 /**
+ * Extracts a character name from an XML block using the inferred schema.
+ *
+ * @param {{tag: string, content: string, raw: string, openTag: string}} block XML block.
+ * @param {object} schema Inferred XML schema.
+ * @returns {string} Extracted character name.
+ */
+function extractCharacterNameFromBlock(block, schema) {
+    if (!schema || !block) {
+        return '';
+    }
+
+    const nameSchema =
+		schema.combinedChildTag && block.tag === schema.combinedChildTag
+		    ? {
+		        nameSource: schema.combinedNameSource,
+		        nameAttribute: schema.combinedNameAttribute,
+		        nameChildTag: schema.combinedNameChildTag,
+		    }
+		    : schema;
+
+    if (nameSchema.nameSource === 'attribute' && nameSchema.nameAttribute) {
+        const attrs = extractOpenTagAttributes(block.openTag);
+        return String(attrs[nameSchema.nameAttribute] ?? '').trim();
+    }
+
+    if (nameSchema.nameSource === 'child' && nameSchema.nameChildTag) {
+        const nameBlocks = extractXmlBlocksByTag(
+            block.content,
+            nameSchema.nameChildTag,
+        );
+        return String(nameBlocks[0]?.content ?? '').trim();
+    }
+
+    const attrs = extractOpenTagAttributes(block.openTag);
+    if (attrs.name) {
+        return attrs.name.trim();
+    }
+    const nameBlocks = extractXmlBlocksByTag(block.content, 'name');
+    return String(nameBlocks[0]?.content ?? '').trim();
+}
+
+/**
+ * Extracts generated character XML blocks using inferred schema wrappers when present.
+ *
+ * @param {string} generatedXml Generated XML text.
+ * @param {object|null} [schema] Inferred XML schema.
+ * @returns {Array<{tag: string, content: string, raw: string, openTag: string}>} Character blocks.
+ */
+function extractGeneratedCharacterBlocks(generatedXml, schema = null) {
+    const text = String(generatedXml ?? '');
+
+    if (schema?.combinedTag && schema?.combinedChildTag) {
+        const combinedBlocks = extractXmlBlocksByTag(text, schema.combinedTag);
+        const childBlocks = combinedBlocks.flatMap((block) =>
+            extractXmlBlocksByTag(block.content, schema.combinedChildTag),
+        );
+        if (childBlocks.length > 0) {
+            return childBlocks;
+        }
+    }
+
+    if (schema?.outerTag) {
+        const schemaBlocks = extractXmlBlocksByTag(text, schema.outerTag);
+        if (schemaBlocks.length > 0) {
+            return schemaBlocks;
+        }
+    }
+
+    return extractTopLevelXmlBlocks(text);
+}
+
+/**
  * Dynamic lorebook: builds lorebook entries from generated XML blocks.
  * Each character's full XML (minus summary) becomes a lorebook entry.
  *
  * @param {string} generatedXml Generated XML text.
  * @param {Array<object>|null} [sourceCharacters] Source character objects.
+ * @param {object|null} [schema] Inferred XML schema.
  * @returns {{ entries: object }} World info data.
  */
-function buildDynamicLorebookData(generatedXml, sourceCharacters = null) {
-    const characterBlocks = extractAllTopLevelXmlBlocks(
-        String(generatedXml ?? ''),
-    ).filter((block) => block.tag === 'character');
+function buildDynamicLorebookData(
+    generatedXml,
+    sourceCharacters = null,
+    schema = null,
+) {
+    const characterBlocks = schema
+        ? extractGeneratedCharacterBlocks(generatedXml, schema)
+        : extractAllTopLevelXmlBlocks(String(generatedXml ?? '')).filter(
+            (block) => block.tag === 'character',
+        );
     const entries = Object.fromEntries(
         characterBlocks.map((block, index) => {
             const uid = Number.isInteger(index) && index >= 0 ? index : 0;
-            const characterName = String(
-                extractXmlBlocksByTag(block.content, 'name')[0]?.content ?? '',
-            ).trim();
+            const characterName = schema
+                ? extractCharacterNameFromBlock(block, schema)
+                : String(
+                    extractXmlBlocksByTag(block.content, 'name')[0]?.content ?? '',
+                ).trim();
             const sourceChar = Array.isArray(sourceCharacters)
                 ? sourceCharacters[index]
                 : null;
@@ -435,16 +517,20 @@ function buildDynamicLorebookData(generatedXml, sourceCharacters = null) {
                 if (otherIndex === index) {
                     return false;
                 }
-                const otherName = String(
-                    extractXmlBlocksByTag(characterBlocks[otherIndex].content, 'name')[0]
-                        ?.content ?? '',
-                ).trim();
+                const otherName = schema
+                    ? extractCharacterNameFromBlock(characterBlocks[otherIndex], schema)
+                    : String(
+                        extractXmlBlocksByTag(
+                            characterBlocks[otherIndex].content,
+                            'name',
+                        )[0]?.content ?? '',
+                    ).trim();
                 return otherName === characterName;
             });
             const displayName =
-                hasNameCollision && sourceAvatar
-                    ? `${characterName} (${sourceAvatar})`
-                    : characterName;
+				hasNameCollision && sourceAvatar
+				    ? `${characterName} (${sourceAvatar})`
+				    : characterName;
             const entry = {
                 uid,
                 ...structuredClone(newWorldInfoEntryTemplate),
@@ -872,6 +958,7 @@ async function readCreatedCharacterAvatar(response, groupName) {
  * @param {boolean} [minifySingleLine] Whether minified lorebook entry content should be single-line.
  * @param {string} [firstMes] First message.
  * @param {Array<string>} [alternateGreetings] Alternate greetings.
+ * @param {object|null} [schema] Inferred XML schema.
  * @returns {Promise<{ avatar: string, world: string }>} Created avatar and linked world name.
  */
 async function createGeneratedGroupCard(
@@ -887,6 +974,7 @@ async function createGeneratedGroupCard(
     minifySingleLine = false,
     firstMes = '',
     alternateGreetings = [],
+    schema = null,
 ) {
     const request = validateGroupCardRequest(groupName, selectedChars, {
         createLorebook,
@@ -950,7 +1038,11 @@ async function createGeneratedGroupCard(
 
     if (createLorebook) {
         const lorebookData = dynamicLorebook
-            ? buildDynamicLorebookData(dynamicLorebookSourceXml, request.characters)
+            ? buildDynamicLorebookData(
+                dynamicLorebookSourceXml,
+                request.characters,
+                schema,
+            )
             : buildLorebookData(request.characters, fields);
 
         if (minify) {
@@ -1802,43 +1894,73 @@ class BulkEditOverlay {
                 badge.style.display = active > 0 ? 'inline' : 'none';
             }
 
+            container.replaceChildren();
+
             if (jobs.length === 0) {
-                container.innerHTML =
-					'<div class="active-jobs-empty">No active tasks.</div>';
+                const empty = document.createElement('div');
+                empty.className = 'active-jobs-empty';
+                empty.textContent = 'No active tasks.';
+                container.append(empty);
                 return;
             }
 
-            container.innerHTML = `<div class="active-jobs-list">${jobs
-                .map((job) => {
-                    const icon = job.managerType === 'group-card' ? '📝' : '📖';
-                    const status = String(job.status ?? 'unknown');
-                    const statusClass = status.replace(/[^a-z0-9_-]/gi, '');
-                    const numericCreatedAt = Number(job.createdAt);
-                    const createdAt = Number.isFinite(numericCreatedAt)
-                        ? numericCreatedAt
-                        : Date.parse(String(job.createdAt));
-                    const elapsed = Number.isFinite(createdAt)
-                        ? Math.max(0, Math.round((Date.now() - createdAt) / 1000))
-                        : 0;
-                    const elapsedStr =
-						elapsed < 60
-						    ? `${elapsed}s`
-						    : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
-                    const name =
-						job.config?.groupName || job.config?.lorebookName || job.id;
-                    const isTerminal = terminalStatuses.includes(status);
-                    const cancelBtn = isTerminal
-                        ? ''
-                        : `<div class="menu_button active-job-cancel" data-job-id="${escapeHtml(String(job.id))}" data-job-type="${escapeHtml(String(job.managerType))}" title="Cancel"><i class="fa-solid fa-xmark"></i></div>`;
-                    return `<div class="active-job-item">
-                    <span class="active-job-icon">${icon}</span>
-                    <span class="active-job-name">${escapeHtml(String(name))}</span>
-                    <span class="active-job-status ${statusClass}">${escapeHtml(status)}</span>
-                    <small>${elapsedStr}</small>
-                    ${cancelBtn}
-                </div>`;
-                })
-                .join('')}</div>`;
+            const list = document.createElement('div');
+            list.className = 'active-jobs-list';
+            jobs.forEach((job) => {
+                const icon = job.managerType === 'group-card' ? '📝' : '📖';
+                const status = String(job.status ?? 'unknown');
+                const statusClass = status.replace(/[^a-z0-9_-]/gi, '');
+                const numericCreatedAt = Number(job.createdAt);
+                const createdAt = Number.isFinite(numericCreatedAt)
+                    ? numericCreatedAt
+                    : Date.parse(String(job.createdAt));
+                const elapsed = Number.isFinite(createdAt)
+                    ? Math.max(0, Math.round((Date.now() - createdAt) / 1000))
+                    : 0;
+                const elapsedStr =
+					elapsed < 60
+					    ? `${elapsed}s`
+					    : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+                const name =
+					job.config?.groupName || job.config?.lorebookName || job.id;
+                const isTerminal = terminalStatuses.includes(status);
+                const item = document.createElement('div');
+                item.className = 'active-job-item';
+
+                const iconSpan = document.createElement('span');
+                iconSpan.className = 'active-job-icon';
+                iconSpan.textContent = icon;
+                item.append(iconSpan);
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'active-job-name';
+                nameSpan.textContent = String(name);
+                item.append(nameSpan);
+
+                const statusSpan = document.createElement('span');
+                statusSpan.className = `active-job-status ${statusClass}`;
+                statusSpan.textContent = status;
+                item.append(statusSpan);
+
+                const elapsedSmall = document.createElement('small');
+                elapsedSmall.textContent = elapsedStr;
+                item.append(elapsedSmall);
+
+                if (!isTerminal) {
+                    const cancelBtn = document.createElement('div');
+                    cancelBtn.className = 'menu_button active-job-cancel';
+                    cancelBtn.dataset.jobId = String(job.id);
+                    cancelBtn.dataset.jobType = String(job.managerType);
+                    cancelBtn.title = 'Cancel';
+                    const iconElement = document.createElement('i');
+                    iconElement.className = 'fa-solid fa-xmark';
+                    cancelBtn.append(iconElement);
+                    item.append(cancelBtn);
+                }
+
+                list.append(item);
+            });
+            container.append(list);
 
             container.querySelectorAll('.active-job-cancel').forEach((btn) => {
                 if (!(btn instanceof HTMLElement)) {
@@ -1868,8 +1990,10 @@ class BulkEditOverlay {
                 });
             });
         } catch (error) {
-            container.innerHTML =
-				'<div class="active-jobs-empty">Failed to load tasks.</div>';
+            const empty = document.createElement('div');
+            empty.className = 'active-jobs-empty';
+            empty.textContent = 'Failed to load tasks.';
+            container.replaceChildren(empty);
         }
     };
 
@@ -2703,17 +2827,25 @@ class BulkEditOverlay {
                 generatedDescription,
                 selectedCharacters.length,
             );
-            const blocks = extractTopLevelXmlBlocks(validatedDescription);
-            wizardState.characterOutputs = blocks.map((block, index) =>
-                BulkEditOverlay.#normalizeWizardCharacterOutput({
+            const blocks = extractGeneratedCharacterBlocks(
+                validatedDescription,
+                config.inferredSchema,
+            );
+            wizardState.characterOutputs = blocks.map((block, index) => {
+                const extractedName = extractCharacterNameFromBlock(
+                    block,
+                    config.inferredSchema,
+                );
+                return BulkEditOverlay.#normalizeWizardCharacterOutput({
                     characterIndex: index,
                     characterName:
+						extractedName ||
 						getCoreCharacterField(selectedCharacters[index] ?? {}, 'name') ||
 						`Character ${index + 1}`,
                     xmlOutput: block.raw,
                     parseStatus: 'ok',
-                }),
-            );
+                });
+            });
             BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
             return {
                 description: validatedDescription,
@@ -2786,16 +2918,24 @@ class BulkEditOverlay {
                     generatedDescription,
                     selectedCharacters.length,
                 );
-                const blocks = extractTopLevelXmlBlocks(validatedDescription);
-                wizardState.characterOutputs = blocks.map((block, index) =>
-                    BulkEditOverlay.#normalizeWizardCharacterOutput({
+                const blocks = extractGeneratedCharacterBlocks(
+                    validatedDescription,
+                    config.inferredSchema,
+                );
+                wizardState.characterOutputs = blocks.map((block, index) => {
+                    const extractedName = extractCharacterNameFromBlock(
+                        block,
+                        config.inferredSchema,
+                    );
+                    return BulkEditOverlay.#normalizeWizardCharacterOutput({
                         characterIndex: index,
                         characterName:
+							extractedName ||
 							getCoreCharacterField(selectedCharacters[index] ?? {}, 'name') ||
 							`Character ${index + 1}`,
                         xmlOutput: block.raw,
-                    }),
-                );
+                    });
+                });
                 BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
                 return {
                     description: validatedDescription,
@@ -2962,19 +3102,28 @@ class BulkEditOverlay {
 						'',
                 ).trim();
                 if (combinedSource) {
-                    const blocks = extractTopLevelXmlBlocks(combinedSource);
-                    wizardState.characterOutputs = blocks.map((block, index) =>
-                        BulkEditOverlay.#normalizeWizardCharacterOutput({
+                    const blocks = extractGeneratedCharacterBlocks(
+                        combinedSource,
+                        wizardState.config?.inferredSchema,
+                    );
+                    wizardState.characterOutputs = blocks.map((block, index) => {
+                        const extractedName = extractCharacterNameFromBlock(
+                            block,
+                            wizardState.config?.inferredSchema,
+                        );
+                        return BulkEditOverlay.#normalizeWizardCharacterOutput({
                             characterIndex: index,
                             characterName:
+								extractedName ||
 								getCoreCharacterField(
 								    selectedCharacters[index] ?? {},
 								    'name',
-								) || `Character ${index + 1}`,
+								) ||
+								`Character ${index + 1}`,
                             xmlOutput: block.raw,
                             parseStatus: 'ok',
-                        }),
-                    );
+                        });
+                    });
                 }
             }
             wizardState.characterOutputs = wizardState.characterOutputs
@@ -2989,6 +3138,237 @@ class BulkEditOverlay {
             jobEventSource?.close();
             await loaderHandle.hide();
         }
+    };
+
+    /**
+	 * Infers expected XML schema from combine prompt.
+	 * @param {string} prompt User combine prompt.
+	 * @param {Array<string>} fields Included character fields.
+	 * @returns {Promise<object>} Inferred schema.
+	 */
+    static #inferXmlSchema = async (prompt, fields) => {
+        const inferencePrompt = `Analyze this character-combination prompt and determine the expected XML output structure. Respond ONLY with valid JSON, no markdown.
+
+Prompt:
+"""
+${prompt}
+"""
+
+Included character fields: ${fields?.join(', ') ?? 'none'}
+
+Respond with this exact JSON structure:
+{
+  "outerTag": "the expected outer tag name for each character block (e.g. 'character')",
+  "nameSource": "attribute" or "child",
+  "nameAttribute": "attribute name containing the character name (e.g. 'name'), or null",
+  "nameChildTag": "child tag name containing the character name (e.g. 'name'), or null",
+  "childTags": ["list", "of", "expected", "child", "tag", "names"],
+  "combinedTag": "expected tag for combined output (e.g. 'characters')",
+  "combinedChildTag": "tag name for each character section in combined output (e.g. 'summary')",
+  "combinedNameSource": "attribute" or "child",
+  "combinedNameAttribute": "attribute name for character name in combined output, or null",
+  "combinedNameChildTag": "child tag for character name in combined output, or null"
+}`;
+
+        try {
+            const response = String(
+                (await generateQuietPrompt({
+                    quietPrompt: inferencePrompt,
+                    quietToLoud: false,
+                    skipWIAN: true,
+                })) ?? '',
+            ).trim();
+            const jsonStr = response
+                .replace(/^```(?:json)?\s*\n?/i, '')
+                .replace(/\n?```\s*$/i, '')
+                .trim();
+            const schema = JSON.parse(jsonStr);
+
+            if (!schema.outerTag || !schema.nameSource) {
+                throw new Error('Missing required schema fields');
+            }
+
+            return schema;
+        } catch (error) {
+            console.warn('Schema inference failed, using defaults:', error);
+            return {
+                outerTag: 'character',
+                nameSource: 'child',
+                nameAttribute: null,
+                nameChildTag: 'name',
+                childTags: ['name', 'summary', 'description'],
+                combinedTag: 'characters',
+                combinedChildTag: 'summary',
+                combinedNameSource: 'attribute',
+                combinedNameAttribute: 'name',
+                combinedNameChildTag: null,
+            };
+        }
+    };
+
+    /**
+	 * Shows confirmation popup for inferred XML schema.
+	 * @param {object} schema Inferred schema.
+	 * @returns {Promise<object|null>} Confirmed schema or null when skipped.
+	 */
+    static #confirmXmlSchema = async (schema) => {
+        const schemaContent = $('<div></div>').addClass('xml-schema-confirm');
+        schemaContent.append($('<h3></h3>').text('Confirm XML Output Schema'));
+        schemaContent.append(
+            $('<p></p>').text(
+                'The following XML output structure was inferred from your prompt. Please verify and adjust if needed.',
+            ),
+        );
+        const addTextField = (id, label, value) => {
+            schemaContent.append(
+                $('<div></div>')
+                    .addClass('schema-field')
+                    .append($('<label></label>').text(label))
+                    .append($('<input type="text" />').attr('id', id).val(value)),
+            );
+        };
+        const addSelectField = (id, label, values, selected) => {
+            const select = $('<select></select>').attr('id', id);
+            values.forEach((value) => {
+                select.append(
+                    $('<option></option>')
+                        .attr('value', value.value)
+                        .prop('selected', value.value === selected)
+                        .text(value.label),
+                );
+            });
+            schemaContent.append(
+                $('<div></div>')
+                    .addClass('schema-field')
+                    .append($('<label></label>').text(label))
+                    .append(select),
+            );
+        };
+
+        addTextField(
+            'schema_outer_tag',
+            'Per-character outer tag:',
+            schema.outerTag ?? 'character',
+        );
+        addSelectField(
+            'schema_name_source',
+            'Character name source:',
+            [
+                { value: 'child', label: 'Child tag' },
+                { value: 'attribute', label: 'Attribute on outer tag' },
+            ],
+            schema.nameSource ?? 'child',
+        );
+        addTextField(
+            'schema_name_attribute',
+            'Name attribute:',
+            schema.nameAttribute ?? 'name',
+        );
+        addTextField(
+            'schema_name_child_tag',
+            'Name child tag:',
+            schema.nameChildTag ?? 'name',
+        );
+        addTextField(
+            'schema_combined_tag',
+            'Combined output tag:',
+            schema.combinedTag ?? 'characters',
+        );
+        addTextField(
+            'schema_combined_child_tag',
+            'Combined child tag:',
+            schema.combinedChildTag ?? 'summary',
+        );
+        addSelectField(
+            'schema_combined_name_source',
+            'Combined name source:',
+            [
+                { value: 'attribute', label: 'Attribute' },
+                { value: 'child', label: 'Child tag' },
+            ],
+            schema.combinedNameSource ?? 'attribute',
+        );
+        addTextField(
+            'schema_combined_name_attr',
+            'Combined name attribute:',
+            schema.combinedNameAttribute ?? 'name',
+        );
+        addTextField(
+            'schema_combined_name_child_tag',
+            'Combined name child tag:',
+            schema.combinedNameChildTag ?? 'name',
+        );
+
+        let confirmedSchema = null;
+        const result = await callGenericPopup(
+            schemaContent,
+            POPUP_TYPE.CONFIRM,
+            '',
+            {
+                okButton: 'Confirm Schema',
+                cancelButton: 'Skip (use defaults)',
+                onClosing: (popup) => {
+                    if (popup.result !== POPUP_RESULT.AFFIRMATIVE) {
+                        return true;
+                    }
+                    const root = $(popup.content);
+                    const nameSource = String(
+                        root.find('#schema_name_source').val() ?? 'child',
+                    );
+                    const combinedNameSource = String(
+                        root.find('#schema_combined_name_source').val() ?? 'attribute',
+                    );
+                    confirmedSchema = {
+                        outerTag: String(
+                            root.find('#schema_outer_tag').val() ||
+								schema.outerTag ||
+								'character',
+                        ).trim(),
+                        nameSource,
+                        nameAttribute:
+							nameSource === 'attribute'
+							    ? String(
+							        root.find('#schema_name_attribute').val() || 'name',
+							    ).trim()
+							    : null,
+                        nameChildTag:
+							nameSource === 'child'
+							    ? String(
+							        root.find('#schema_name_child_tag').val() || 'name',
+							    ).trim()
+							    : null,
+                        childTags: schema.childTags,
+                        combinedTag: String(
+                            root.find('#schema_combined_tag').val() ||
+								schema.combinedTag ||
+								'characters',
+                        ).trim(),
+                        combinedChildTag: String(
+                            root.find('#schema_combined_child_tag').val() ||
+								schema.combinedChildTag ||
+								'summary',
+                        ).trim(),
+                        combinedNameSource,
+                        combinedNameAttribute:
+							combinedNameSource === 'attribute'
+							    ? String(
+							        root.find('#schema_combined_name_attr').val() || 'name',
+							    ).trim()
+							    : null,
+                        combinedNameChildTag:
+							combinedNameSource === 'child'
+							    ? String(
+							        root.find('#schema_combined_name_child_tag').val() ||
+											'name',
+							    ).trim()
+							    : null,
+                    };
+                    return true;
+                },
+            },
+        );
+
+        return result === POPUP_RESULT.AFFIRMATIVE ? confirmedSchema : null;
     };
 
     /**
@@ -3049,6 +3429,69 @@ class BulkEditOverlay {
         const cards = $('<div></div>').addClass('results-cards');
         const sourceCharacters =
 			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
+
+        const mapping = $('<div></div>')
+            .attr('id', 'bulk_combine_mapping_summary')
+            .addClass('character-mapping-summary')
+            .css({
+                'margin-bottom': '12px',
+                padding: '8px',
+                border: '1px solid var(--SmartThemeBorderColor)',
+                'border-radius': '6px',
+            });
+        mapping.append(
+            $('<h4></h4>').css('margin', '0 0 8px 0').text('Character Mapping'),
+        );
+        const schema = wizardState.config?.inferredSchema;
+        wizardState.characterOutputs.filter(Boolean).forEach((output, index) => {
+            const sourceChar = sourceCharacters[output.characterIndex ?? index];
+            const sourceName = sourceChar ? getCharacterName(sourceChar) : 'Unknown';
+            const sourceAvatar = sourceChar?.avatar ?? '';
+            const outputBlocks = extractGeneratedCharacterBlocks(
+                output.xmlOutput,
+                schema,
+            );
+            const extractedName =
+				schema && outputBlocks[0]
+				    ? extractCharacterNameFromBlock(outputBlocks[0], schema)
+				    : '';
+            const mappingEntry = $('<div></div>')
+                .addClass('character-mapping-entry')
+                .css({
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: '8px',
+                    padding: '4px 0',
+                });
+            if (sourceAvatar) {
+                mappingEntry.append(
+                    $('<img alt="Avatar" />')
+                        .attr('src', getThumbnailUrl('avatar', sourceAvatar))
+                        .css({
+                            width: '32px',
+                            height: '32px',
+                            'border-radius': '50%',
+                            'vertical-align': 'middle',
+                            'margin-right': '6px',
+                        }),
+                );
+            }
+            mappingEntry.append(
+                $('<span></span>')
+                    .append(
+                        $('<strong></strong>').text(
+                            extractedName || output.characterName || `Character ${index + 1}`,
+                        ),
+                    )
+                    .append(
+                        document.createTextNode(
+                            ` ← ${sourceName}${sourceAvatar ? ` (${sourceAvatar})` : ''}`,
+                        ),
+                    ),
+            );
+            mapping.append(mappingEntry);
+        });
+        content.append(mapping);
 
         wizardState.characterOutputs.filter(Boolean).forEach((output, index) => {
             const character =
@@ -4574,6 +5017,7 @@ class BulkEditOverlay {
                     wizardState.config?.minifySingleLine,
                     firstMes,
                     alternateGreetings,
+                    wizardState.config?.inferredSchema,
                 );
                 const { avatar, world } = result;
                 wizardState.createdArtifacts = { avatar, world };
@@ -4666,6 +5110,9 @@ class BulkEditOverlay {
                 wizardMeta,
                 wizardState.config?.minify,
                 wizardState.config?.minifySingleLine,
+                '',
+                [],
+                wizardState.config?.inferredSchema,
             );
             wizardState.results = result;
             await getCharacters();
@@ -5018,6 +5465,19 @@ class BulkEditOverlay {
         wizardState.postProcessResult = null;
         wizardState.serverCreated = false;
 
+        try {
+            const inferredSchema = await BulkEditOverlay.#inferXmlSchema(
+                wizardState.config.prompt,
+                wizardState.config.fields,
+            );
+            const confirmedSchema =
+				await BulkEditOverlay.#confirmXmlSchema(inferredSchema);
+            wizardState.config.inferredSchema = confirmedSchema || inferredSchema;
+        } catch (error) {
+            console.warn('Schema inference skipped:', error);
+            wizardState.config.inferredSchema = null;
+        }
+
         BulkEditOverlay.#wizardGoToStage(popupContent, wizardState, 2);
         popupContent
             .find('#bulk_combine_results_content')
@@ -5083,6 +5543,7 @@ class BulkEditOverlay {
                 postMergeEnabled: Boolean(wizardState.config?.postMergeEnabled),
                 postMergePrompt: wizardState.config?.postMergePrompt,
                 postProcessMode: wizardState.config?.postProcessMode,
+                inferredSchema: wizardState.config?.inferredSchema ?? null,
                 avatarOffsets: wizardState.avatarOffsets ?? [],
                 voronoiSeed: wizardState.voronoiSeed,
             },
@@ -6009,6 +6470,9 @@ class BulkEditOverlay {
 	 * @param {Array<string>} [fields] Included core fields.
 	 * @param {string} [cropStrategy] Avatar crop strategy.
 	 * @param {number} [cropPadding] Avatar crop padding percentage.
+	 * @param {boolean} [minify] Whether to minify lorebook entry content.
+	 * @param {boolean} [minifySingleLine] Whether minified lorebook entry content should be single-line.
+	 * @param {object|null} [schema] Inferred XML schema.
 	 * @returns {Promise<unknown>} Generation result.
 	 */
     static #runClientGroupCardCombinePipeline = async (
@@ -6019,6 +6483,9 @@ class BulkEditOverlay {
         fields,
         cropStrategy = 'attention',
         cropPadding = 15,
+        minify = false,
+        minifySingleLine = false,
+        schema = null,
     ) => {
         const quiet_prompt = buildGroupCardCombineQuietPrompt(
             prompt,
@@ -6045,8 +6512,11 @@ class BulkEditOverlay {
             false,
             validatedDescription,
             null,
-            wizardState.config?.minify ?? false,
-            wizardState.config?.minifySingleLine ?? false,
+            minify,
+            minifySingleLine,
+            '',
+            [],
+            schema,
         );
 
         try {
