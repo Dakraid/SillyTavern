@@ -311,7 +311,12 @@ function buildLorebookEntryContent(character, fields) {
  * @param {Array<object>|null} [allCharacters] All source characters.
  * @returns {object} World info entry data.
  */
-function buildLorebookEntry(character, index, fields, allCharacters = null) {
+function buildLorebookEntry(
+    character,
+    index,
+    fields,
+    allCharacters = null,
+) {
     const name = getCoreCharacterField(character, 'name').trim();
     const avatar = String(character?.avatar ?? '').replace(/\.[^/.]+$/, '');
     const hasNameCollision =

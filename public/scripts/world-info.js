@@ -1066,7 +1066,9 @@ const AI_MANAGED_LORE_BUILT_IN_TOOL_NAMES = new Set([
     'load_lore_entries',
     'unload_lore_entry',
     'unload_lore_entries',
+    'set_lore_entries',
     'get_loaded_lore_entries',
+    'get_lore_entries_content',
 ]);
 let aiManagedLoreToolsRegistered = false;
 const registeredDirectAccessTools = new Set();
@@ -1489,6 +1491,75 @@ function registerAIManagedLoreTools() {
     });
 
     ToolManager.registerFunctionTool({
+        name: 'set_lore_entries',
+        displayName: 'Set Lorebook Entries State',
+        description:
+			'Enable or disable multiple lorebook entries at once. Provide an array of objects with name (entry registry name) and enabled (true to load, false to unload) fields.',
+        parameters: Object.freeze({
+            type: 'object',
+            properties: {
+                entries: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            name: {
+                                type: 'string',
+                                description: 'Registry name of the lorebook entry',
+                            },
+                            enabled: {
+                                type: 'boolean',
+                                description: 'true to load into context, false to unload',
+                            },
+                        },
+                        required: ['name', 'enabled'],
+                    },
+                    description: 'Array of entries to enable or disable',
+                },
+            },
+            required: ['entries'],
+        }),
+        shouldRegister: () =>
+            hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
+        action: async (args) => {
+            if (!Array.isArray(args?.entries) || args.entries.length === 0) {
+                throw new Error('Missing entries.');
+            }
+            const entries = args.entries;
+            const results = [];
+            const state = getAIManagedState();
+            let changed = false;
+            for (const entry of entries) {
+                const name = String(entry?.name || '').trim();
+                const enabled = Boolean(entry?.enabled);
+                if (!name) {
+                    results.push({ name, success: false, error: 'Missing entry name' });
+                    continue;
+                }
+                const item = findAIManagedLoreEntry(name);
+                if (!item) {
+                    results.push({ name, success: false, error: 'Entry not found' });
+                    continue;
+                }
+                const isLoaded = Boolean(state[getAIManagedLoreStateKey(item)]);
+                if (enabled && !isLoaded) {
+                    await loadAIManagedLoreEntry(item, state);
+                    changed = true;
+                } else if (!enabled && isLoaded) {
+                    unloadAIManagedLoreEntry(item, state);
+                    changed = true;
+                }
+                results.push({ name, success: true, enabled });
+            }
+            if (changed) {
+                await saveMetadata();
+            }
+            return { results };
+        },
+        stealth: false,
+    });
+
+    ToolManager.registerFunctionTool({
         name: 'get_loaded_lore_entries',
         displayName: 'Get Loaded Lore Entries',
         description:
@@ -1516,6 +1587,45 @@ function registerAIManagedLoreTools() {
         stealth: true,
     });
 
+    ToolManager.registerFunctionTool({
+        name: 'get_lore_entries_content',
+        displayName: 'Get Lorebook Entries Content',
+        description:
+			'Retrieve the full content of multiple lorebook entries by their registry names. Returns all content joined by newlines.',
+        parameters: Object.freeze({
+            type: 'object',
+            properties: {
+                names: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description:
+						'Array of registry names of lorebook entries to retrieve content for',
+                },
+            },
+            required: ['names'],
+        }),
+        stealth: true,
+        shouldRegister: () => hasAIManagedLorebooks(),
+        action: async (args) => {
+            const names = Array.isArray(args?.names) ? args.names : [];
+            const found = [];
+            const errors = [];
+            for (const name of names) {
+                const trimmed = String(name || '').trim();
+                if (!trimmed) {
+                    continue;
+                }
+                const loreEntry = findAIManagedLoreEntry(trimmed);
+                if (!loreEntry) {
+                    errors.push({ name: trimmed, error: 'Entry not found' });
+                    continue;
+                }
+                found.push({ name: trimmed, content: loreEntry.entry?.content || '' });
+            }
+            return { content: found.map((f) => f.content).join('\n'), errors };
+        },
+    });
+
     refreshDirectAccessTools();
 }
 
@@ -1539,11 +1649,11 @@ export function refreshDirectAccessTools() {
     const disambiguatedToolWarnings = [];
     for (const item of registry) {
         const sanitizedName =
-            item.name
-                .toLowerCase()
-                .replace(/[^a-z0-9_]/g, '_')
-                .replace(/^_+/, '')
-                .replace(/_+/g, '_') || 'entry';
+			item.name
+			    .toLowerCase()
+			    .replace(/[^a-z0-9_]/g, '_')
+			    .replace(/^_+/, '')
+			    .replace(/_+/g, '_') || 'entry';
         const baseToolName = `get_${sanitizedName}`;
         const disambiguatedToolName = `${baseToolName}__${item.uid}`;
         let toolName = baseToolName;
@@ -1566,13 +1676,14 @@ export function refreshDirectAccessTools() {
             disambiguatedToolWarnings.push(`${baseToolName} → ${toolName}`);
         }
 
+        const displayName = item.entry?.comment || item.name;
         const entryDescription =
 			item.description ||
 			`Get the content of lorebook entry "${item.name}" from "${item.lorebook}"`;
 
         ToolManager.registerFunctionTool({
             name: toolName,
-            displayName: `Get ${item.entry?.comment || item.name}`,
+            displayName: `Get ${displayName}`,
             description: entryDescription,
             parameters: Object.freeze({ type: 'object', properties: {} }),
             action: async () => {
@@ -1602,6 +1713,57 @@ export function refreshDirectAccessTools() {
             stealth: true,
         });
         registeredDirectAccessTools.add(toolName);
+
+        const baseSetActiveToolName = `set_active_${sanitizedName}`;
+        const disambiguatedSetActiveToolName = `${baseSetActiveToolName}__${item.uid}`;
+        let setActiveToolName = baseSetActiveToolName;
+        if (
+            registeredDirectAccessTools.has(setActiveToolName) ||
+			AI_MANAGED_LORE_BUILT_IN_TOOL_NAMES.has(setActiveToolName)
+        ) {
+            setActiveToolName = disambiguatedSetActiveToolName;
+        }
+
+        let setActiveCollisionIndex = 2;
+        while (
+            registeredDirectAccessTools.has(setActiveToolName) ||
+			AI_MANAGED_LORE_BUILT_IN_TOOL_NAMES.has(setActiveToolName)
+        ) {
+            setActiveToolName = `${disambiguatedSetActiveToolName}__${setActiveCollisionIndex}`;
+            setActiveCollisionIndex++;
+        }
+        if (setActiveToolName !== baseSetActiveToolName) {
+            disambiguatedToolWarnings.push(
+                `${baseSetActiveToolName} → ${setActiveToolName}`,
+            );
+        }
+
+        ToolManager.registerFunctionTool({
+            name: setActiveToolName,
+            displayName: `Set Active ${displayName}`,
+            description: `Toggle the active state of the lorebook entry "${displayName}". Loads if not currently in context, unloads if currently loaded.`,
+            parameters: Object.freeze({ type: 'object', properties: {} }),
+            action: async () => {
+                const currentRegistry = getAIManagedLoreRegistry();
+                const found = currentRegistry.find((r) => r.name === item.name);
+                if (!found || !found.entry) {
+                    throw new Error(`Lore entry not found: ${item.name}`);
+                }
+
+                const state = getAIManagedState();
+                const isLoaded = Boolean(state[getAIManagedLoreStateKey(found)]);
+                if (isLoaded) {
+                    unloadAIManagedLoreEntry(found, state);
+                } else {
+                    await loadAIManagedLoreEntry(found, state);
+                }
+                await saveMetadata();
+                return { name: found.name, loaded: !isLoaded };
+            },
+            shouldRegister: () => hasAIManagedDirectAccess(),
+            stealth: true,
+        });
+        registeredDirectAccessTools.add(setActiveToolName);
     }
 
     if (disambiguatedToolWarnings.length > 0) {

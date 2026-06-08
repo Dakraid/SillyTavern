@@ -408,6 +408,7 @@ describe('AI-managed lorebook tools', () => {
                 '[WI] Direct-access lorebook tool names were disambiguated to avoid collisions:',
                 [
                     'get_book_same_name → get_book_same_name__2',
+                    'set_active_book_same_name → set_active_book_same_name__2',
                     'get_loaded_lore_entries → get_loaded_lore_entries__3',
                 ],
             );
@@ -416,6 +417,8 @@ describe('AI-managed lorebook tools', () => {
                 expect.arrayContaining([
                     'get_book_same_name',
                     'get_book_same_name__2',
+                    'set_active_book_same_name',
+                    'set_active_book_same_name__2',
                     'get_loaded_lore_entries__3',
                 ]),
             );
