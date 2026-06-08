@@ -2657,6 +2657,10 @@ class BulkEditOverlay {
                                     <span>Cell gap: <span id="bulk_combine_gap_value">2</span>px</span>
                                     <input id="bulk_combine_gap" type="range" min="0" max="10" value="2" />
                                 </label>
+                                <label id="bulk_combine_max_cols_container" class="text_label" style="display:none;">
+                                    <span>Max per row: <span id="bulk_combine_max_cols_value">0</span> (0 = auto)</span>
+                                    <input id="bulk_combine_max_cols" type="range" min="0" max="20" value="0" />
+                                </label>
                             </div>
                             <div id="bulk_combine_group_card_crop" class="crop-controls">
                                 <label class="text_label">
@@ -2870,6 +2874,7 @@ class BulkEditOverlay {
             config.dynamicLorebook,
             config.minify,
             config.minifySingleLine,
+            config.maxCols,
         );
         let jobEventSource = null;
         let jobId = '';
@@ -4222,7 +4227,7 @@ Respond with this exact JSON structure:
             <div class="review-section"><label class="text_label"><span>Character Name</span><input id="bulk_combine_review_name" class="text_pole" type="text" /></label></div>
             <div class="review-section"><label class="text_label"><span>Description (merged XML)</span></label><textarea id="bulk_combine_review_description" class="text_pole" rows="12" readonly></textarea></div>
             <div class="review-section"><label class="text_label"><span>First Message</span><textarea id="bulk_combine_review_first_mes" class="text_pole" rows="4"></textarea></label></div>
-            <div class="review-section"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div class="field-group layout-controls"><label class="text_label"><span>Layout mode</span><select id="bulk_combine_review_layout" class="text_pole"><option value="voronoi">Voronoi (organic)</option><option value="grid-portrait">Grid (9:16 portrait)</option><option value="grid-square">Grid (1:1 square)</option></select></label><label id="bulk_combine_review_gap_container" class="text_label" style="display:none;"><span>Cell gap: <span id="bulk_combine_review_gap_value">2</span>px</span><input id="bulk_combine_review_gap" type="range" min="0" max="10" value="2" /></label></div><div id="bulk_combine_avatar_offsets"></div><div class="field-group" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div><div class="field-group" style="display:flex;align-items:center;gap:0.5em;justify-content:center;"><label class="text_label"><span>Voronoi Seed:</span> <input id="bulk_combine_voronoi_seed" class="text_pole" type="number" style="width:8em;" /></label><div id="bulk_combine_shuffle_seed" class="menu_button" title="Randomize pattern"><i class="fa-solid fa-shuffle"></i></div></div></div>
+            <div class="review-section"><label class="text_label"><span>Avatar Preview</span></label><div id="bulk_combine_avatar_preview" style="text-align:center;margin:0.5em 0;"><img id="bulk_combine_avatar_image" style="max-width:200px;max-height:300px;border-radius:8px;" /></div><div class="field-group layout-controls"><label class="text_label"><span>Layout mode</span><select id="bulk_combine_review_layout" class="text_pole"><option value="voronoi">Voronoi (organic)</option><option value="grid-portrait">Grid (9:16 portrait)</option><option value="grid-square">Grid (1:1 square)</option></select></label><label id="bulk_combine_review_gap_container" class="text_label" style="display:none;"><span>Cell gap: <span id="bulk_combine_review_gap_value">2</span>px</span><input id="bulk_combine_review_gap" type="range" min="0" max="10" value="2" /></label><label id="bulk_combine_review_max_cols_container" class="text_label" style="display:none;"><span>Max per row: <span id="bulk_combine_review_max_cols_value">0</span> (0 = auto)</span><input id="bulk_combine_review_max_cols" type="range" min="0" max="20" value="0" /></label></div><div id="bulk_combine_avatar_offsets"></div><div class="field-group" style="text-align:center;"><div id="bulk_combine_regenerate_avatar" class="menu_button">Regenerate Avatar</div></div><div class="field-group" style="display:flex;align-items:center;gap:0.5em;justify-content:center;"><label class="text_label"><span>Voronoi Seed:</span> <input id="bulk_combine_voronoi_seed" class="text_pole" type="number" style="width:8em;" /></label><div id="bulk_combine_shuffle_seed" class="menu_button" title="Randomize pattern"><i class="fa-solid fa-shuffle"></i></div></div></div>
             <div class="review-section"><small id="bulk_combine_review_source_summary"></small></div>`);
         content.append(html);
         if (wizardState.config?.dynamicLorebook) {
@@ -4285,13 +4290,25 @@ Respond with this exact JSON structure:
         const gap = Number.isFinite(Number(wizardState.config?.gap))
             ? Math.max(0, Math.min(10, Math.round(Number(wizardState.config.gap))))
             : 2;
+        const maxCols = Number.isFinite(Number(wizardState.config?.maxCols))
+            ? Math.max(
+                0,
+                Math.min(20, Math.round(Number(wizardState.config.maxCols))),
+            )
+            : 0;
         wizardState.config.layout = layout;
         wizardState.config.gap = gap;
+        wizardState.config.maxCols = maxCols;
         content.find('#bulk_combine_review_layout').val(layout);
         content.find('#bulk_combine_review_gap').val(String(gap));
         content.find('#bulk_combine_review_gap_value').text(String(gap));
+        content.find('#bulk_combine_review_max_cols').val(String(maxCols));
+        content.find('#bulk_combine_review_max_cols_value').text(String(maxCols));
         content
             .find('#bulk_combine_review_gap_container')
+            .toggle(layout !== 'voronoi');
+        content
+            .find('#bulk_combine_review_max_cols_container')
             .toggle(layout !== 'voronoi');
         content.find('#bulk_combine_review_layout').on('change', async function () {
             const nextLayout = String($(this).val() ?? 'voronoi');
@@ -4305,6 +4322,9 @@ Respond with this exact JSON structure:
             content
                 .find('#bulk_combine_review_gap_container')
                 .toggle(wizardState.config.layout !== 'voronoi');
+            content
+                .find('#bulk_combine_review_max_cols_container')
+                .toggle(wizardState.config.layout !== 'voronoi');
             await BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
         });
         content.find('#bulk_combine_review_gap').on('input', async function () {
@@ -4317,6 +4337,21 @@ Respond with this exact JSON structure:
                 .text(String(wizardState.config.gap));
             await BulkEditOverlay.#regenerateWizardAvatar(popupContent, wizardState);
         });
+        content
+            .find('#bulk_combine_review_max_cols')
+            .on('input', async function () {
+                const nextMaxCols = Number($(this).val());
+                wizardState.config.maxCols = Number.isFinite(nextMaxCols)
+                    ? Math.max(0, Math.min(20, Math.round(nextMaxCols)))
+                    : 0;
+                content
+                    .find('#bulk_combine_review_max_cols_value')
+                    .text(String(wizardState.config.maxCols));
+                await BulkEditOverlay.#regenerateWizardAvatar(
+                    popupContent,
+                    wizardState,
+                );
+            });
         const offsets = content.find('#bulk_combine_avatar_offsets');
         const sourceCharacters =
 			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
@@ -4853,6 +4888,7 @@ Respond with this exact JSON structure:
                         cropPadding: wizardState.config?.cropPadding,
                         layout: wizardState.config?.layout,
                         gap: wizardState.config?.gap,
+                        maxCols: wizardState.config?.maxCols ?? 0,
                         seed: wizardState.voronoiSeed,
                     }),
                 },
@@ -5330,6 +5366,7 @@ Respond with this exact JSON structure:
         );
         const layoutSelect = popupContent.find('#bulk_combine_group_card_layout');
         const gapInput = popupContent.find('#bulk_combine_gap');
+        const maxColsInput = popupContent.find('#bulk_combine_max_cols');
         const lorebookToggle = popupContent.find(
             '#bulk_combine_group_card_lorebook_toggle',
         );
@@ -5386,6 +5423,10 @@ Respond with this exact JSON structure:
         const gap = Number.isFinite(parsedGap)
             ? Math.max(0, Math.min(10, Math.round(parsedGap)))
             : 2;
+        const parsedMaxCols = Number(maxColsInput.val());
+        const maxCols = Number.isFinite(parsedMaxCols)
+            ? Math.max(0, Math.min(20, Math.round(parsedMaxCols)))
+            : 0;
 
         if (postMergeEnabled && !postMergePrompt) {
             toastr.warning(
@@ -5436,6 +5477,7 @@ Respond with this exact JSON structure:
         power_user.group_card_crop_padding = cropPadding;
         power_user.group_card_layout = layout;
         power_user.group_card_gap = gap;
+        power_user.group_card_max_cols = maxCols;
         power_user.summary_fallback_tags = normalizedSummaryFallbackTags;
         saveSettingsDebounced();
 
@@ -5458,6 +5500,7 @@ Respond with this exact JSON structure:
             cropPadding,
             layout,
             gap,
+            maxCols,
         };
         wizardState.postProcessMode = postProcessMode;
         wizardState.characterOutputs = [];
@@ -5533,6 +5576,7 @@ Respond with this exact JSON structure:
                 cropPadding: wizardState.config?.cropPadding,
                 layout: wizardState.config?.layout,
                 gap: wizardState.config?.gap,
+                maxCols: wizardState.config?.maxCols ?? 0,
                 fields: wizardState.config?.fields,
                 selectedOptionalFields: wizardState.config?.selectedOptionalFields,
                 summaryFallbackTags: wizardState.config?.summaryFallbackTags,
@@ -5691,6 +5735,21 @@ Respond with this exact JSON structure:
                         ),
                     )
                     : 2,
+                maxCols: Number.isFinite(
+                    Number(rerunStoredConfig.maxCols ?? power_user.group_card_max_cols),
+                )
+                    ? Math.max(
+                        0,
+                        Math.min(
+                            20,
+                            Math.round(
+                                Number(
+                                    rerunStoredConfig.maxCols ?? power_user.group_card_max_cols,
+                                ),
+                            ),
+                        ),
+                    )
+                    : 0,
             },
             selectedCharacterIds,
             results: null,
@@ -5771,6 +5830,11 @@ Respond with this exact JSON structure:
                 const gapContainer = popupContent.find('#bulk_combine_gap_container');
                 const gapInput = popupContent.find('#bulk_combine_gap');
                 const gapValue = popupContent.find('#bulk_combine_gap_value');
+                const maxColsContainer = popupContent.find(
+                    '#bulk_combine_max_cols_container',
+                );
+                const maxColsInput = popupContent.find('#bulk_combine_max_cols');
+                const maxColsValue = popupContent.find('#bulk_combine_max_cols_value');
                 const characterSearchInput = popupContent.find(
                     '#bulk_combine_group_card_search',
                 );
@@ -5827,10 +5891,19 @@ Respond with this exact JSON structure:
                 const gap = Number.isFinite(persistedGap)
                     ? Math.max(0, Math.min(10, Math.round(persistedGap)))
                     : 2;
+                const persistedMaxCols = Number(
+                    wizardState.config?.maxCols ?? power_user.group_card_max_cols,
+                );
+                const maxCols = Number.isFinite(persistedMaxCols)
+                    ? Math.max(0, Math.min(20, Math.round(persistedMaxCols)))
+                    : 0;
                 layoutSelect.val(persistedLayout);
                 gapInput.val(String(gap));
                 gapValue.text(String(gap));
+                maxColsInput.val(String(maxCols));
+                maxColsValue.text(String(maxCols));
                 gapContainer.toggle(persistedLayout !== 'voronoi');
+                maxColsContainer.toggle(persistedLayout !== 'voronoi');
                 const fallbackTags = Array.isArray(
                     wizardState.config?.summaryFallbackTags,
                 )
@@ -5841,6 +5914,7 @@ Respond with this exact JSON structure:
                 fallbackTagsInput.val(fallbackTags.join(', '));
                 wizardState.config.layout = persistedLayout;
                 wizardState.config.gap = gap;
+                wizardState.config.maxCols = maxCols;
                 wizardState.config.summaryFallbackTags = fallbackTags;
                 lorebookToggle
                     .prop('checked', Boolean(wizardState.config?.createLorebook))
@@ -5891,13 +5965,18 @@ Respond with this exact JSON structure:
                 });
 
                 layoutSelect.on('change', () => {
-                    gapContainer.toggle(
-                        String(layoutSelect.val() ?? 'voronoi') !== 'voronoi',
-                    );
+                    const isGridLayout =
+						String(layoutSelect.val() ?? 'voronoi') !== 'voronoi';
+                    gapContainer.toggle(isGridLayout);
+                    maxColsContainer.toggle(isGridLayout);
                 });
 
                 gapInput.on('input', () => {
                     gapValue.text(String(gapInput.val() ?? '2'));
+                });
+
+                maxColsInput.on('input', () => {
+                    maxColsValue.text(String(maxColsInput.val() ?? '0'));
                 });
 
                 fallbackTagsInput.on('change', function () {
@@ -6177,6 +6256,7 @@ Respond with this exact JSON structure:
         dynamicLorebook = false,
         minify = false,
         minifySingleLine = false,
+        maxCols = 0,
     ) => ({
         groupName,
         prompt,
@@ -6204,6 +6284,7 @@ Respond with this exact JSON structure:
         minifySingleLine: Boolean(minifySingleLine),
         cropStrategy,
         cropPadding,
+        maxCols,
         llm: BulkEditOverlay.#getGroupCardJobLlmConfig(),
     });
 

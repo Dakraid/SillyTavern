@@ -173,7 +173,7 @@ export async function generateVoronoiComposite(
  * Generate a grid-based composite from character avatar images.
  * @param {string[]} avatarPaths Absolute paths to character avatar PNGs.
  * @param {string} outputPath Where to write the composite PNG.
- * @param {{width?: number, height?: number, cellAspect?: number|string, gap?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>}} options
+ * @param {{width?: number, height?: number, cellAspect?: number|string, gap?: number, maxCols?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>}} options
  * @returns {Promise<{path: string, cells: Array<{type: string, x: number, y: number, w: number, h: number}>}>}
  */
 export async function generateGridComposite(
@@ -209,7 +209,10 @@ export async function generateGridComposite(
     const offsets = normalizeOffsets(options.offsets, avatarPaths.length);
     const cellAspect = normalizeCellAspect(options.cellAspect);
     const gap = normalizeGap(options.gap);
-    const grid = calculateGrid(avatarPaths.length, width / height / cellAspect);
+    const maxCols = typeof options.maxCols === 'number' && Number.isFinite(options.maxCols) && options.maxCols > 0
+        ? Math.round(options.maxCols)
+        : 0;
+    const grid = calculateGrid(avatarPaths.length, width / height / cellAspect, maxCols);
     const availableWidth = width - gap * (grid.cols - 1);
     const availableHeight = height - gap * (grid.rows - 1);
     const slotWidth = availableWidth / grid.cols;
@@ -365,12 +368,13 @@ function normalizeGap(gap) {
     return Number.isFinite(value) ? clamp(Math.round(value), 0, 10) : 2;
 }
 
-function calculateGrid(count, canvasAspect) {
+function calculateGrid(count, canvasAspect, maxCols = 0) {
     let bestCols = 1;
     let bestRows = count;
     let bestDiff = Infinity;
+    const colLimit = maxCols > 0 ? Math.min(count, maxCols) : count;
 
-    for (let cols = 1; cols <= count; cols++) {
+    for (let cols = 1; cols <= colLimit; cols++) {
         const rows = Math.ceil(count / cols);
         const gridAspect = cols / rows;
         const diff = Math.abs(gridAspect - canvasAspect);
