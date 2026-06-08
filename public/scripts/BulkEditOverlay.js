@@ -307,26 +307,36 @@ function buildLorebookEntryContent(character, fields) {
  * @param {object} character Character object.
  * @param {number} index Entry index.
  * @param {Array<string>} [fields] Included core fields.
+ * @param {Array<object>|null} [allCharacters] All source characters.
  * @returns {object} World info entry data.
  */
-function buildLorebookEntry(character, index, fields) {
+function buildLorebookEntry(character, index, fields, allCharacters = null) {
     const name = getCoreCharacterField(character, 'name').trim();
+    const avatar = String(character?.avatar ?? '').replace(/\.[^/.]+$/, '');
+    const hasNameCollision =
+        Array.isArray(allCharacters) &&
+        allCharacters.some(
+            (other, otherIndex) =>
+                otherIndex !== index &&
+                getCoreCharacterField(other, 'name').trim() === name,
+        );
+    const displayName = hasNameCollision && avatar ? `${name} (${avatar})` : name;
     const uid = Number.isInteger(index) && index >= 0 ? index : 0;
 
     return {
         uid,
         ...structuredClone(newWorldInfoEntryTemplate),
-        key: [name],
-        comment: name,
+        key: [displayName],
+        comment: displayName,
         content: buildLorebookEntryContent(character, fields),
         addMemo: true,
         order: 100 - uid,
-        aiFunctionName: name
+        aiFunctionName: displayName
             .toLowerCase()
             .replace(/[^a-z0-9_]/g, '_')
             .replace(/_+/g, '_')
             .replace(/^_+/, ''),
-        aiDescription: `Content for ${name}`,
+        aiDescription: `Content for ${displayName}`,
     };
 }
 
@@ -340,7 +350,12 @@ function buildLorebookEntry(character, index, fields) {
 function buildLorebookData(selectedCharacters, fields) {
     const entries = Object.fromEntries(
         (selectedCharacters ?? []).map((character, index) => {
-            const entry = buildLorebookEntry(character, index, fields);
+            const entry = buildLorebookEntry(
+                character,
+                index,
+                fields,
+                selectedCharacters,
+            );
             return [entry.uid, entry];
         }),
     );
@@ -397,9 +412,10 @@ function extractAllTopLevelXmlBlocks(xmlString) {
  * Each character's full XML (minus summary) becomes a lorebook entry.
  *
  * @param {string} generatedXml Generated XML text.
+ * @param {Array<object>|null} [sourceCharacters] Source character objects.
  * @returns {{ entries: object }} World info data.
  */
-function buildDynamicLorebookData(generatedXml) {
+function buildDynamicLorebookData(generatedXml, sourceCharacters = null) {
     const characterBlocks = extractAllTopLevelXmlBlocks(
         String(generatedXml ?? ''),
     ).filter((block) => block.tag === 'character');
@@ -409,20 +425,40 @@ function buildDynamicLorebookData(generatedXml) {
             const characterName = String(
                 extractXmlBlocksByTag(block.content, 'name')[0]?.content ?? '',
             ).trim();
+            const sourceChar = Array.isArray(sourceCharacters)
+                ? sourceCharacters[index]
+                : null;
+            const sourceAvatar = sourceChar
+                ? String(sourceChar.avatar ?? '').replace(/\.[^/.]+$/, '')
+                : '';
+            const hasNameCollision = characterBlocks.some((_, otherIndex) => {
+                if (otherIndex === index) {
+                    return false;
+                }
+                const otherName = String(
+                    extractXmlBlocksByTag(characterBlocks[otherIndex].content, 'name')[0]
+                        ?.content ?? '',
+                ).trim();
+                return otherName === characterName;
+            });
+            const displayName =
+                hasNameCollision && sourceAvatar
+                    ? `${characterName} (${sourceAvatar})`
+                    : characterName;
             const entry = {
                 uid,
                 ...structuredClone(newWorldInfoEntryTemplate),
-                key: [characterName],
-                comment: characterName,
+                key: [displayName],
+                comment: displayName,
                 content: stripSummaryFromCharacterBlock(block.raw),
                 addMemo: true,
                 order: 100 - uid,
-                aiFunctionName: characterName
+                aiFunctionName: displayName
                     .toLowerCase()
                     .replace(/[^a-z0-9_]/g, '_')
                     .replace(/_+/g, '_')
                     .replace(/^_+/, ''),
-                aiDescription: `Content for ${characterName}`,
+                aiDescription: `Content for ${displayName}`,
             };
             return [entry.uid, entry];
         }),
@@ -914,7 +950,7 @@ async function createGeneratedGroupCard(
 
     if (createLorebook) {
         const lorebookData = dynamicLorebook
-            ? buildDynamicLorebookData(dynamicLorebookSourceXml)
+            ? buildDynamicLorebookData(dynamicLorebookSourceXml, request.characters)
             : buildLorebookData(request.characters, fields);
 
         if (minify) {
@@ -2969,6 +3005,7 @@ class BulkEditOverlay {
             characterName: String(
                 output?.characterName ?? output?.name ?? 'Character',
             ),
+            characterAvatar: String(output?.characterAvatar ?? output?.avatar ?? ''),
             xmlOutput,
             parseStatus: blocks.length > 0 ? 'ok' : 'error',
             error: output?.error ? String(output.error) : '',
@@ -5102,10 +5139,6 @@ class BulkEditOverlay {
         const sourceAvatars = Array.isArray(meta.sourceCharacterAvatars)
             ? meta.sourceCharacterAvatars
             : [];
-        const sourceNames = Array.isArray(meta.sourceCharacterNames)
-            ? meta.sourceCharacterNames
-            : [];
-
         for (const avatar of sourceAvatars) {
             const id = characters.findIndex(
                 (candidate) => candidate?.avatar === avatar,
@@ -5115,15 +5148,18 @@ class BulkEditOverlay {
             }
         }
 
-        for (const name of sourceNames) {
-            const normalizedName = normalizeName(String(name ?? ''));
-            const id = characters.findIndex(
-                (candidate) =>
-                    normalizeName(getCoreCharacterField(candidate, 'name')) ===
-					normalizedName,
+        if (sourceAvatars.length > sourceCharacterIds.length) {
+            const foundAvatars = new Set(
+                sourceCharacterIds.map((id) => characters[id]?.avatar),
             );
-            if (id >= 0 && !sourceCharacterIds.includes(id)) {
-                sourceCharacterIds.push(id);
+            const missingAvatars = sourceAvatars.filter(
+                (avatar) => !foundAvatars.has(avatar),
+            );
+            if (missingAvatars.length > 0) {
+                toastr.warning(
+                    `${missingAvatars.length} source character(s) could not be found and will be skipped.`,
+                    'Combine into Group Card',
+                );
             }
         }
 
