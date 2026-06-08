@@ -322,13 +322,26 @@ function buildLorebookEntry(character, index, fields, allCharacters = null) {
 				getCoreCharacterField(other, 'name').trim() === name,
 		);
     const displayName = hasNameCollision && avatar ? `${name} (${avatar})` : name;
+    const fieldLabels = normalizeSelectedFields(fields)
+        .filter((field) => field !== 'name')
+        .map(
+            (field) =>
+                field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, ' '),
+        );
     const uid = Number.isInteger(index) && index >= 0 ? index : 0;
 
     return {
         uid,
         ...structuredClone(newWorldInfoEntryTemplate),
-        key: [displayName],
-        comment: displayName,
+        key:
+			hasNameCollision && avatar
+			    ? [displayName, name, name.toLowerCase()]
+			    : [displayName, name.toLowerCase()],
+        keysecondary: [],
+        comment:
+			fieldLabels.length > 0
+			    ? `${displayName} — ${fieldLabels.join(', ')}`
+			    : displayName,
         content: buildLorebookEntryContent(character, fields),
         addMemo: true,
         order: 100 - uid,
@@ -534,8 +547,12 @@ function buildDynamicLorebookData(
             const entry = {
                 uid,
                 ...structuredClone(newWorldInfoEntryTemplate),
-                key: [displayName],
-                comment: displayName,
+                key:
+					hasNameCollision && sourceAvatar
+					    ? [displayName, characterName, characterName.toLowerCase()]
+					    : [displayName, characterName.toLowerCase()],
+                keysecondary: [],
+                comment: `${displayName} — Dynamic Entry`,
                 content: stripSummaryFromCharacterBlock(block.raw),
                 addMemo: true,
                 order: 100 - uid,
@@ -3521,6 +3538,16 @@ Respond with this exact JSON structure:
                     .addClass('status')
                     .text(ok ? '✅' : '❌'),
             );
+            const lorebookIndicator = $('<small></small>')
+                .addClass('lorebook-entry-status')
+                .css({ 'margin-left': '8px', opacity: '0.7' })
+                .text(
+                    wizardState.config?.createLorebook ||
+						wizardState.config?.dynamicLorebook
+                        ? '→ Lorebook entry'
+                        : '',
+                );
+            header.append(lorebookIndicator);
             header.append(
                 $('<input type="checkbox" />')
                     .addClass('regen-checkbox')
@@ -5598,20 +5625,226 @@ Respond with this exact JSON structure:
     };
 
     static updateGroupCardWizardEditButton = (characterId) => {
-        const button = document.getElementById('group_card_wizard_edit_button');
-        if (!button) {
+        const wrapper = document.getElementById('group_card_wizard_buttons');
+        const editButton = document.getElementById('group_card_wizard_edit_button');
+        const quickRegenButton = document.getElementById(
+            'group_card_wizard_quick_regen_button',
+        );
+        if (!wrapper || !editButton) {
             return;
         }
 
         const character = characters[characterId];
         const hasMetadata = isGroupCardWizardCharacter(character);
-        button.style.display = hasMetadata ? '' : 'none';
-        button.dataset.characterId = hasMetadata ? String(characterId) : '';
-        button.onclick = hasMetadata
+        wrapper.style.display = hasMetadata ? 'flex' : 'none';
+        editButton.dataset.characterId = hasMetadata ? String(characterId) : '';
+        editButton.onclick = hasMetadata
             ? async () => {
                 await BulkEditOverlay.rerunGroupCardWizard(characterId);
             }
             : null;
+
+        if (quickRegenButton) {
+            quickRegenButton.dataset.characterId = hasMetadata
+                ? String(characterId)
+                : '';
+            quickRegenButton.onclick = hasMetadata
+                ? async () => {
+                    await BulkEditOverlay.quickRegenGroupCard(characterId);
+                }
+                : null;
+        }
+    };
+
+    /**
+	 * Quick-regenerates a group card using stored wizard config without opening the wizard.
+	 * @param {number} characterId Index of the group card character.
+	 */
+    static quickRegenGroupCard = async (characterId) => {
+        const character = characters[characterId];
+        const meta = getGroupCardWizardMetadata(character);
+        if (!character || !meta) {
+            toastr.error('This character was not created by the Group Card Wizard.');
+            return;
+        }
+
+        const storedConfig = meta.config ?? {};
+        const sourceAvatars = Array.isArray(meta.sourceCharacterAvatars)
+            ? meta.sourceCharacterAvatars
+            : [];
+
+        const sourceCharacterIds = [];
+        for (const avatar of sourceAvatars) {
+            const id = characters.findIndex(
+                (candidate) => candidate?.avatar === avatar,
+            );
+            if (id >= 0 && !sourceCharacterIds.includes(id)) {
+                sourceCharacterIds.push(id);
+            }
+        }
+
+        if (sourceCharacterIds.length < 2) {
+            toastr.warning(
+                'Not enough source characters found for regeneration. ' +
+					'Try the full wizard to reconfigure.',
+                'Quick Regen',
+            );
+            return;
+        }
+
+        await Promise.all(
+            sourceCharacterIds
+                .filter((id) => characters[id]?.shallow)
+                .map((id) => unshallowCharacter(String(id))),
+        );
+
+        const sourceCharacters = sourceCharacterIds
+            .map((id) => characters[id])
+            .filter(Boolean);
+        const groupName = getCoreCharacterField(character, 'name');
+        const prompt = String(storedConfig.prompt ?? '').trim();
+
+        if (!prompt) {
+            toastr.warning(
+                'No prompt found in stored config. Use the full wizard.',
+                'Quick Regen',
+            );
+            return;
+        }
+
+        toastr.info('Regenerating group card…', 'Quick Regen');
+
+        try {
+            const fields = storedConfig.fields;
+            const quietPrompt = buildGroupCardCombineQuietPrompt(
+                prompt,
+                sourceCharacters,
+                fields,
+            );
+            const generatedDescription = String(
+                (await generateQuietPrompt({
+                    quietPrompt,
+                    quietToLoud: true,
+                    skipWIAN: true,
+                })) ?? '',
+            );
+            const validatedDescription = validateGeneratedGroupCardDescription(
+                generatedDescription,
+                sourceCharacters.length,
+            );
+
+            let finalDescription = validatedDescription;
+            if (storedConfig.postMergeEnabled && storedConfig.postMergePrompt) {
+                const mergePrompt = `${String(storedConfig.postMergePrompt).trim()}\n\nInput:\n${validatedDescription}`;
+                finalDescription = String(
+                    (await generateQuietPrompt({
+                        quietPrompt: mergePrompt,
+                        quietToLoud: true,
+                        skipWIAN: true,
+                    })) ?? validatedDescription,
+                );
+            }
+
+            const { first_mes, alternate_greetings } =
+				parseGreetingsFromGeneratedOutput(finalDescription);
+            const descriptionClean = stripGreetingBlocks(finalDescription);
+
+            const dynamicLorebook = Boolean(storedConfig.dynamicLorebook);
+            const createLorebook = Boolean(
+                storedConfig.createLorebook || dynamicLorebook,
+            );
+            const fallbackTags = Array.isArray(storedConfig.summaryFallbackTags)
+                ? storedConfig.summaryFallbackTags
+                : ['summary'];
+
+            let cardDescription = dynamicLorebook
+                ? buildDynamicSummaryDescription(
+                    stripGreetingBlocks(
+                        dynamicLorebook ? validatedDescription : descriptionClean,
+                    ),
+                    fallbackTags,
+                )
+                : descriptionClean;
+
+            const minify = Boolean(storedConfig.minify);
+            const minifySingleLine = Boolean(storedConfig.minifySingleLine);
+            if (minify) {
+                cardDescription = minifyXml(cardDescription, {
+                    compact: !minifySingleLine,
+                    singleLine: minifySingleLine,
+                });
+            }
+
+            const updatedMeta = {
+                ...meta,
+                config: {
+                    ...storedConfig,
+                    inferredSchema: storedConfig.inferredSchema ?? null,
+                },
+                updatedAt: new Date().toISOString(),
+                runCount: Number(meta.runCount ?? 0) + 1,
+            };
+
+            const response = await sendJsonRequest(
+                '/api/characters/merge-attributes',
+                {
+                    avatar: character.avatar,
+                    data: {
+                        name: groupName,
+                        ch_name: groupName,
+                        description: cardDescription,
+                        first_mes: first_mes || '',
+                        alternate_greetings: alternate_greetings ?? [],
+                        creator_notes: `Generated group card from: ${meta.sourceCharacterNames?.join(', ') ?? 'unknown'}\n[group_card_wizard]`,
+                        extensions: {
+                            [GROUP_CARD_WIZARD_METADATA_KEY]: updatedMeta,
+                        },
+                    },
+                },
+            );
+            await throwIfNotOk(response, 'Failed to update group card.');
+
+            if (createLorebook) {
+                const lorebookSourceXml = dynamicLorebook
+                    ? stripGreetingBlocks(validatedDescription)
+                    : descriptionClean;
+                const schema = storedConfig.inferredSchema ?? null;
+                const lorebookData = dynamicLorebook
+                    ? buildDynamicLorebookData(
+                        lorebookSourceXml,
+                        sourceCharacters,
+                        schema,
+                    )
+                    : buildLorebookData(sourceCharacters, fields);
+
+                if (minify) {
+                    const minifyOptions = {
+                        compact: !minifySingleLine,
+                        singleLine: minifySingleLine,
+                    };
+                    for (const entry of Object.values(lorebookData.entries)) {
+                        if (entry.content) {
+                            entry.content = minifyXml(entry.content, minifyOptions);
+                        }
+                    }
+                }
+
+                const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
+                    name: groupName,
+                    data: lorebookData,
+                });
+                await throwIfNotOk(worldResponse, 'Failed to update lorebook.');
+            }
+
+            await getCharacters();
+            toastr.success('Group card regenerated.', 'Quick Regen');
+        } catch (error) {
+            console.error('Quick regen failed:', error);
+            toastr.error(
+                error?.message ?? 'Quick regeneration failed.',
+                'Quick Regen',
+            );
+        }
     };
 
     static rerunGroupCardWizard = async (characterId) => {
