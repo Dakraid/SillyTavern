@@ -119,12 +119,29 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 
 /** @type {typeof import('../public/scripts/tool-calling.js').ToolManager} */
 let ToolManager;
+/** @type {typeof import('../public/scripts/tool-calling.js').scrubToolProcessingMetadata} */
+let scrubToolProcessingMetadata;
 
 beforeAll(async () => {
-    ({ ToolManager } = await import('../public/scripts/tool-calling.js'));
+    ({ ToolManager, scrubToolProcessingMetadata } = await import('../public/scripts/tool-calling.js'));
 });
 
 describe('OpenRouter Chat Completion tool call parsing', () => {
+    test('scrubs tool processing metadata while preserving unrelated message extras', () => {
+        const message = {
+            extra: {
+                tool_invocations: [{ name: 'list_lore_entries' }],
+                processing_trace: '<div class="tool-call-trace"></div>',
+                isProcessingMessage: true,
+                keep: 'value',
+            },
+        };
+
+        scrubToolProcessingMetadata(message);
+
+        expect(message.extra).toEqual({ keep: 'value' });
+    });
+
     test('accumulates streaming delta.tool_calls by choice and tool index', () => {
         const toolCalls = [];
 
@@ -212,6 +229,110 @@ describe('OpenRouter Chat Completion tool call parsing', () => {
         ]);
     });
 
+    test('records stealth tool success as traceable invocation and preserves stealthCalls', async () => {
+        ToolManager.registerFunctionTool({
+            name: 'stealth_lookup_success',
+            displayName: 'Stealth Lookup Success',
+            description: 'Looks up hidden fixture data',
+            parameters: {},
+            action: async (params) => ({ ok: true, id: params.id }),
+            stealth: true,
+        });
+
+        const invocation = await ToolManager.invokeFunctionTools({
+            choices: [
+                {
+                    index: 0,
+                    message: {
+                        tool_calls: [
+                            {
+                                id: 'call_stealth_lookup_success',
+                                type: 'function',
+                                function: {
+                                    name: 'stealth_lookup_success',
+                                    arguments: '{"id":2}',
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        });
+
+        expect(invocation.errors).toEqual([]);
+        expect(invocation.stealthCalls).toEqual(['stealth_lookup_success']);
+        expect(invocation.invocations).toEqual([
+            {
+                id: 'call_stealth_lookup_success',
+                displayName: 'Stealth Lookup Success',
+                name: 'stealth_lookup_success',
+                parameters: '{"id":2}',
+                result: '{"ok":true,"id":2}',
+                error: false,
+                signature: null,
+                reasoning: null,
+                stealth: true,
+            },
+        ]);
+    });
+
+    test('records stealth tool errors as traceable invocations and preserves stealthCalls', async () => {
+        ToolManager.registerFunctionTool({
+            name: 'stealth_lookup_error',
+            displayName: 'Stealth Lookup Error',
+            description: 'Fails hidden fixture lookup',
+            parameters: {},
+            action: async () => {
+                throw new Error('hidden lookup failed');
+            },
+            stealth: true,
+        });
+        const consoleErrorSpy = jest
+            .spyOn(console, 'error')
+            .mockImplementation(() => {});
+
+        let invocation;
+        try {
+            invocation = await ToolManager.invokeFunctionTools({
+                choices: [
+                    {
+                        index: 0,
+                        message: {
+                            tool_calls: [
+                                {
+                                    id: 'call_stealth_lookup_error',
+                                    type: 'function',
+                                    function: {
+                                        name: 'stealth_lookup_error',
+                                        arguments: '{"id":null}',
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            });
+        } finally {
+            consoleErrorSpy.mockRestore();
+        }
+
+        expect(invocation.errors).toHaveLength(1);
+        expect(invocation.stealthCalls).toEqual(['stealth_lookup_error']);
+        expect(invocation.invocations).toEqual([
+            {
+                id: 'call_stealth_lookup_error',
+                displayName: 'Stealth Lookup Error',
+                name: 'stealth_lookup_error',
+                parameters: '{"id":null}',
+                result: 'Error: hidden lookup failed',
+                error: true,
+                signature: null,
+                reasoning: null,
+                stealth: true,
+            },
+        ]);
+    });
+
     test('keeps non-stealth tool errors as invocations for retry context', async () => {
         ToolManager.registerFunctionTool({
             name: 'failing_lookup',
@@ -226,26 +347,30 @@ describe('OpenRouter Chat Completion tool call parsing', () => {
             .spyOn(console, 'error')
             .mockImplementation(() => {});
 
-        const invocation = await ToolManager.invokeFunctionTools({
-            choices: [
-                {
-                    index: 0,
-                    message: {
-                        tool_calls: [
-                            {
-                                id: 'call_failing_lookup',
-                                type: 'function',
-                                function: {
-                                    name: 'failing_lookup',
-                                    arguments: '{"id":null}',
+        let invocation;
+        try {
+            invocation = await ToolManager.invokeFunctionTools({
+                choices: [
+                    {
+                        index: 0,
+                        message: {
+                            tool_calls: [
+                                {
+                                    id: 'call_failing_lookup',
+                                    type: 'function',
+                                    function: {
+                                        name: 'failing_lookup',
+                                        arguments: '{"id":null}',
+                                    },
                                 },
-                            },
-                        ],
+                            ],
+                        },
                     },
-                },
-            ],
-        });
-        consoleErrorSpy.mockRestore();
+                ],
+            });
+        } finally {
+            consoleErrorSpy.mockRestore();
+        }
 
         expect(invocation.errors).toHaveLength(1);
         expect(invocation.stealthCalls).toEqual([]);

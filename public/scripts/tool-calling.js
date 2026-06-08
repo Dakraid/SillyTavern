@@ -19,6 +19,7 @@ import { isTrueBoolean } from './utils.js';
  * @property {string?} signature - The thought signature associated with the tool invocation.
  * @property {string?} reasoning - The plaintext reasoning associated with this tool call turn.
  * @property {boolean} [error] - Whether the tool invocation failed.
+ * @property {boolean} [stealth] - Whether the tool invocation came from a stealth tool.
  */
 
 /**
@@ -104,6 +105,20 @@ function tryParse(str) {
  */
 function stringify(obj) {
     return typeof obj === 'string' ? obj : JSON.stringify(obj);
+}
+
+/**
+ * Removes tool-call and processing-trace metadata from a chat message.
+ * @param {{ extra?: object }|undefined} message Message to scrub
+ */
+export function scrubToolProcessingMetadata(message) {
+    if (!message?.extra || typeof message.extra !== 'object') {
+        return;
+    }
+
+    delete message.extra.tool_invocations;
+    delete message.extra.processing_trace;
+    delete message.extra.isProcessingMessage;
 }
 
 /**
@@ -801,24 +816,34 @@ export class ToolManager {
                 result.errors.push(toolResult);
                 if (isStealth) {
                     result.stealthCalls.push(name);
-                } else {
-                    result.invocations.push({
-                        id,
-                        displayName,
-                        name,
-                        parameters: stringify(parameters),
-                        result: toolResult.toString(),
-                        error: true,
-                        signature: toolCall.signature || null,
-                        reasoning: reasoningText || null,
-                    });
                 }
+                result.invocations.push({
+                    id,
+                    displayName,
+                    name,
+                    parameters: stringify(parameters),
+                    result: toolResult.toString(),
+                    error: true,
+                    signature: toolCall.signature || null,
+                    reasoning: reasoningText || null,
+                    ...(isStealth ? { stealth: true } : {}),
+                });
                 continue;
             }
 
-            // Don't save stealth tool invocations
             if (isStealth) {
                 result.stealthCalls.push(name);
+                result.invocations.push({
+                    id,
+                    displayName,
+                    name,
+                    parameters: stringify(parameters),
+                    result: toolResult,
+                    error: false,
+                    signature: toolCall.signature || null,
+                    reasoning: reasoningText || null,
+                    stealth: true,
+                });
                 continue;
             }
 

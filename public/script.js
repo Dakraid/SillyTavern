@@ -371,7 +371,7 @@ import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
-import { ToolManager } from './scripts/tool-calling.js';
+import { ToolManager, scrubToolProcessingMetadata } from './scripts/tool-calling.js';
 import { addShowdownPatch } from './scripts/util/showdown-patch.js';
 import { applyBrowserFixes } from './scripts/browser-fixes.js';
 import { initServerHistory } from './scripts/server-history.js';
@@ -2080,10 +2080,43 @@ export async function clearChat({ clearData = false } = {}) {
 }
 
 export async function deleteLastMessage() {
-    deleteItemizedPromptForMessage(chat.length - 1);
-    chat.length = chat.length - 1;
+    const messageId = chat.length - 1;
+    scrubToolProcessingMetadata(chat[messageId]);
+    deleteItemizedPromptForMessage(messageId);
+    chat.length = messageId;
     chatElement.children('.mes').last().remove();
     await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
+}
+
+/**
+ * Checks whether a message is an assistant/processing target for tool traces.
+ * @param {number} messageId Message index
+ * @returns {boolean} True if tool trace can be attached to the message
+ */
+function canAttachToolTraceToMessage(messageId) {
+    const message = chat[messageId];
+    return Boolean(message && !message.is_user);
+}
+
+/**
+ * Summarizes visible vs stealth tool invocations for generation control.
+ * @param {import('./scripts/tool-calling.js').ToolInvocationResult} invocationResult Invocation result
+ * @returns {{ visibleInvocations: import('./scripts/tool-calling.js').ToolInvocation[], hasVisibleInvocations: boolean, hasOnlyStealthInvocations: boolean }} Tool flow state
+ */
+function getToolInvocationFlowState(invocationResult) {
+    const invocations = Array.isArray(invocationResult?.invocations)
+        ? invocationResult.invocations
+        : [];
+    const visibleInvocations = invocations.filter(
+        (invocation) => !invocation.stealth,
+    );
+
+    return {
+        visibleInvocations,
+        hasVisibleInvocations: visibleInvocations.length > 0,
+        hasOnlyStealthInvocations:
+			invocations.length > 0 && visibleInvocations.length === 0,
+    };
 }
 
 /**
@@ -2145,6 +2178,7 @@ export async function deleteMessage(
         return;
     }
 
+    scrubToolProcessingMetadata(chat[id]);
     chat.splice(id, 1);
     messageElement.remove();
 
@@ -5599,6 +5633,7 @@ export async function Generate(
 			!depth &&
 			chat.length
         ) {
+            scrubToolProcessingMetadata(chat[chat.length - 1]);
             deleteItemizedPromptForMessage(chat.length - 1);
             chat.length = chat.length - 1;
             await removeLastMessage();
@@ -6955,23 +6990,18 @@ export async function Generate(
                         reasoningText: streamingProcessor.reasoningHandler.reasoning,
                     },
                 );
+                const toolInvocationState =
+					getToolInvocationFlowState(invocationResult);
                 const shouldStopGeneration =
 					(!invocationResult.invocations.length &&
 						!invocationResult.errors.length) ||
-					(invocationResult.stealthCalls.length &&
-						!invocationResult.invocations.length);
+					toolInvocationState.hasOnlyStealthInvocations;
                 if (hasToolCalls) {
-                    if (shouldStopGeneration) {
-                        unblockGeneration(type);
-                        streamingProcessor = null;
-                        return;
-                    }
-
                     const processingMessageId = streamingProcessor.messageId;
                     const toolTrace = ToolManager.formatToolCallTrace(
                         invocationResult.invocations,
                     );
-                    if (chat[processingMessageId]) {
+                    if (toolTrace && canAttachToolTraceToMessage(processingMessageId)) {
                         chat[processingMessageId].extra =
 							chat[processingMessageId].extra || {};
                         chat[processingMessageId].extra.isProcessingMessage = true;
@@ -6981,13 +7011,20 @@ export async function Generate(
                         );
                     }
                     streamingProcessor.messageDom?.classList.remove('displayNone');
+
+                    if (shouldStopGeneration) {
+                        unblockGeneration(type);
+                        streamingProcessor = null;
+                        return;
+                    }
+
                     streamingProcessor = null;
                     depth = depth + 1;
                     const isHiddenToolFlow =
 						oai_settings.chat_completion_source ===
 						chat_completion_sources.OPENROUTER;
                     await ToolManager.saveFunctionToolInvocations(
-                        invocationResult.invocations,
+                        toolInvocationState.visibleInvocations,
                         { visible: !isHiddenToolFlow },
                     );
                     try {
@@ -7159,29 +7196,28 @@ export async function Generate(
             const hasToolCalls = ToolManager.hasToolCalls(data);
             const shouldDeleteMessage =
 				type !== 'swipe' && ['', '...'].includes(getMessage) && !reasoning;
-            hasToolCalls && shouldDeleteMessage && (await deleteLastMessage());
             const invocationResult = await ToolManager.invokeFunctionTools(data, {
                 reasoningText: reasoning,
             });
+            const toolInvocationState = getToolInvocationFlowState(invocationResult);
             const shouldStopGeneration =
 				(!invocationResult.invocations.length &&
 					!invocationResult.errors.length &&
 					shouldDeleteMessage) ||
-				(invocationResult.stealthCalls.length &&
-					!invocationResult.invocations.length);
+				toolInvocationState.hasOnlyStealthInvocations;
             if (hasToolCalls) {
-                if (shouldStopGeneration) {
-                    unblockGeneration(type);
-                    return;
-                }
-
-                const currentProcessingMessageId = Number.isInteger(processingMessageId)
-                    ? processingMessageId
-                    : chat.length - 1;
+                const currentProcessingMessageId =
+					Number.isInteger(processingMessageId) &&
+					canAttachToolTraceToMessage(processingMessageId)
+					    ? processingMessageId
+					    : chat.length - 1;
                 const toolTrace = ToolManager.formatToolCallTrace(
                     invocationResult.invocations,
                 );
-                if (chat[currentProcessingMessageId]) {
+                if (
+                    toolTrace &&
+					canAttachToolTraceToMessage(currentProcessingMessageId)
+                ) {
                     chat[currentProcessingMessageId].extra =
 						chat[currentProcessingMessageId].extra || {};
                     chat[currentProcessingMessageId].extra.isProcessingMessage = true;
@@ -7193,12 +7229,21 @@ export async function Generate(
                         .join('\n\n');
                     updateReasoningUI(currentProcessingMessageId);
                 }
+
+                if (shouldStopGeneration) {
+                    if (shouldDeleteMessage && !toolTrace) {
+                        await deleteLastMessage();
+                    }
+                    unblockGeneration(type);
+                    return;
+                }
+
                 depth = depth + 1;
                 const isHiddenToolFlow =
 					oai_settings.chat_completion_source ===
 					chat_completion_sources.OPENROUTER;
                 await ToolManager.saveFunctionToolInvocations(
-                    invocationResult.invocations,
+                    toolInvocationState.visibleInvocations,
                     { visible: !isHiddenToolFlow },
                 );
                 try {
@@ -13270,10 +13315,9 @@ export async function swipe(
             delete message.extra.reasoning_duration;
             delete message.extra.reasoning_duration_ms;
             delete message.extra.token_count;
-            delete message.extra.tool_invocations;
+            scrubToolProcessingMetadata(message);
             delete message.extra.reasoning_signature;
             delete message.extra.time_to_first_token;
-            delete message.extra.isProcessingMessage;
         }
         delete message.gen_started;
         delete message.gen_finished;
@@ -15227,6 +15271,7 @@ jQuery(async function () {
 
         if (this_del_mes >= 0) {
             for (let i = chat.length - 1; i >= this_del_mes; i--) {
+                scrubToolProcessingMetadata(chat[i]);
                 deleteItemizedPromptForMessage(i);
             }
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).nextAll('div').remove();

@@ -1060,6 +1060,14 @@ export const worldInfoCache = new StructuredCloneMap({
 });
 
 const AI_MANAGED_LORE_SEPARATOR = '::';
+const AI_MANAGED_LORE_BUILT_IN_TOOL_NAMES = new Set([
+    'list_lore_entries',
+    'load_lore_entry',
+    'load_lore_entries',
+    'unload_lore_entry',
+    'unload_lore_entries',
+    'get_loaded_lore_entries',
+]);
 let aiManagedLoreToolsRegistered = false;
 const registeredDirectAccessTools = new Set();
 
@@ -1188,6 +1196,58 @@ function findAIManagedLoreEntry(name) {
 }
 
 /**
+ * Gets the chat metadata key for an AI-managed lore entry.
+ * @param {{ lorebook: string, uid: number|string }} item Registry item
+ * @returns {string} State key
+ */
+function getAIManagedLoreStateKey(item) {
+    return `${item.lorebook}${AI_MANAGED_LORE_SEPARATOR}${item.uid}`;
+}
+
+/**
+ * Gets load status for an AI-managed lore entry.
+ * @param {{ lorebook: string, uid: number|string }} item Registry item
+ * @param {Record<string, { loadedAt: number, autoUnload: number }>} state AI-managed lore state
+ * @returns {{ loaded: boolean, remainingTurns: number }} Load status
+ */
+function getAIManagedLoreStatus(item, state) {
+    const value = state[getAIManagedLoreStateKey(item)];
+    return {
+        loaded: Boolean(value),
+        remainingTurns: value?.autoUnload || 0,
+    };
+}
+
+/**
+ * Loads an AI-managed lore entry into state and external activations.
+ * @param {{ lorebook: string, uid: number|string, entry: object }} item Registry item
+ * @param {Record<string, { loadedAt: number, autoUnload: number }>} state AI-managed lore state
+ */
+async function loadAIManagedLoreEntry(item, state) {
+    const autoUnload = Number(item.entry.aiAutoUnload) || 0;
+    state[getAIManagedLoreStateKey(item)] = {
+        loadedAt: getContext().chat?.length ?? 0,
+        autoUnload,
+    };
+
+    WorldInfoBuffer.externalActivations.set(
+        `${item.lorebook}.${item.uid}`,
+        item.entry,
+    );
+    await eventSource.emit(event_types.WORLDINFO_FORCE_ACTIVATE, [item.entry]);
+}
+
+/**
+ * Unloads an AI-managed lore entry from state and external activations.
+ * @param {{ lorebook: string, uid: number|string }} item Registry item
+ * @param {Record<string, { loadedAt: number, autoUnload: number }>} state AI-managed lore state
+ */
+function unloadAIManagedLoreEntry(item, state) {
+    delete state[getAIManagedLoreStateKey(item)];
+    WorldInfoBuffer.externalActivations.delete(`${item.lorebook}.${item.uid}`);
+}
+
+/**
  * Decrements auto-unload counters for AI-managed lore entries.
  */
 async function decrementAIManagedAutoUnload() {
@@ -1243,9 +1303,11 @@ function registerAIManagedLoreTools() {
         }),
         action: async (args) => {
             const lorebook = typeof args?.lorebook === 'string' ? args.lorebook : '';
-            return getAIManagedLoreRegistry(lorebook).map(
-                ({ entry, ...item }) => item,
-            );
+            const state = getAIManagedState();
+            return getAIManagedLoreRegistry(lorebook).map(({ entry, ...item }) => ({
+                ...item,
+                ...getAIManagedLoreStatus(item, state),
+            }));
         },
         shouldRegister: () =>
             hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
@@ -1279,23 +1341,60 @@ function registerAIManagedLoreTools() {
             }
 
             const state = getAIManagedState();
-            const key = `${item.lorebook}${AI_MANAGED_LORE_SEPARATOR}${item.uid}`;
-            const autoUnload = Number(item.entry.aiAutoUnload) || 0;
-            state[key] = {
-                loadedAt: getContext().chat?.length ?? 0,
-                autoUnload,
-            };
-
-            WorldInfoBuffer.externalActivations.set(
-                `${item.lorebook}.${item.uid}`,
-                item.entry,
-            );
-            await eventSource.emit(event_types.WORLDINFO_FORCE_ACTIVATE, [
-                item.entry,
-            ]);
+            await loadAIManagedLoreEntry(item, state);
             await saveMetadata();
 
             return `Loaded lore entry: ${item.name}`;
+        },
+        shouldRegister: () =>
+            hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
+        stealth: false,
+    });
+
+    ToolManager.registerFunctionTool({
+        name: 'load_lore_entries',
+        displayName: 'Load Lore Entries',
+        description:
+			'Load multiple lorebook entries into the active context. Entries persist across turns until unloaded. Pass entry names from the list_lore_entries registry.',
+        parameters: Object.freeze({
+            type: 'object',
+            properties: {
+                names: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description:
+						'The entry identifiers from list_lore_entries (format: lorebookName::entryName).',
+                },
+            },
+            required: ['names'],
+        }),
+        action: async (args) => {
+            if (!Array.isArray(args?.names)) {
+                throw new Error('Missing entry names.');
+            }
+
+            const state = getAIManagedState();
+            const results = [];
+            for (const name of args.names) {
+                const item = findAIManagedLoreEntry(name);
+                if (!item) {
+                    results.push({
+                        name: String(name ?? ''),
+                        success: false,
+                        error: `Lore entry not found or ambiguous: ${name}`,
+                    });
+                    continue;
+                }
+
+                await loadAIManagedLoreEntry(item, state);
+                results.push({ name: item.name, success: true });
+            }
+
+            if (results.some((result) => result.success)) {
+                await saveMetadata();
+            }
+
+            return { results };
         },
         shouldRegister: () =>
             hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
@@ -1329,14 +1428,60 @@ function registerAIManagedLoreTools() {
             }
 
             const state = getAIManagedState();
-            const key = `${item.lorebook}${AI_MANAGED_LORE_SEPARATOR}${item.uid}`;
-            delete state[key];
-            WorldInfoBuffer.externalActivations.delete(
-                `${item.lorebook}.${item.uid}`,
-            );
+            unloadAIManagedLoreEntry(item, state);
             await saveMetadata();
 
             return `Unloaded lore entry: ${item.name}`;
+        },
+        shouldRegister: () =>
+            hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
+        stealth: false,
+    });
+
+    ToolManager.registerFunctionTool({
+        name: 'unload_lore_entries',
+        displayName: 'Unload Lore Entries',
+        description:
+			'Remove multiple previously loaded lorebook entries from the active context. Entries will no longer be injected into the prompt.',
+        parameters: Object.freeze({
+            type: 'object',
+            properties: {
+                names: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description:
+						'The entry identifiers to unload (format: lorebookName::entryName).',
+                },
+            },
+            required: ['names'],
+        }),
+        action: async (args) => {
+            if (!Array.isArray(args?.names)) {
+                throw new Error('Missing entry names.');
+            }
+
+            const state = getAIManagedState();
+            const results = [];
+            for (const name of args.names) {
+                const item = findAIManagedLoreEntry(name);
+                if (!item) {
+                    results.push({
+                        name: String(name ?? ''),
+                        success: false,
+                        error: `Lore entry not found or ambiguous: ${name}`,
+                    });
+                    continue;
+                }
+
+                unloadAIManagedLoreEntry(item, state);
+                results.push({ name: item.name, success: true });
+            }
+
+            if (results.some((result) => result.success)) {
+                await saveMetadata();
+            }
+
+            return { results };
         },
         shouldRegister: () =>
             hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
@@ -1374,6 +1519,14 @@ function registerAIManagedLoreTools() {
     refreshDirectAccessTools();
 }
 
+/**
+ * Registers AI-managed lorebook tools for focused tests without invoking settings UI setup.
+ * @returns {void}
+ */
+export function __registerAIManagedLoreToolsForTesting() {
+    registerAIManagedLoreTools();
+}
+
 export function refreshDirectAccessTools() {
     // Unregister previous direct access tools
     for (const toolName of registeredDirectAccessTools) {
@@ -1383,13 +1536,35 @@ export function refreshDirectAccessTools() {
 
     // Re-register from current cache state
     const registry = getAIManagedLoreRegistry();
+    const disambiguatedToolWarnings = [];
     for (const item of registry) {
-        const sanitizedName = item.name
-            .toLowerCase()
-            .replace(/[^a-z0-9_]/g, '_')
-            .replace(/^_+/, '')
-            .replace(/_+/g, '_');
-        const toolName = `get_${sanitizedName}`;
+        const sanitizedName =
+            item.name
+                .toLowerCase()
+                .replace(/[^a-z0-9_]/g, '_')
+                .replace(/^_+/, '')
+                .replace(/_+/g, '_') || 'entry';
+        const baseToolName = `get_${sanitizedName}`;
+        const disambiguatedToolName = `${baseToolName}__${item.uid}`;
+        let toolName = baseToolName;
+        if (
+            registeredDirectAccessTools.has(toolName) ||
+			AI_MANAGED_LORE_BUILT_IN_TOOL_NAMES.has(toolName)
+        ) {
+            toolName = disambiguatedToolName;
+        }
+
+        let collisionIndex = 2;
+        while (
+            registeredDirectAccessTools.has(toolName) ||
+			AI_MANAGED_LORE_BUILT_IN_TOOL_NAMES.has(toolName)
+        ) {
+            toolName = `${disambiguatedToolName}__${collisionIndex}`;
+            collisionIndex++;
+        }
+        if (toolName !== baseToolName) {
+            disambiguatedToolWarnings.push(`${baseToolName} → ${toolName}`);
+        }
 
         const entryDescription =
 			item.description ||
@@ -1427,6 +1602,13 @@ export function refreshDirectAccessTools() {
             stealth: true,
         });
         registeredDirectAccessTools.add(toolName);
+    }
+
+    if (disambiguatedToolWarnings.length > 0) {
+        console.warn(
+            '[WI] Direct-access lorebook tool names were disambiguated to avoid collisions:',
+            disambiguatedToolWarnings,
+        );
     }
 }
 
