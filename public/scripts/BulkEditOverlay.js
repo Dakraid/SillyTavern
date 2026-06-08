@@ -44,7 +44,12 @@ import {
     tag_import_setting,
 } from './tags.js';
 import { t } from './i18n.js';
-import { newWorldInfoEntryTemplate, world_names } from './world-info.js';
+import {
+    newWorldInfoEntryTemplate,
+    saveWorldInfo,
+    world_names,
+    worldInfoCache,
+} from './world-info.js';
 import { escapeHtml } from './utils.js';
 import {
     validateGeneratedGroupCardDescription,
@@ -311,12 +316,7 @@ function buildLorebookEntryContent(character, fields) {
  * @param {Array<object>|null} [allCharacters] All source characters.
  * @returns {object} World info entry data.
  */
-function buildLorebookEntry(
-    character,
-    index,
-    fields,
-    allCharacters = null,
-) {
+function buildLorebookEntry(character, index, fields, allCharacters = null) {
     const name = getCoreCharacterField(character, 'name').trim();
     const avatar = String(character?.avatar ?? '').replace(/\.[^/.]+$/, '');
     const hasNameCollision =
@@ -2596,7 +2596,7 @@ class BulkEditOverlay {
         }
 
         try {
-            await BulkEditOverlay.rerunGroupCardWizard(wizardCharacterIds[0]);
+            await BulkEditOverlay.#runRegenWizardForCard(wizardCharacterIds[0]);
         } finally {
             this.browseState();
         }
@@ -2611,8 +2611,65 @@ class BulkEditOverlay {
     static #getCombineGroupCardWizardHtml = (characterCount) => {
         return `
             <div id="bulk_combine_wizard" class="bcw">
+                <style>
+                    .bcw { position: relative; }
+                    .bcw-tabs { display: flex; gap: 0.35em; margin: 0.5em 0 0.75em; border-bottom: 1px solid var(--SmartThemeBorderColor); }
+                    .bcw-tab { padding: 0.55em 0.85em; cursor: pointer; border: 1px solid transparent; border-bottom: none; border-radius: 8px 8px 0 0; opacity: 0.75; }
+                    .bcw-tab.active { opacity: 1; background: var(--SmartThemeBlurTintColor); border-color: var(--SmartThemeBorderColor); font-weight: 600; }
+                    .bcw-panel { min-height: 24em; }
+                    .bcw-placeholder { padding: 1em; border: 1px dashed var(--SmartThemeBorderColor); border-radius: 8px; opacity: 0.85; }
+                    .bcw-progress-overlay { position: absolute; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 88%, transparent); backdrop-filter: blur(2px); }
+                    .bcw-progress-card { width: min(620px, 92%); padding: 1.25em; border: 1px solid var(--SmartThemeBorderColor); border-radius: 12px; background: var(--SmartThemeBodyColor); box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35); }
+                    .bcw-progress-card h4 { margin-top: 0; }
+                    .bcw-progress-status { margin: 0.5em 0; font-weight: 600; }
+                    .bcw-progress-bar { height: 0.75em; overflow: hidden; border: 1px solid var(--SmartThemeBorderColor); border-radius: 999px; background: rgba(127, 127, 127, 0.18); }
+                    .bcw-progress-fill { height: 100%; width: 0%; transition: width 0.2s ease; background: var(--SmartThemeQuoteColor); }
+                    .bcw-progress-fill.indeterminate { width: 35%; animation: bcw-progress-pulse 1.2s ease-in-out infinite alternate; }
+                    .bcw-progress-stats { display: flex; justify-content: space-between; gap: 1em; margin: 0.5em 0; font-size: 0.9em; opacity: 0.8; }
+                    .bcw-progress-tokens { max-height: 8em; overflow: auto; white-space: pre-wrap; font-family: monospace; font-size: 0.85em; margin: 0.75em 0; padding: 0.65em; border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; background: rgba(127, 127, 127, 0.12); }
+                    .bcw-progress-cancel { width: fit-content; margin-left: auto; }
+                    @keyframes bcw-progress-pulse { from { transform: translateX(-80%); } to { transform: translateX(190%); } }
+                </style>
                 <div class="header">
                     <h3>Combine into Group Card</h3>
+                    <div class="bcw-tabs">
+                        <div class="bcw-tab" data-tab="config">Config</div>
+                        <div class="bcw-tab active" data-tab="wizard">Wizard</div>
+                        <div class="bcw-tab" data-tab="ai-tools">AI Tools</div>
+                        <div class="bcw-tab" data-tab="advanced">Advanced</div>
+                    </div>
+                </div>
+                <div class="bcw-panel" data-panel="config" style="display:none;">
+                    <div class="bcw-placeholder">
+                        <h4>Combine setup</h4>
+                        <p>Use the Wizard tab to configure source characters, prompt, XML options, lorebook output, and avatar generation.</p>
+                    </div>
+                </div>
+                <div class="bcw-panel" data-panel="ai-tools" style="display:none;">
+                    <div id="bulk_ai_tools_panel" class="bcw-placeholder">AI Tools configuration will appear here.</div>
+                </div>
+                <div class="bcw-panel" data-panel="advanced" style="display:none;">
+                    <div class="bcw-placeholder">
+                        <h4>Advanced</h4>
+                        <p>Prompt presets and rarely changed options live here.</p>
+                        <div id="bulk_combine_group_card_preset_controls" class="preset-controls">
+                            <select id="bulk_combine_group_card_preset_select" class="text_pole">
+                                <option value="">— Load preset —</option>
+                            </select>
+                            <div id="bulk_combine_group_card_preset_save" class="menu_button" title="Save current prompt as preset">
+                                <i class="fa-solid fa-floppy-disk"></i>
+                            </div>
+                            <div id="bulk_combine_group_card_preset_delete" class="menu_button" title="Delete selected preset">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </div>
+                            <div id="bulk_combine_group_card_preset_restore" class="menu_button" title="Restore built-in default prompt">
+                                <i class="fa-solid fa-rotate-left"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="bcw-panel active" data-panel="wizard">
+                <div class="header">
                     <div class="stages">
                         <div class="stage-indicator active" data-stage="1">1. Config</div>
                         <div class="stage-indicator" data-stage="2">2. Results</div>
@@ -2644,20 +2701,6 @@ class BulkEditOverlay {
                             <span>Prompt</span>
                             <textarea id="bulk_combine_group_card_prompt" class="text_pole" rows="12"></textarea>
                         </label>
-                        <div id="bulk_combine_group_card_preset_controls" class="preset-controls">
-                            <select id="bulk_combine_group_card_preset_select" class="text_pole">
-                                <option value="">— Load preset —</option>
-                            </select>
-                            <div id="bulk_combine_group_card_preset_save" class="menu_button" title="Save current prompt as preset">
-                                <i class="fa-solid fa-floppy-disk"></i>
-                            </div>
-                            <div id="bulk_combine_group_card_preset_delete" class="menu_button" title="Delete selected preset">
-                                <i class="fa-solid fa-trash-can"></i>
-                            </div>
-                            <div id="bulk_combine_group_card_preset_restore" class="menu_button" title="Restore built-in default prompt">
-                                <i class="fa-solid fa-rotate-left"></i>
-                            </div>
-                        </div>
                         <div class="field-group">
                             <label for="bulk_combine_group_card_concurrency" class="text_label">
                                 <span>Max concurrency</span>
@@ -2754,6 +2797,20 @@ class BulkEditOverlay {
                     <div id="bulk_combine_wizard_save_as_is" class="menu_button" style="display:none;">Save As Is</div>
                     <div id="bulk_combine_wizard_next" class="menu_button">Generate</div>
                 </div>
+                </div>
+                <div id="bulk_combine_progress_overlay" class="bcw-progress-overlay" style="display:none;">
+                    <div class="bcw-progress-card">
+                        <h4>Generating XML...</h4>
+                        <div class="bcw-progress-status">Starting...</div>
+                        <div class="bcw-progress-bar"><div class="bcw-progress-fill"></div></div>
+                        <div class="bcw-progress-stats">
+                            <span class="bcw-progress-count">0/0 characters</span>
+                            <span class="bcw-progress-eta">ETA: --</span>
+                        </div>
+                        <div class="bcw-progress-tokens"></div>
+                        <div class="bcw-progress-cancel menu_button">Cancel</div>
+                    </div>
+                </div>
             </div>`;
     };
 
@@ -2823,6 +2880,459 @@ class BulkEditOverlay {
     };
 
     /**
+	 * Initializes top-level tabs for the combine wizard popup.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 */
+    static #initializeCombineWizardTabs = (popupContent) => {
+        const switchTab = (tabName) => {
+            const normalizedTab = String(tabName || 'wizard');
+            popupContent.find('.bcw-tab').removeClass('active');
+            popupContent
+                .find(`.bcw-tab[data-tab="${normalizedTab}"]`)
+                .addClass('active');
+            popupContent.find('.bcw-panel').removeClass('active').hide();
+            popupContent
+                .find(`.bcw-panel[data-panel="${normalizedTab}"]`)
+                .addClass('active')
+                .show();
+            popupContent
+                .find('#bulk_combine_wizard_next')
+                .closest('.footer')
+                .toggle(normalizedTab === 'wizard');
+            if (normalizedTab === 'ai-tools') {
+                void BulkEditOverlay.renderAIToolsPanel(
+                    popupContent.find('#bulk_ai_tools_panel'),
+                );
+            }
+        };
+
+        popupContent
+            .find('.bcw-tab')
+            .off('click.bcwTabs')
+            .on('click.bcwTabs', function () {
+                switchTab($(this).data('tab'));
+            });
+        switchTab('wizard');
+    };
+
+    /** @type {{timerId:number|null, startedAt:number, current:number, total:number, cancelled:boolean, onCancel:(() => Promise<void>|void)|null}} */
+    static #combineProgressState = {
+        timerId: null,
+        startedAt: 0,
+        current: 0,
+        total: 0,
+        cancelled: false,
+        onCancel: null,
+    };
+
+    /**
+	 * Shows dedicated combine generation progress overlay.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {string} statusText Status text.
+	 * @param {object} [options] Options.
+	 * @param {number} [options.current=0] Current completed count.
+	 * @param {number} [options.total=0] Total count.
+	 * @param {boolean} [options.indeterminate=false] Whether progress is indeterminate.
+	 * @param {() => Promise<void>|void} [options.onCancel] Cancel callback.
+	 */
+    static #showProgressOverlay = (popupContent, statusText, options = {}) => {
+        const overlay = popupContent.find('#bulk_combine_progress_overlay');
+        const state = BulkEditOverlay.#combineProgressState;
+        state.cancelled = false;
+        state.startedAt = Date.now();
+        state.current = options.current ?? 0;
+        state.total = options.total ?? 0;
+        state.onCancel = options.onCancel ?? null;
+        if (state.timerId) {
+            clearInterval(state.timerId);
+        }
+        overlay.css('display', 'flex');
+        overlay.find('.bcw-progress-tokens').empty();
+        overlay
+            .find('.bcw-progress-cancel')
+            .toggle(Boolean(state.onCancel))
+            .off('click.bcwProgress')
+            .on('click.bcwProgress', async () => {
+                if (state.cancelled) {
+                    return;
+                }
+                state.cancelled = true;
+                BulkEditOverlay.#updateProgress(
+                    popupContent,
+                    options.current ?? 0,
+                    options.total ?? 0,
+                    'Cancelling…',
+                );
+                await state.onCancel?.();
+            });
+
+        BulkEditOverlay.#updateProgress(
+            popupContent,
+            options.current ?? 0,
+            options.total ?? 0,
+            statusText,
+            { indeterminate: options.indeterminate ?? false },
+        );
+        state.timerId = window.setInterval(() => {
+            BulkEditOverlay.#updateProgressElapsed(popupContent);
+        }, 1000);
+    };
+
+    /**
+	 * Updates generation progress overlay.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {number} current Current completed count.
+	 * @param {number} total Total count.
+	 * @param {string} statusText Status text.
+	 * @param {object} [options] Options.
+	 * @param {boolean} [options.indeterminate=false] Whether progress is indeterminate.
+	 * @param {string} [options.tokens] Tokens/text to append to progress trace.
+	 */
+    static #updateProgress = (
+        popupContent,
+        current,
+        total,
+        statusText,
+        options = {},
+    ) => {
+        const overlay = popupContent.find('#bulk_combine_progress_overlay');
+        if (!overlay.length) {
+            return;
+        }
+        const normalizedCurrent = Math.max(0, Number(current) || 0);
+        const normalizedTotal = Math.max(0, Number(total) || 0);
+        BulkEditOverlay.#combineProgressState.current = normalizedCurrent;
+        BulkEditOverlay.#combineProgressState.total = normalizedTotal;
+        const fill = overlay.find('.bcw-progress-fill');
+        overlay.find('.bcw-progress-status').text(statusText || 'Working…');
+        overlay
+            .find('.bcw-progress-count')
+            .text(`${normalizedCurrent}/${normalizedTotal || '?'} characters`);
+        fill.toggleClass('indeterminate', Boolean(options.indeterminate));
+        if (!options.indeterminate && normalizedTotal > 0) {
+            const percentage = Math.min(
+                100,
+                Math.round((normalizedCurrent / normalizedTotal) * 100),
+            );
+            fill.css('width', `${percentage}%`);
+        } else if (!options.indeterminate) {
+            fill.css('width', '0%');
+        }
+        if (options.tokens) {
+            const tokens = overlay.find('.bcw-progress-tokens');
+            const nextText = `${tokens.text()}${options.tokens}`.slice(-500);
+            tokens.text(nextText);
+        }
+        BulkEditOverlay.#updateProgressElapsed(
+            popupContent,
+            normalizedCurrent,
+            normalizedTotal,
+        );
+    };
+
+    /**
+	 * Updates progress elapsed/ETA text.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 * @param {number} [current] Current completed count.
+	 * @param {number} [total] Total count.
+	 */
+    static #updateProgressElapsed = (
+        popupContent,
+        current = null,
+        total = null,
+    ) => {
+        const state = BulkEditOverlay.#combineProgressState;
+        if (!state.startedAt) {
+            return;
+        }
+        const currentCount = current ?? state.current;
+        const totalCount = total ?? state.total;
+        const elapsedSeconds = Math.max(
+            1,
+            Math.round((Date.now() - state.startedAt) / 1000),
+        );
+        let eta = '--';
+        if (currentCount > 0 && totalCount > currentCount) {
+            eta = `${Math.max(1, Math.round((elapsedSeconds / currentCount) * (totalCount - currentCount)))}s`;
+        }
+        popupContent
+            .find('.bcw-progress-eta')
+            .text(`Elapsed: ${elapsedSeconds}s • ETA: ${eta}`);
+    };
+
+    /**
+	 * Hides dedicated combine generation progress overlay.
+	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
+	 */
+    static #hideProgressOverlay = (popupContent) => {
+        const state = BulkEditOverlay.#combineProgressState;
+        if (state.timerId) {
+            clearInterval(state.timerId);
+            state.timerId = null;
+        }
+        state.onCancel = null;
+        popupContent.find('#bulk_combine_progress_overlay').hide();
+    };
+
+    static #sanitizeAIToolSlug = (value) =>
+        String(value || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+|_+$/g, '') || 'entry';
+
+    static #buildLoreToolName = (prefix, lorebookName, entryName) =>
+        `${prefix}_${BulkEditOverlay.#sanitizeAIToolSlug(`${lorebookName}_${entryName}`)}`;
+
+    static #renderAIToolPill = (name, description, type = 'registry') =>
+        $('<button type="button"></button>')
+            .addClass(`menu_button ai-tool-pill ${type}`)
+            .attr('title', description)
+            .text(name)
+            .on('click', () => toastr.info(description, name));
+
+    /**
+	 * Renders the AI tools tab content when the panel is available.
+	 * @param {JQuery<HTMLElement>|HTMLElement|string} [target] Target panel.
+	 */
+    static renderAIToolsPanel = async (target = '#bulk_ai_tools_panel') => {
+        const jqueryTarget = /** @type {any} */ (target);
+        /** @type {JQuery<HTMLElement>} */
+        const panel = jqueryTarget?.jquery ? jqueryTarget : $(jqueryTarget);
+        if (!panel.length) {
+            return;
+        }
+
+        const enabledLorebooks = [...worldInfoCache.entries()].filter(
+            ([, data]) => data?.aiManagedEnabled,
+        );
+        panel
+            .empty()
+            .removeClass('bcw-placeholder')
+            .addClass('bulk-ai-tools-panel');
+        panel.append(
+            $('<style></style>').text(`
+                .bulk-ai-tools-panel { display: flex; flex-direction: column; gap: 1em; }
+                .bulk-ai-tools-panel .ai-tools-header, .bulk-ai-tools-panel .ai-tools-settings, .bulk-ai-tools-panel .ai-tools-empty { border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; padding: 12px; }
+                .bulk-ai-tools-panel .ai-lorebook-card { border: 1px solid var(--SmartThemeBorderColor); border-radius: 10px; padding: 12px; background: var(--SmartThemeBlurTintColor); }
+                .bulk-ai-tools-panel .ai-lorebook-title { display: flex; justify-content: space-between; align-items: center; gap: 1em; margin-bottom: 0.75em; }
+                .bulk-ai-tools-panel .ai-tool-mode { opacity: 0.8; font-size: 0.9em; }
+                .bulk-ai-tools-panel .ai-tools-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75em; }
+                .bulk-ai-tools-panel .ai-tool-section { border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor), transparent 25%); border-radius: 8px; padding: 10px; }
+                .bulk-ai-tools-panel .ai-tool-list { display: flex; flex-wrap: wrap; gap: 0.4em; margin-top: 0.5em; }
+                .bulk-ai-tools-panel .ai-tool-pill { cursor: help; font-family: var(--monoFontFamily); font-size: 0.85em; }
+                .bulk-ai-tools-panel .ai-tool-pill.registry { border-left: 3px solid #6aa9ff; }
+                .bulk-ai-tools-panel .ai-tool-pill.content { border-left: 3px solid #8be28b; }
+                .bulk-ai-tools-panel .ai-tool-pill.toggle { border-left: 3px solid #ffcf6a; }
+                .bulk-ai-tools-panel .ai-tool-flow { display: flex; flex-wrap: wrap; gap: 0.35em; align-items: center; margin-top: 0.5em; }
+                .bulk-ai-tools-panel .ai-tool-arrow { opacity: 0.6; }
+                .bulk-ai-tools-panel .ai-entry-count { opacity: 0.8; margin-top: 0.5em; }
+            `),
+        );
+        panel.append(
+            $('<div></div>')
+                .addClass('ai-tools-header')
+                .append($('<h3></h3>').text('AI-Managed Lorebook Tools'))
+                .append(
+                    $('<p></p>').text(
+                        'Registry mode lets the model list and batch-control entries. Direct mode exposes per-entry get_* and set_active_* functions.',
+                    ),
+                )
+                .append(
+                    $('<div></div>')
+                        .attr('id', 'bulk_ai_tools_refresh')
+                        .addClass('menu_button')
+                        .text('Refresh Lorebooks')
+                        .on('click', () => void BulkEditOverlay.renderAIToolsPanel(panel)),
+                ),
+        );
+        panel.append(
+            $('<div></div>')
+                .addClass('ai-tools-settings')
+                .append($('<h4></h4>').text('Global tool families'))
+                .append(
+                    $('<div></div>')
+                        .addClass('ai-tool-list')
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'set_lore_entries',
+                                'Mixed batch: enable and disable multiple entries in one call.',
+                                'toggle',
+                            ),
+                        )
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'get_lore_entries_content',
+                                'Batch content retrieval: returns selected entry content joined together.',
+                                'content',
+                            ),
+                        )
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'get_loaded_lore_entries',
+                                'Shows what is currently loaded into context.',
+                                'registry',
+                            ),
+                        ),
+                ),
+        );
+
+        if (!enabledLorebooks.length) {
+            panel.append(
+                $('<div></div>')
+                    .addClass('ai-tools-empty')
+                    .text(
+                        'No AI-managed lorebooks are enabled. Enable AI management on a lorebook to expose tools here.',
+                    ),
+            );
+            return;
+        }
+
+        for (const [lorebookName, data] of enabledLorebooks) {
+            const entries = Object.values(data.entries || {}).filter(
+                (entry) => entry && String(entry.aiFunctionName || '').trim(),
+            );
+            const directAccess = Boolean(data.aiManagedDirectAccess);
+            const card = $('<div></div>').addClass('ai-lorebook-card');
+            card.append(
+                $('<div></div>')
+                    .addClass('ai-lorebook-title')
+                    .append(
+                        $('<div></div>')
+                            .append($('<h4></h4>').text(lorebookName || '(global lorebook)'))
+                            .append(
+                                $('<div></div>')
+                                    .addClass('ai-tool-mode')
+                                    .text(
+                                        directAccess
+                                            ? 'Direct mode: per-entry tools'
+                                            : 'Registry mode: list, batch, load, unload',
+                                    ),
+                            ),
+                    )
+                    .append(
+                        $('<label></label>')
+                            .addClass('checkbox_label')
+                            .append(
+                                $('<input type="checkbox" />')
+                                    .prop('checked', directAccess)
+                                    .on('change', async function () {
+                                        data.aiManagedDirectAccess = $(this).prop('checked');
+                                        await saveWorldInfo(lorebookName, data);
+                                        void BulkEditOverlay.renderAIToolsPanel(panel);
+                                    }),
+                            )
+                            .append($('<span></span>').text('Direct access')),
+                    ),
+            );
+
+            const registryTools = $('<div></div>')
+                .addClass('ai-tool-section')
+                .append($('<strong></strong>').text('Registry mode flow'))
+                .append(
+                    $('<div></div>')
+                        .addClass('ai-tool-flow')
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'list_lore_entries',
+                                'List available AI-managed lore entries.',
+                                'registry',
+                            ),
+                        )
+                        .append($('<span></span>').addClass('ai-tool-arrow').text('→'))
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'load_lore_entry(ies)',
+                                'Load one or many entries into next-response context.',
+                                'toggle',
+                            ),
+                        )
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'unload_lore_entry(ies)',
+                                'Unload one or many entries from context.',
+                                'toggle',
+                            ),
+                        )
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'set_lore_entries',
+                                'Mixed batch enable/disable control.',
+                                'toggle',
+                            ),
+                        )
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'get_lore_entries_content',
+                                'Get selected full entry contents.',
+                                'content',
+                            ),
+                        )
+                        .append(
+                            BulkEditOverlay.#renderAIToolPill(
+                                'get_loaded_lore_entries',
+                                'Inspect current context loads.',
+                                'registry',
+                            ),
+                        ),
+                );
+            const directTools = $('<div></div>')
+                .addClass('ai-tool-section')
+                .append($('<strong></strong>').text('Direct mode tools'))
+                .append(
+                    $('<div></div>')
+                        .addClass('ai-entry-count')
+                        .text(
+                            `${entries.length} AI-enabled entries → ${entries.length * 2} generated tools`,
+                        ),
+                );
+            const directList = $('<div></div>').addClass('ai-tool-list');
+            entries.slice(0, 12).forEach((entry) => {
+                const entryName = String(
+                    entry.aiFunctionName || entry.comment || entry.uid,
+                );
+                directList
+                    .append(
+                        BulkEditOverlay.#renderAIToolPill(
+                            BulkEditOverlay.#buildLoreToolName(
+                                'get',
+                                lorebookName,
+                                entryName,
+                            ),
+                            'Returns this lorebook entry content directly.',
+                            'content',
+                        ),
+                    )
+                    .append(
+                        BulkEditOverlay.#renderAIToolPill(
+                            BulkEditOverlay.#buildLoreToolName(
+                                'set_active',
+                                lorebookName,
+                                entryName,
+                            ),
+                            'Toggles this lorebook entry in next-response context.',
+                            'toggle',
+                        ),
+                    );
+            });
+            if (entries.length > 12) {
+                directList.append(
+                    $('<span></span>')
+                        .addClass('ai-entry-count')
+                        .text(`+${entries.length - 12} more entries`),
+                );
+            }
+            directTools.append(directList);
+            card.append(
+                $('<div></div>')
+                    .addClass('ai-tools-grid')
+                    .append(registryTools, directTools),
+            );
+            panel.append(card);
+        }
+    };
+
+    /**
 	 * Runs Stage 1 generation for wizard without client-side character creation.
 	 * @param {JQuery<HTMLElement>} popupContent Popup content root.
 	 * @param {object} wizardState Wizard state.
@@ -2837,46 +3347,72 @@ class BulkEditOverlay {
 			BulkEditOverlay.#getWizardSourceCharacters(wizardState);
 
         if (!BulkEditOverlay.#canUseServerGroupCardJob()) {
-            const quiet_prompt = buildGroupCardCombineQuietPrompt(
-                config.prompt,
-                selectedCharacters,
-                config.fields,
+            BulkEditOverlay.#showProgressOverlay(
+                popupContent,
+                'Connecting to API...',
+                {
+                    total: selectedCharacters.length,
+                    indeterminate: true,
+                },
             );
-            const generatedDescription = String(
-                (await generateQuietPrompt({
-                    quietPrompt: quiet_prompt,
-                    quietToLoud: true,
-                    skipWIAN: true,
-                })) ?? '',
-            );
-            const validatedDescription = validateGeneratedGroupCardDescription(
-                generatedDescription,
-                selectedCharacters.length,
-            );
-            const blocks = extractGeneratedCharacterBlocks(
-                validatedDescription,
-                config.inferredSchema,
-            );
-            wizardState.characterOutputs = blocks.map((block, index) => {
-                const extractedName = extractCharacterNameFromBlock(
-                    block,
+            try {
+                const quiet_prompt = buildGroupCardCombineQuietPrompt(
+                    config.prompt,
+                    selectedCharacters,
+                    config.fields,
+                );
+                BulkEditOverlay.#updateProgress(
+                    popupContent,
+                    0,
+                    selectedCharacters.length,
+                    'Generating XML from selected characters...',
+                    { indeterminate: true },
+                );
+                const generatedDescription = String(
+                    (await generateQuietPrompt({
+                        quietPrompt: quiet_prompt,
+                        quietToLoud: true,
+                        skipWIAN: true,
+                    })) ?? '',
+                );
+                BulkEditOverlay.#updateProgress(
+                    popupContent,
+                    selectedCharacters.length,
+                    selectedCharacters.length,
+                    'Parsing generated XML...',
+                    { tokens: generatedDescription.slice(-500) },
+                );
+                const validatedDescription = validateGeneratedGroupCardDescription(
+                    generatedDescription,
+                    selectedCharacters.length,
+                );
+                const blocks = extractGeneratedCharacterBlocks(
+                    validatedDescription,
                     config.inferredSchema,
                 );
-                return BulkEditOverlay.#normalizeWizardCharacterOutput({
-                    characterIndex: index,
-                    characterName:
-						extractedName ||
-						getCoreCharacterField(selectedCharacters[index] ?? {}, 'name') ||
-						`Character ${index + 1}`,
-                    xmlOutput: block.raw,
-                    parseStatus: 'ok',
+                wizardState.characterOutputs = blocks.map((block, index) => {
+                    const extractedName = extractCharacterNameFromBlock(
+                        block,
+                        config.inferredSchema,
+                    );
+                    return BulkEditOverlay.#normalizeWizardCharacterOutput({
+                        characterIndex: index,
+                        characterName:
+							extractedName ||
+							getCoreCharacterField(selectedCharacters[index] ?? {}, 'name') ||
+							`Character ${index + 1}`,
+                        xmlOutput: block.raw,
+                        parseStatus: 'ok',
+                    });
                 });
-            });
-            BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
-            return {
-                description: validatedDescription,
-                characterOutputs: wizardState.characterOutputs,
-            };
+                BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                return {
+                    description: validatedDescription,
+                    characterOutputs: wizardState.characterOutputs,
+                };
+            } finally {
+                BulkEditOverlay.#hideProgressOverlay(popupContent);
+            }
         }
 
         const jobConfig = BulkEditOverlay.#buildGroupCardJobConfig(
@@ -2898,9 +3434,29 @@ class BulkEditOverlay {
             config.minifySingleLine,
             config.maxCols,
         );
+        /** @type {EventSource|null} */
         let jobEventSource = null;
         let jobId = '';
         let cancelRequested = false;
+        /** @type {((reason?: unknown) => void)|null} */
+        let rejectRunningJob = null;
+        BulkEditOverlay.#showProgressOverlay(
+            popupContent,
+            'Starting server-side generation...',
+            {
+                total: selectedCharacters.length,
+                indeterminate: true,
+                onCancel: async () => {
+                    cancelRequested = true;
+                    jobEventSource?.close();
+                    if (jobId) {
+                        await BulkEditOverlay.#cancelGroupCardJob(jobId);
+                        BulkEditOverlay.#removeGroupCardJob(jobId);
+                    }
+                    rejectRunningJob?.(new Error('Group card generation cancelled.'));
+                },
+            },
+        );
         const loaderHandle = loader.show({
             slug: 'combine-group-card-wizard',
             title: t`Combine into Group Card`,
@@ -2910,12 +3466,18 @@ class BulkEditOverlay {
             stopTooltip: t`Cancel`,
             onStop: async () => {
                 cancelRequested = true;
+                BulkEditOverlay.#updateProgress(
+                    popupContent,
+                    wizardState.characterOutputs.filter(Boolean).length,
+                    selectedCharacters.length,
+                    'Cancelling generation...',
+                );
                 jobEventSource?.close();
                 if (jobId) {
                     await BulkEditOverlay.#cancelGroupCardJob(jobId);
                     BulkEditOverlay.#removeGroupCardJob(jobId);
                 }
-                await loaderHandle.hide();
+                rejectRunningJob?.(new Error('Group card generation cancelled.'));
             },
         });
 
@@ -2929,6 +3491,13 @@ class BulkEditOverlay {
                 loaderHandle.setMessage(
                     t`Server job endpoint unavailable. Using local generation…`,
                 );
+                BulkEditOverlay.#updateProgress(
+                    popupContent,
+                    0,
+                    selectedCharacters.length,
+                    'Server job unavailable. Generating locally...',
+                    { indeterminate: true },
+                );
                 const quiet_prompt = buildGroupCardCombineQuietPrompt(
                     config.prompt,
                     selectedCharacters,
@@ -2940,6 +3509,13 @@ class BulkEditOverlay {
                         quietToLoud: true,
                         skipWIAN: true,
                     })) ?? '',
+                );
+                BulkEditOverlay.#updateProgress(
+                    popupContent,
+                    selectedCharacters.length,
+                    selectedCharacters.length,
+                    'Parsing generated XML...',
+                    { tokens: generatedDescription.slice(-500) },
                 );
                 const validatedDescription = validateGeneratedGroupCardDescription(
                     generatedDescription,
@@ -2976,10 +3552,15 @@ class BulkEditOverlay {
             const jobData = await jobResponse.json();
             jobId = String(jobData.jobId ?? jobData.id ?? '');
             if (!jobId) throw new Error('Server did not return a group card job ID.');
+            if (cancelRequested) {
+                await BulkEditOverlay.#cancelGroupCardJob(jobId);
+                throw new Error('Group card generation cancelled.');
+            }
             sessionStorage.setItem(GROUP_CARD_JOB_SESSION_KEY, jobId);
 
             const SSE_TIMEOUT_MS = 10 * 60 * 1000;
             const result = await new Promise((resolve, reject) => {
+                rejectRunningJob = reject;
                 let settled = false;
                 const parseEvent = (event) => JSON.parse(event.data || '{}');
                 const timeoutId = setTimeout(() => {
@@ -2987,6 +3568,7 @@ class BulkEditOverlay {
                         return;
                     }
                     settled = true;
+                    rejectRunningJob = null;
                     jobEventSource?.close();
                     sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
                     BulkEditOverlay.#removeGroupCardJob(jobId);
@@ -2998,6 +3580,7 @@ class BulkEditOverlay {
                         return;
                     }
                     settled = true;
+                    rejectRunningJob = null;
                     clearTimeout(timeoutId);
                     sessionStorage.removeItem(GROUP_CARD_JOB_SESSION_KEY);
                     BulkEditOverlay.#removeGroupCardJob(jobId);
@@ -3019,8 +3602,15 @@ class BulkEditOverlay {
                 BulkEditOverlay.#renderGroupCardJobIndicator();
                 jobEventSource.addEventListener('character_started', (event) => {
                     const data = parseEvent(event);
+                    const index = Number(data.index ?? 0);
                     loaderHandle.setMessage(
-                        `Processing character ${Number(data.index ?? 0) + 1}/${selectedCharacters.length}: ${data.name ?? ''}…`,
+                        `Processing character ${index + 1}/${selectedCharacters.length}: ${data.name ?? ''}…`,
+                    );
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        wizardState.characterOutputs.filter(Boolean).length,
+                        selectedCharacters.length,
+                        `Generating character ${index + 1}/${selectedCharacters.length}: ${data.name ?? ''}...`,
                     );
                 });
                 jobEventSource.addEventListener('character_completed', (event) => {
@@ -3046,6 +3636,13 @@ class BulkEditOverlay {
                     loaderHandle.setMessage(
                         `Completed character ${completedCount}/${selectedCharacters.length}…`,
                     );
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        completedCount,
+                        selectedCharacters.length,
+                        `Completed character ${completedCount}/${selectedCharacters.length}.`,
+                        { tokens: String(data.output ?? '').slice(-500) },
+                    );
                 });
                 jobEventSource.addEventListener('character_failed', (event) => {
                     const data = parseEvent(event);
@@ -3067,25 +3664,61 @@ class BulkEditOverlay {
 						    error: String(data.error ?? 'Generation failed.'),
 						});
                     BulkEditOverlay.#renderStage2Content(popupContent, wizardState);
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        wizardState.characterOutputs.filter(Boolean).length,
+                        selectedCharacters.length,
+                        `Character ${index + 1} failed: ${data.error ?? 'Generation failed.'}`,
+                    );
                 });
                 jobEventSource.addEventListener('merge_completed', () => {
                     loaderHandle.setMessage(
                         t`Characters generated. Running post-processing…`,
                     );
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        selectedCharacters.length,
+                        selectedCharacters.length,
+                        'Characters generated. Running post-processing...',
+                    );
                 });
                 jobEventSource.addEventListener('post_merge_started', () => {
                     loaderHandle.setMessage(t`Post-processing generated characters…`);
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        selectedCharacters.length,
+                        selectedCharacters.length,
+                        'Post-processing generated characters...',
+                    );
                 });
                 jobEventSource.addEventListener('post_merge_completed', () => {
                     loaderHandle.setMessage(
                         t`Post-processing complete. Creating assets…`,
                     );
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        selectedCharacters.length,
+                        selectedCharacters.length,
+                        'Post-processing complete. Creating assets...',
+                    );
                 });
                 jobEventSource.addEventListener('avatar_started', () => {
                     loaderHandle.setMessage(t`Generating group card avatar…`);
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        selectedCharacters.length,
+                        selectedCharacters.length,
+                        'Generating group card avatar...',
+                    );
                 });
                 jobEventSource.addEventListener('job_completed', (event) => {
                     const data = parseEvent(event);
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        selectedCharacters.length,
+                        selectedCharacters.length,
+                        'Generation complete.',
+                    );
                     settle(() => resolve(data));
                 });
                 jobEventSource.addEventListener('job_failed', (event) => {
@@ -3104,6 +3737,12 @@ class BulkEditOverlay {
                     }
                     loaderHandle.setMessage(
                         t`Connection lost. Reconnecting to server job…`,
+                    );
+                    BulkEditOverlay.#updateProgress(
+                        popupContent,
+                        wizardState.characterOutputs.filter(Boolean).length,
+                        selectedCharacters.length,
+                        'Connection lost. Reconnecting to server job...',
                     );
                 };
             });
@@ -3162,7 +3801,10 @@ class BulkEditOverlay {
             if (cancelRequested) throw new Error('Group card generation cancelled.');
             throw error;
         } finally {
-            jobEventSource?.close();
+            if (jobEventSource) {
+                jobEventSource.close();
+            }
+            BulkEditOverlay.#hideProgressOverlay(popupContent);
             await loaderHandle.hide();
         }
     };
@@ -3239,92 +3881,311 @@ Respond with this exact JSON structure:
 	 * @returns {Promise<object|null>} Confirmed schema or null when skipped.
 	 */
     static #confirmXmlSchema = async (schema) => {
+        const values = {
+            outerTag: schema.outerTag ?? 'character',
+            nameSource: schema.nameSource ?? 'child',
+            nameAttribute: schema.nameAttribute ?? 'name',
+            nameChildTag: schema.nameChildTag ?? 'name',
+            combinedTag: schema.combinedTag ?? 'characters',
+            combinedChildTag: schema.combinedChildTag ?? 'summary',
+            combinedNameSource: schema.combinedNameSource ?? 'attribute',
+            combinedNameAttribute: schema.combinedNameAttribute ?? 'name',
+            combinedNameChildTag: schema.combinedNameChildTag ?? 'name',
+        };
+        const fieldMap = {
+            outerTag: 'schema_outer_tag',
+            nameSource: 'schema_name_source',
+            nameAttribute: 'schema_name_attribute',
+            nameChildTag: 'schema_name_child_tag',
+            combinedTag: 'schema_combined_tag',
+            combinedChildTag: 'schema_combined_child_tag',
+            combinedNameSource: 'schema_combined_name_source',
+            combinedNameAttribute: 'schema_combined_name_attr',
+            combinedNameChildTag: 'schema_combined_name_child_tag',
+        };
         const schemaContent = $('<div></div>').addClass('xml-schema-confirm');
+        schemaContent.append(
+            $('<style></style>').text(`
+                .xml-schema-confirm { max-width: 920px; }
+                .xml-schema-confirm .schema-intro { margin-bottom: 1em; opacity: 0.85; }
+                .schema-tree-editor { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(280px, 0.9fr); gap: 1em; align-items: start; }
+                .schema-tree, .schema-preview { border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; padding: 12px; background: var(--SmartThemeBlurTintColor); }
+                .schema-tree h4, .schema-preview h4 { margin: 0 0 0.75em 0; }
+                .schema-node { margin: 0.35em 0 0.35em 1em; padding-left: 0.85em; border-left: 2px solid color-mix(in srgb, var(--SmartThemeQuoteColor), transparent 35%); }
+                .schema-node.root { margin-left: 0; }
+                .schema-tag { display: inline-flex; gap: 0.35em; align-items: center; padding: 0.2em 0.45em; border-radius: 6px; background: color-mix(in srgb, var(--SmartThemeQuoteColor), transparent 75%); cursor: pointer; font-family: var(--monoFontFamily); }
+                .schema-tag:hover { background: color-mix(in srgb, var(--SmartThemeQuoteColor), transparent 55%); }
+                .schema-value, .schema-content { opacity: 0.75; margin-left: 0.5em; }
+                .schema-inline-input { width: 12em; }
+                .schema-source-toggle { margin: 0.5em 0 0.25em 0; display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
+                .schema-source-toggle label { opacity: 0.8; }
+                .schema-preview-xml { white-space: pre-wrap; max-height: 420px; overflow: auto; }
+                .schema-hidden-fields { display: none; }
+                @media (max-width: 720px) { .schema-tree-editor { grid-template-columns: 1fr; } }
+            `),
+        );
         schemaContent.append($('<h3></h3>').text('Confirm XML Output Schema'));
         schemaContent.append(
-            $('<p></p>').text(
-                'The following XML output structure was inferred from your prompt. Please verify and adjust if needed.',
-            ),
+            $('<p></p>')
+                .addClass('schema-intro')
+                .text(
+                    'Review the inferred XML structure visually. Click any tag pill to rename it; use the toggles to choose whether character names live in child tags or attributes.',
+                ),
         );
-        const addTextField = (id, label, value) => {
-            schemaContent.append(
-                $('<div></div>')
-                    .addClass('schema-field')
-                    .append($('<label></label>').text(label))
-                    .append($('<input type="text" />').attr('id', id).val(value)),
+
+        const hiddenFields = $('<div></div>').addClass('schema-hidden-fields');
+        const setField = (field, value) => {
+            values[field] = String(value ?? '').trim();
+            hiddenFields.find(`#${fieldMap[field]}`).val(values[field]);
+        };
+        Object.entries(fieldMap).forEach(([field, id]) => {
+            const isSelect = field === 'nameSource' || field === 'combinedNameSource';
+            const element = isSelect
+                ? $('<select></select>').attr('id', id)
+                : $('<input type="text" />').attr('id', id);
+            if (isSelect) {
+                const options =
+					field === 'nameSource'
+					    ? [
+					        { value: 'child', label: 'Child tag' },
+					        { value: 'attribute', label: 'Attribute on outer tag' },
+					    ]
+					    : [
+					        { value: 'attribute', label: 'Attribute' },
+					        { value: 'child', label: 'Child tag' },
+					    ];
+                options.forEach((option) => {
+                    element.append(
+                        $('<option></option>')
+                            .attr('value', option.value)
+                            .text(option.label),
+                    );
+                });
+            }
+            element.val(values[field]);
+            hiddenFields.append(element);
+        });
+
+        const preview = $('<pre></pre>').addClass('schema-preview-xml');
+        const renderPreview = () => {
+            const combinedName =
+				values.combinedNameSource === 'attribute' ? ' name="Alex"' : '';
+            const combinedNameChild =
+				values.combinedNameSource === 'child'
+				    ? `\n    <${values.combinedNameChildTag}>Alex</${values.combinedNameChildTag}>`
+				    : '';
+            const characterName =
+				values.nameSource === 'attribute' ? ' name="Alex"' : '';
+            const characterNameChild =
+				values.nameSource === 'child'
+				    ? `\n    <${values.nameChildTag}>Alex</${values.nameChildTag}>`
+				    : '';
+            preview.text(
+                `<${values.combinedTag}>\n` +
+					`  <${values.combinedChildTag}${combinedName}>${combinedNameChild}\n` +
+					'    ...summary content...\n' +
+					`  </${values.combinedChildTag}>\n` +
+					`  <${values.outerTag}${characterName}>${characterNameChild}\n` +
+					'    ...character content...\n' +
+					`  </${values.outerTag}>\n` +
+					`</${values.combinedTag}>`,
             );
         };
-        const addSelectField = (id, label, values, selected) => {
-            const select = $('<select></select>').attr('id', id);
-            values.forEach((value) => {
-                select.append(
-                    $('<option></option>')
-                        .attr('value', value.value)
-                        .prop('selected', value.value === selected)
-                        .text(value.label),
-                );
+        const updateTagLabels = () => {
+            schemaContent
+                .find('[data-schema-field="combinedTag"] .schema-tag')
+                .first()
+                .text(`<${values.combinedTag}>`);
+            schemaContent
+                .find('[data-schema-field="combinedChildTag"] .schema-tag')
+                .first()
+                .text(`<${values.combinedChildTag}>`);
+            schemaContent
+                .find('[data-schema-field="outerTag"] .schema-tag')
+                .first()
+                .text(`<${values.outerTag}>`);
+            schemaContent
+                .find('[data-schema-field="nameChildTag"] .schema-tag')
+                .text(`<${values.nameChildTag}>`);
+            schemaContent
+                .find('[data-schema-field="combinedNameChildTag"] .schema-tag')
+                .text(`<${values.combinedNameChildTag}>`);
+            schemaContent
+                .find('.schema-character-name-node')
+                .toggle(values.nameSource === 'child');
+            schemaContent
+                .find('.schema-combined-name-node')
+                .toggle(values.combinedNameSource === 'child');
+            schemaContent
+                .find('.schema-character-attribute')
+                .toggle(values.nameSource === 'attribute')
+                .text(`@${values.nameAttribute}`);
+            schemaContent
+                .find('.schema-combined-attribute')
+                .toggle(values.combinedNameSource === 'attribute')
+                .text(`@${values.combinedNameAttribute}`);
+            schemaContent.find('#schema_name_source').val(values.nameSource);
+            schemaContent
+                .find('#schema_combined_name_source')
+                .val(values.combinedNameSource);
+            renderPreview();
+        };
+        const beginInlineEdit = (target) => {
+            const tag = $(target);
+            const node = tag.closest('.schema-node');
+            const field = String(node.data('schemaField') ?? '');
+            if (!field || tag.find('input').length) {
+                return;
+            }
+            const input = $('<input type="text" />')
+                .addClass('text_pole schema-inline-input')
+                .val(values[field]);
+            tag.empty().append(input);
+            const inputElement = input.trigger('focus')[0];
+            if (inputElement && typeof inputElement.select === 'function') {
+                inputElement.select();
+            }
+            const commit = () => {
+                const next = String(input.val() || values[field]).trim();
+                setField(field, next || values[field]);
+                updateTagLabels();
+            };
+            input.on('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    commit();
+                }
+                if (event.key === 'Escape') {
+                    updateTagLabels();
+                }
             });
-            schemaContent.append(
-                $('<div></div>')
-                    .addClass('schema-field')
-                    .append($('<label></label>').text(label))
-                    .append(select),
+            input.on('blur', commit);
+        };
+        const makeNode = (field, children, options = {}) => {
+            const node = $('<div></div>')
+                .addClass('schema-node')
+                .attr('data-schema-field', field)
+                .data('schemaField', field);
+            if (options.root) {
+                node.addClass('root');
+            }
+            if (options.className) {
+                node.addClass(options.className);
+            }
+            node.append(
+                $('<span></span>')
+                    .addClass('schema-tag')
+                    .attr('title', 'Click to rename tag')
+                    .text(`<${values[field]}>`),
             );
+            if (options.badge) {
+                node.append(
+                    $('<span></span>')
+                        .addClass(options.badgeClass ?? '')
+                        .text(options.badge),
+                );
+            }
+            if (children) {
+                node.append(children);
+            }
+            return node;
+        };
+        const addSourceToggle = (parent, field, label, attributeField) => {
+            const row = $('<div></div>').addClass('schema-source-toggle');
+            row.append($('<label></label>').text(label));
+            row.append(
+                $('<select></select>')
+                    .addClass('text_pole')
+                    .val(values[field])
+                    .append($('<option value="child">Child tag</option>'))
+                    .append($('<option value="attribute">Attribute</option>'))
+                    .on('change', function () {
+                        setField(field, String($(this).val() ?? 'child'));
+                        updateTagLabels();
+                    }),
+            );
+            row.append(
+                $('<input type="text" />')
+                    .addClass('text_pole')
+                    .attr('placeholder', 'attribute name')
+                    .val(values[attributeField])
+                    .on('input', function () {
+                        setField(attributeField, String($(this).val() ?? 'name'));
+                        updateTagLabels();
+                    }),
+            );
+            parent.append(row);
         };
 
-        addTextField(
-            'schema_outer_tag',
-            'Per-character outer tag:',
-            schema.outerTag ?? 'character',
+        const tree = $('<div></div>').addClass('schema-tree');
+        tree.append($('<h4></h4>').text('Output Structure'));
+        const combinedNode = makeNode('combinedTag', null, { root: true });
+        addSourceToggle(
+            combinedNode,
+            'combinedNameSource',
+            'Summary name source',
+            'combinedNameAttribute',
         );
-        addSelectField(
-            'schema_name_source',
-            'Character name source:',
-            [
-                { value: 'child', label: 'Child tag' },
-                { value: 'attribute', label: 'Attribute on outer tag' },
-            ],
-            schema.nameSource ?? 'child',
+        combinedNode.append(
+            makeNode(
+                'combinedNameChildTag',
+                $('<span></span>').addClass('schema-value').text('[Character Name]'),
+                { className: 'schema-combined-name-node' },
+            ),
         );
-        addTextField(
-            'schema_name_attribute',
-            'Name attribute:',
-            schema.nameAttribute ?? 'name',
+        combinedNode.append(
+            makeNode(
+                'combinedChildTag',
+                $('<span></span>')
+                    .addClass('schema-content')
+                    .text('...summary content...'),
+                {
+                    badge: '@name',
+                    badgeClass: 'schema-combined-attribute schema-value',
+                },
+            ),
         );
-        addTextField(
-            'schema_name_child_tag',
-            'Name child tag:',
-            schema.nameChildTag ?? 'name',
+        const characterNode = makeNode(
+            'outerTag',
+            $('<span></span>')
+                .addClass('schema-character-attribute schema-value')
+                .text('@name'),
         );
-        addTextField(
-            'schema_combined_tag',
-            'Combined output tag:',
-            schema.combinedTag ?? 'characters',
+        addSourceToggle(
+            characterNode,
+            'nameSource',
+            'Character name source',
+            'nameAttribute',
         );
-        addTextField(
-            'schema_combined_child_tag',
-            'Combined child tag:',
-            schema.combinedChildTag ?? 'summary',
+        characterNode.append(
+            makeNode(
+                'nameChildTag',
+                $('<span></span>').addClass('schema-value').text('[Character Name]'),
+                { className: 'schema-character-name-node' },
+            ),
         );
-        addSelectField(
-            'schema_combined_name_source',
-            'Combined name source:',
-            [
-                { value: 'attribute', label: 'Attribute' },
-                { value: 'child', label: 'Child tag' },
-            ],
-            schema.combinedNameSource ?? 'attribute',
+        characterNode.append(
+            $('<div></div>')
+                .addClass('schema-content')
+                .text('...character content...'),
         );
-        addTextField(
-            'schema_combined_name_attr',
-            'Combined name attribute:',
-            schema.combinedNameAttribute ?? 'name',
+        combinedNode.append(characterNode);
+        tree.append(combinedNode);
+        const previewPane = $('<div></div>')
+            .addClass('schema-preview')
+            .append($('<h4></h4>').text('Live Preview'))
+            .append(preview);
+        schemaContent.append(
+            $('<div></div>')
+                .addClass('schema-tree-editor')
+                .append(tree)
+                .append(previewPane),
         );
-        addTextField(
-            'schema_combined_name_child_tag',
-            'Combined name child tag:',
-            schema.combinedNameChildTag ?? 'name',
-        );
+        schemaContent.append(hiddenFields);
+        schemaContent.on('click', '.schema-tag', function () {
+            beginInlineEdit(this);
+        });
+        updateTagLabels();
 
         let confirmedSchema = null;
         const result = await callGenericPopup(
@@ -3618,6 +4479,12 @@ Respond with this exact JSON structure:
                         .attr('id', 'bulk_combine_regen_failed')
                         .addClass('menu_button')
                         .text('Regen Failed'),
+                )
+                .append(
+                    $('<div></div>')
+                        .attr('id', 'bulk_combine_regen_all')
+                        .addClass('menu_button')
+                        .text('Regen All'),
                 ),
         );
         content.append(
@@ -3706,6 +4573,13 @@ Respond with this exact JSON structure:
                 wizardState,
             );
         });
+        content.find('#bulk_combine_regen_all').on('click', async () => {
+            content.find('.result-card .regen-checkbox').prop('checked', true);
+            await BulkEditOverlay.#regenWizardSelectedOutputs(
+                popupContent,
+                wizardState,
+            );
+        });
     };
 
     /**
@@ -3735,7 +4609,9 @@ Respond with this exact JSON structure:
 				BulkEditOverlay.#getWizardSourceCharacters(wizardState);
             const setRegenButtonsDisabled = (disabled) => {
                 popupContent
-                    .find('#bulk_combine_regen_selected, #bulk_combine_regen_failed')
+                    .find(
+                        '#bulk_combine_regen_selected, #bulk_combine_regen_failed, #bulk_combine_regen_all',
+                    )
                     .toggleClass('disabled', disabled)
                     .css('pointer-events', disabled ? 'none' : '')
                     .attr('aria-disabled', String(disabled));
@@ -3974,7 +4850,9 @@ Respond with this exact JSON structure:
         } finally {
             BulkEditOverlay.#setCombineWizardNextDisabled(popupContent, false);
             popupContent
-                .find('#bulk_combine_regen_selected, #bulk_combine_regen_failed')
+                .find(
+                    '#bulk_combine_regen_selected, #bulk_combine_regen_failed, #bulk_combine_regen_all',
+                )
                 .removeClass('disabled')
                 .css('pointer-events', '')
                 .attr('aria-disabled', 'false');
@@ -5629,6 +6507,28 @@ Respond with this exact JSON structure:
         };
     };
 
+    /**
+	 * Opens the full regen wizard for an existing combined card.
+	 * @param {number|object} cardData Character id or character data.
+	 */
+    static #runRegenWizardForCard = async (cardData) => {
+        const characterId =
+			typeof cardData === 'number'
+			    ? cardData
+			    : characters.findIndex(
+			        (character) =>
+			            character === cardData || character?.avatar === cardData?.avatar,
+			    );
+        if (!Number.isInteger(characterId) || characterId < 0) {
+            toastr.error(
+                'Could not resolve the selected group card.',
+                'Combine into Group Card',
+            );
+            return;
+        }
+        await BulkEditOverlay.rerunGroupCardWizard(characterId);
+    };
+
     static updateGroupCardWizardEditButton = (characterId) => {
         const wrapper = document.getElementById('group_card_wizard_buttons');
         const editButton = document.getElementById('group_card_wizard_edit_button');
@@ -5645,7 +6545,7 @@ Respond with this exact JSON structure:
         editButton.dataset.characterId = hasMetadata ? String(characterId) : '';
         editButton.onclick = hasMetadata
             ? async () => {
-                await BulkEditOverlay.rerunGroupCardWizard(characterId);
+                await BulkEditOverlay.#runRegenWizardForCard(characterId);
             }
             : null;
 
@@ -6014,6 +6914,7 @@ Respond with this exact JSON structure:
             allowVerticalScrolling: true,
             onOpen: (popup) => {
                 const popupContent = $(popup.dlg);
+                BulkEditOverlay.#initializeCombineWizardTabs(popupContent);
                 const groupNameInput = popupContent.find(
                     '#bulk_combine_group_card_name',
                 );
