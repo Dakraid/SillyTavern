@@ -74,6 +74,22 @@ import { horde_settings } from './horde.js';
 
 const GROUP_CARD_JOB_SESSION_KEY = 'groupCardJobId';
 
+/**
+ * Triggers a browser download for a Blob.
+ * @param {Blob} blob File data to download.
+ * @param {string} filename Download filename.
+ */
+function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+}
+
 /** @type {Map<string, {jobId: string, groupName: string, loaderHandle: import('./action-loader.js').ActionLoaderHandle, source: EventSource|null, startedAt: number, status: string}>} */
 const groupCardJobs = new Map();
 let globalJobEventSource = null;
@@ -1338,6 +1354,26 @@ class CharacterContextMenu {
     };
 
     /**
+	 * Download a character card as PNG.
+	 *
+	 * @param {number} characterId
+	 * @returns {Promise<void>}
+	 */
+    static download = async (characterId) => {
+        const character = CharacterContextMenu.#getCharacter(characterId);
+        const response = await fetch(
+            `/characters/${encodeURIComponent(character.avatar)}`,
+        );
+
+        if (!response.ok) {
+            throw new Error('Failed to download character');
+        }
+
+        const blob = await response.blob();
+        downloadBlob(blob, character.avatar);
+    };
+
+    /**
 	 * Favorite a character
 	 * and highlight it.
 	 *
@@ -1467,6 +1503,10 @@ class CharacterContextMenu {
             {
                 id: 'character_context_menu_duplicate',
                 callback: characterGroupOverlay.handleContextMenuDuplicate,
+            },
+            {
+                id: 'character_context_menu_download',
+                callback: characterGroupOverlay.handleContextMenuDownload,
             },
             {
                 id: 'character_context_menu_persona',
@@ -2550,6 +2590,67 @@ class BulkEditOverlay {
         )
             .then(() => getCharacters())
             .then(() => this.browseState());
+
+    /**
+	 * Download selected character cards.
+	 *
+	 * @returns {Promise<void>}
+	 */
+    handleContextMenuDownload = async () => {
+        const characterIds = this.selectedCharacters;
+
+        if (characterIds.length === 0) {
+            return;
+        }
+
+        const loaderHandle = loader.show({
+            slug: 'bulk-download',
+            title: t`Bulk Download`,
+            message: t`Downloading ${characterIds.length} character(s)…`,
+            toastMode: loader.ToastMode.STATIC,
+        });
+
+        try {
+            if (characterIds.length === 1) {
+                await CharacterContextMenu.download(characterIds[0]);
+                return;
+            }
+
+            if (!('JSZip' in window)) {
+                await import('../lib/jszip.min.js');
+            }
+
+            const ZipConstructor = /** @type {any} */ (window).JSZip;
+            const zip = new ZipConstructor();
+
+            for (const characterId of characterIds) {
+                const character = characters[characterId];
+                const response = await fetch(
+                    `/characters/${encodeURIComponent(character.avatar)}`,
+                );
+
+                if (!response.ok) {
+                    console.warn(`Failed to download: ${character.avatar}`);
+                    continue;
+                }
+
+                const blob = await response.blob();
+                zip.file(character.avatar, blob);
+            }
+
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            const timestamp = new Date()
+                .toISOString()
+                .replace(/[:.]/g, '-')
+                .slice(0, 19);
+            downloadBlob(zipBlob, `characters_${timestamp}.zip`);
+        } catch (error) {
+            console.error('Bulk download failed:', error);
+            toastr.error('Failed to download character(s).');
+        } finally {
+            loaderHandle.hide();
+        }
+    };
 
     /**
 	 * Sequentially handle all character-to-persona conversions.
