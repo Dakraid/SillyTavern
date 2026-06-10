@@ -261,26 +261,52 @@ jest.unstable_mockModule('../public/scripts/prompt-wrappers.js', () => ({
 let openai;
 /** @type {import('../public/scripts/reasoning.js')} */
 let reasoning;
+/** @type {import('../public/script.js')} */
+let script;
 
 beforeAll(async () => {
+    script = await import('../public/script.js');
     openai = await import('../public/scripts/openai.js');
     reasoning = await import('../public/scripts/reasoning.js');
 });
 
 beforeEach(() => {
+    script.chat.length = 0;
     openai.oai_settings.chat_completion_source =
 		openai.chat_completion_sources.OPENROUTER;
     openai.oai_settings.show_thoughts = true;
 });
 
 function makeState() {
-    return { reasoning: '', images: [], signature: '', toolSignatures: {} };
+    return {
+        reasoning: '',
+        images: [],
+        signature: '',
+        reasoningDetails: [],
+        toolSignatures: {},
+        finishReason: null,
+    };
 }
 
 function accumulateReply(chunks) {
     const state = makeState();
     let content = '';
     for (const chunk of chunks) {
+        content += openai.getStreamingReply(chunk, state, {
+            chatCompletionSource: openai.chat_completion_sources.OPENROUTER,
+        });
+    }
+    return { content, state };
+}
+
+function accumulateStreamingLoopState(chunks) {
+    const state = makeState();
+    let content = '';
+    for (const chunk of chunks) {
+        const finishReason = chunk.choices?.[0]?.finish_reason ?? null;
+        if (finishReason) {
+            state.finishReason = finishReason;
+        }
         content += openai.getStreamingReply(chunk, state, {
             chatCompletionSource: openai.chat_completion_sources.OPENROUTER,
         });
@@ -301,6 +327,24 @@ describe('OpenRouter Chat Completion streaming reasoning parsing', () => {
 
         expect(content).toBe('Final answer.');
         expect(state.reasoning).toBe('');
+    });
+
+    test('tracks final stop finishReason in streaming loop state', () => {
+        const { content, state } = accumulateStreamingLoopState(
+            fixtures.streamingContentOnly,
+        );
+
+        expect(content).toBe('Final answer.');
+        expect(state.finishReason).toBe('stop');
+    });
+
+    test('tracks tool_calls finishReason in streaming loop state', () => {
+        const { content, state } = accumulateStreamingLoopState(
+            fixtures.streamingToolCalls,
+        );
+
+        expect(content).toBe('');
+        expect(state.finishReason).toBe('tool_calls');
     });
 
     test('keeps interleaved reasoning and final content separate', () => {
@@ -330,6 +374,25 @@ describe('OpenRouter Chat Completion streaming reasoning parsing', () => {
         expect(state.reasoning).toBe('');
         expect(state.signature).toBe('encrypted-reasoning-signature');
         expect(state.toolSignatures.call_search).toBe('encrypted-tool-signature');
+    });
+
+    test('preserves raw reasoning_details for OpenRouter continuation echo', () => {
+        const { state } = accumulateReply(
+            fixtures.streamingEncryptedReasoningDetails,
+        );
+
+        expect(state.reasoningDetails).toEqual([
+            {
+                type: 'reasoning.encrypted',
+                id: 'reasoning-1',
+                data: 'encrypted-reasoning-signature',
+            },
+            {
+                type: 'reasoning.encrypted',
+                id: 'call_search',
+                data: 'encrypted-tool-signature',
+            },
+        ]);
     });
 
     test('captures reasoning summary details as reasoning text', () => {
@@ -425,5 +488,191 @@ describe('OpenRouter Chat Completion streaming reasoning parsing', () => {
         );
 
         expect(extractedReasoning).toBe('Plain non-streaming reasoning.');
+    });
+
+    test('stores chronological reasoning and tool trace segments without duplicating reasoning', () => {
+        script.chat.push({
+            mes: '',
+            gen_started: new Date().toISOString(),
+            extra: {},
+        });
+
+        const handler = new reasoning.ReasoningHandler();
+        handler.updateDom = jest.fn();
+
+        handler.updateReasoning(0, 'Thinking A');
+        handler.appendProcessingTrace(
+            0,
+            '<div class="tool-call-trace">Tool 1</div>',
+        );
+        handler.updateReasoning(0, 'Thinking B');
+        handler.appendProcessingTrace(
+            0,
+            '<div class="tool-call-trace">Tool 2</div>',
+        );
+        handler.updateReasoning(0, 'Thinking C', { persist: true });
+
+        expect(script.chat[0].extra.processing_segments).toEqual([
+            { type: 'reasoning', content: 'Thinking A' },
+            { type: 'trace', content: '<div class="tool-call-trace">Tool 1</div>' },
+            { type: 'reasoning', content: 'Thinking B' },
+            { type: 'trace', content: '<div class="tool-call-trace">Tool 2</div>' },
+            { type: 'reasoning', content: 'Thinking C' },
+        ]);
+        expect(script.chat[0].extra.reasoning).toBe(
+            'Thinking A\n\nThinking B\n\nThinking C',
+        );
+        expect(script.chat[0].extra.processing_trace).toBe(
+            [
+                '<div class="tool-call-trace">Tool 1</div>',
+                '<div class="tool-call-trace">Tool 2</div>',
+            ].join('\n\n'),
+        );
+    });
+
+    test('getJoinedReasoning joins only reasoning segments and ignores traces', () => {
+        const extra = {
+            processing_segments: [
+                { type: 'reasoning', content: 'Thinking A' },
+                { type: 'trace', content: '<div class="tool-call-trace">Tool 1</div>' },
+                { type: 'reasoning', content: 'Thinking B' },
+                { type: 'trace', content: '<div class="tool-call-trace">Tool 2</div>' },
+            ],
+        };
+
+        /** @type {any} */
+        const ReasoningHandler = reasoning.ReasoningHandler;
+
+        expect(ReasoningHandler.getJoinedReasoning(extra)).toBe(
+            'Thinking A\n\nThinking B',
+        );
+    });
+
+    test('upsertReasoningSegment replaces trailing reasoning and appends after trace', () => {
+        const extra = { processing_segments: [] };
+        /** @type {any} */
+        const ReasoningHandler = reasoning.ReasoningHandler;
+
+        ReasoningHandler.upsertReasoningSegment(extra, 'Thinking A');
+        ReasoningHandler.upsertReasoningSegment(extra, 'Thinking A updated');
+        ReasoningHandler.appendTraceSegment(
+            extra,
+            '<div class="tool-call-trace">Tool</div>',
+        );
+        ReasoningHandler.upsertReasoningSegment(extra, 'Thinking B');
+
+        expect(extra.processing_segments).toEqual([
+            { type: 'reasoning', content: 'Thinking A updated' },
+            { type: 'trace', content: '<div class="tool-call-trace">Tool</div>' },
+            { type: 'reasoning', content: 'Thinking B' },
+        ]);
+    });
+
+    test('appendTraceSegment always appends trace segments', () => {
+        const extra = {
+            processing_segments: [{ type: 'reasoning', content: 'Thinking A' }],
+        };
+        /** @type {any} */
+        const ReasoningHandler = reasoning.ReasoningHandler;
+
+        ReasoningHandler.appendTraceSegment(
+            extra,
+            '<div class="tool-call-trace">Tool 1</div>',
+        );
+        ReasoningHandler.appendTraceSegment(
+            extra,
+            '<div class="tool-call-trace">Tool 2</div>',
+        );
+
+        expect(extra.processing_segments).toEqual([
+            { type: 'reasoning', content: 'Thinking A' },
+            { type: 'trace', content: '<div class="tool-call-trace">Tool 1</div>' },
+            { type: 'trace', content: '<div class="tool-call-trace">Tool 2</div>' },
+        ]);
+    });
+
+    test('replaces segment-backed reasoning with manual reasoning and clears trace state', () => {
+        const extra = {
+            processing_segments: [
+                { type: 'reasoning', content: 'Old A' },
+                { type: 'trace', content: '<div class="tool-call-trace">Tool</div>' },
+                { type: 'reasoning', content: 'Old B' },
+            ],
+            processing_trace: '<div class="tool-call-trace">Tool</div>',
+            isProcessingMessage: true,
+            _movedReasoning: true,
+        };
+
+        /** @type {any} */
+        const ReasoningHandler = reasoning.ReasoningHandler;
+        ReasoningHandler.setReasoningSegments(extra, 'Edited reasoning');
+
+        expect(extra.processing_segments).toEqual([
+            { type: 'reasoning', content: 'Edited reasoning' },
+        ]);
+        expect(extra.processing_trace).toBeUndefined();
+        expect(extra.isProcessingMessage).toBeUndefined();
+        expect(extra._movedReasoning).toBeUndefined();
+
+        ReasoningHandler.setReasoningSegments(extra, '');
+
+        expect(extra.processing_segments).toBeUndefined();
+    });
+
+    test('renders hidden segment-backed reasoning and traces chronologically', () => {
+        script.chat.push({
+            mes: '',
+            gen_started: new Date().toISOString(),
+            extra: {
+                reasoning_duration: 1,
+                processing_segments: [
+                    { type: 'reasoning', content: 'Hidden A' },
+                    { type: 'trace', content: '<div class="tool-call-trace">Tool</div>' },
+                    { type: 'reasoning', content: 'Hidden B' },
+                ],
+            },
+        });
+
+        let renderedContent = null;
+        const reasoningContent = {
+            replaceChildren: jest.fn((value) => {
+                renderedContent = value;
+            }),
+        };
+        const reasoningDetails = { open: true };
+        const reasoningHeader = { textContent: '', title: '' };
+        const addButton = { title: '' };
+        const messageDom = {
+            classList: { toggle: jest.fn() },
+            getAttribute: () => '0',
+            querySelector: jest.fn((selector) => {
+                if (selector === '.mes_reasoning_details') return reasoningDetails;
+                if (selector === '.mes_reasoning') return reasoningContent;
+                if (selector === '.mes_reasoning_header_title') return reasoningHeader;
+                if (selector === '.mes_edit_add_reasoning') return addButton;
+                return null;
+            }),
+        };
+        const originalDocument = global.document;
+        global.document = {
+            querySelector: jest.fn(() => messageDom),
+            createRange: () => ({
+                createContextualFragment: (value) => value,
+            }),
+        };
+
+        try {
+            const handler = new reasoning.ReasoningHandler();
+            handler.initHandleMessage(0);
+        } finally {
+            global.document = originalDocument;
+        }
+
+        expect(renderedContent).toBe(
+            'Hidden A\n\n<div class="tool-call-trace">Tool</div>\n\nHidden B',
+        );
+        expect(renderedContent).not.toBe(
+            'Hidden A\n\nHidden B\n\n<div class="tool-call-trace">Tool</div>',
+        );
     });
 });

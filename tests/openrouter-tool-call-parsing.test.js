@@ -123,7 +123,9 @@ let ToolManager;
 let scrubToolProcessingMetadata;
 
 beforeAll(async () => {
-    ({ ToolManager, scrubToolProcessingMetadata } = await import('../public/scripts/tool-calling.js'));
+    ({ ToolManager, scrubToolProcessingMetadata } = await import(
+        '../public/scripts/tool-calling.js'
+    ));
 });
 
 describe('OpenRouter Chat Completion tool call parsing', () => {
@@ -227,6 +229,102 @@ describe('OpenRouter Chat Completion tool call parsing', () => {
                 reasoning: null,
             },
         ]);
+    });
+
+    test('continues OpenRouter tool loop when finish_reason is tool_calls with visible content', () => {
+        const response = {
+            choices: [
+                {
+                    index: 0,
+                    finish_reason: 'tool_calls',
+                    message: {
+                        content: 'I found something, let me verify it.',
+                        tool_calls: [
+                            {
+                                id: 'call_lookup_visible',
+                                type: 'function',
+                                function: {
+                                    name: 'lookup',
+                                    arguments: '{"id":1}',
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        };
+
+        expect(
+            ToolManager.shouldRecurseForToolCalls(response, {
+                finishReason: 'tool_calls',
+                hasVisibleContent: true,
+                source: 'openrouter',
+            }),
+        ).toBe(true);
+    });
+
+    test('continues OpenRouter tool loop when finish_reason is tool_calls for stealth-only tools', () => {
+        const response = {
+            choices: [
+                {
+                    index: 0,
+                    finish_reason: 'tool_calls',
+                    message: {
+                        content: '',
+                        tool_calls: [
+                            {
+                                id: 'call_stealth_lookup_success',
+                                type: 'function',
+                                function: {
+                                    name: 'stealth_lookup_success',
+                                    arguments: '{"id":2}',
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        };
+
+        expect(
+            ToolManager.shouldRecurseForToolCalls(response, {
+                finishReason: 'tool_calls',
+                hasVisibleContent: false,
+                source: 'openrouter',
+            }),
+        ).toBe(true);
+    });
+
+    test('does not continue OpenRouter tool loop for stop with completed visible content', () => {
+        const response = {
+            choices: [
+                {
+                    index: 0,
+                    finish_reason: 'stop',
+                    message: {
+                        content: 'Final answer.',
+                        tool_calls: [
+                            {
+                                id: 'call_late_lookup',
+                                type: 'function',
+                                function: {
+                                    name: 'lookup',
+                                    arguments: '{"id":1}',
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        };
+
+        expect(
+            ToolManager.shouldRecurseForToolCalls(response, {
+                finishReason: 'stop',
+                hasVisibleContent: true,
+                source: 'openrouter',
+            }),
+        ).toBe(false);
     });
 
     test('records stealth tool success as traceable invocation and preserves stealthCalls', async () => {

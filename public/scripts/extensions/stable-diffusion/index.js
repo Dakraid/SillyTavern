@@ -5375,6 +5375,7 @@ async function sendMessage(prompt, image, generationType, additionalNegativePref
     const template = extension_settings.sd.prompts[generationMode.MESSAGE] || '{{prompt}}';
     const messageText = substituteParamsExtended(template, { char: name, prompt: prompt, prefixedPrompt: prefixedPrompt });
     const mediaType = isVideo(format) ? MEDIA_TYPE.VIDEO : MEDIA_TYPE.IMAGE;
+    const isVisible = getVisibilityByInitiator(initiator);
     /** @type {MediaAttachment} */
     const mediaAttachment = {
         url: image,
@@ -5388,7 +5389,7 @@ async function sendMessage(prompt, image, generationType, additionalNegativePref
     const message = {
         name: name,
         is_user: false,
-        is_system: !getVisibilityByInitiator(initiator),
+        is_system: !isVisible,
         send_date: getMessageTimeStamp(),
         mes: messageText,
         extra: {
@@ -5396,6 +5397,7 @@ async function sendMessage(prompt, image, generationType, additionalNegativePref
             media_display: MEDIA_DISPLAY.GALLERY,
             media_index: 0,
             inline_image: false,
+            ...(!isVisible && initiator === initiators.tool ? { isToolResult: true } : {}),
         },
     };
     context.chat.push(message);
@@ -5897,7 +5899,7 @@ function registerFunctionTool() {
                 user: generationMode.USER,
                 background: generationMode.BACKGROUND,
             };
-            const requestedType = typeof args.type === 'string' ? args.type.toLowerCase() : '';
+            const requestedType = typeof args.type === 'string' ? args.type.trim().toLowerCase() : '';
             const generationType = requestedType ? generationTypeMap[requestedType] : undefined;
             if (requestedType && generationType === undefined) {
                 throw new Error(`Invalid image type: ${args.type}`);

@@ -31,6 +31,8 @@ import {
     extension_prompt_roles,
     deleteMessage,
     settingsReady,
+    getLastVisibleMessageId,
+    getVisibleMessageIds,
 } from '../script.js';
 import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';
 import { groups, resetSelectedGroup } from './group-chats.js';
@@ -3671,13 +3673,31 @@ async function doDelMode(_, text) {
         return '';
     }
 
-    if (count > chat.length) {
-        toastr.warning(`Cannot delete more than ${chat.length} messages.`);
+    const visibleMessageIds = getVisibleMessageIds();
+    const visibleCount = visibleMessageIds.length;
+
+    if (count > visibleCount) {
+        toastr.warning(`Cannot delete more than ${visibleCount} messages.`);
         return '';
     }
 
-    const range = `${chat.length - count}-${chat.length - 1}`;
-    return doMesCut(_, range);
+    const messageIdsToDelete = visibleMessageIds.slice(-count);
+    let cutText = '';
+
+    for (const messageId of messageIdsToDelete.slice().reverse()) {
+        cutText = `${chat[messageId]?.mes || ''}\n${cutText}`;
+        setEditedMessageId(messageId);
+        await deleteMessage(messageId, null, false);
+    }
+
+    await saveChatConditional();
+
+    const lastVisibleMessageId = getLastVisibleMessageId();
+    if (lastVisibleMessageId >= 0) {
+        setEditedMessageId(lastVisibleMessageId);
+    }
+
+    return cutText;
 }
 
 function doResetPanels() {

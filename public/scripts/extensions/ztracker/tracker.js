@@ -488,6 +488,36 @@ function deriveEmbeddedTrackerSpeakerName(settings) {
     return trimmedLabel || 'Tracker';
 }
 
+function setMessageText(message, text) {
+    if (typeof message.content === 'string' || typeof message.mes !== 'string') {
+        message.content = text;
+    }
+    if (typeof message.mes === 'string') message.mes = text;
+}
+
+function normalizeSnapshotText(value) {
+    return String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .trim();
+}
+
+function messageContainsSnapshot(message, content) {
+    const messageText = normalizeSnapshotText(getMessageText(message));
+    const snapshotText = normalizeSnapshotText(content);
+    return (
+        messageText === snapshotText ||
+        (snapshotText.length > 0 && messageText.includes(snapshotText))
+    );
+}
+
+function isEmbeddedSnapshotCandidate(message, header, wrapInCodeFence, lang) {
+    if (message?.extra?.zTrackerEmbeddedSnapshot) return true;
+    if (getMessageExtra(message)?.[EXTENSION_KEY]) return false;
+    const text = getMessageText(message).trimStart();
+    if (text.startsWith(header)) return true;
+    return wrapInCodeFence && text.startsWith(`\`\`\`${lang}\n`);
+}
+
 export function includeZTrackerMessages(
     messages,
     settings = getZTrackerSettings(),
@@ -528,17 +558,43 @@ export function includeZTrackerMessages(
         const content = wrapInCodeFence
             ? `${prefix}\`\`\`${lang}\n${text}\n\`\`\``
             : `${prefix}${text}`;
+        if (messageContainsSnapshot(message, content)) {
+            inserted++;
+            continue;
+        }
+
+        const adjacentMessage = copyMessages[index + 1];
+        if (
+            adjacentMessage &&
+            isEmbeddedSnapshotCandidate(
+                adjacentMessage,
+                header,
+                wrapInCodeFence,
+                lang,
+            )
+        ) {
+            if (!messageContainsSnapshot(adjacentMessage, content)) {
+                setMessageText(adjacentMessage, content);
+            }
+            adjacentMessage.role = role;
+            adjacentMessage.is_user = role === 'user';
+            adjacentMessage.is_system = role === 'system';
+            if (speakerName) adjacentMessage.name = speakerName;
+            inserted++;
+            continue;
+        }
+
         const embeddedTrackerMessage = {
             content,
             role,
             is_user: role === 'user',
             is_system: role === 'system',
+            extra: { zTrackerEmbeddedSnapshot: true },
             ...(speakerName ? { name: speakerName } : {}),
             mes: content,
         };
         if (role === 'assistant' && getMessageText(message).length === 0) {
-            copyMessages[index].content = content;
-            copyMessages[index].mes = content;
+            setMessageText(copyMessages[index], content);
         } else {
             copyMessages.splice(index + 1, 0, embeddedTrackerMessage);
         }

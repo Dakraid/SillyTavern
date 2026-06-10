@@ -317,22 +317,116 @@ describe('AI-managed lorebook tools', () => {
 
         const list = await invoke('list_lore_entries', {});
 
-        expect(list).toEqual([
-            expect.objectContaining({
-                name: 'Book::dragon',
-                lorebook: 'Book',
-                uid: 1,
-                loaded: true,
-                remainingTurns: 3,
-            }),
-            expect.objectContaining({
-                name: 'Book::castle',
-                lorebook: 'Book',
-                uid: 2,
-                loaded: false,
-                remainingTurns: 0,
-            }),
-        ]);
+        expect(list).toEqual({
+            entries: [
+                expect.objectContaining({
+                    name: 'Book::dragon',
+                    lorebook: 'Book',
+                    uid: 1,
+                    loaded: true,
+                    remainingTurns: 3,
+                }),
+                expect.objectContaining({
+                    name: 'Book::castle',
+                    lorebook: 'Book',
+                    uid: 2,
+                    loaded: false,
+                    remainingTurns: 0,
+                }),
+            ],
+            count: 2,
+            reason: expect.any(String),
+        });
+    });
+
+    test('list_lore_entries reports empty registry with reason', async () => {
+        WorldInfo.worldInfoCache.clear();
+
+        const list = await invoke('list_lore_entries', {});
+
+        expect(list).toEqual({
+            entries: [],
+            count: 0,
+            reason: expect.stringContaining('No AI-managed lorebook entries'),
+        });
+    });
+
+    test('get_loaded_lore_entries reports empty state with reason', async () => {
+        const loaded = await invoke('get_loaded_lore_entries', {});
+
+        expect(loaded).toEqual({
+            entries: [],
+            count: 0,
+            reason: expect.stringMatching(/\S/),
+        });
+    });
+
+    test('get_lore_entries_content returns entry metadata and content', async () => {
+        const result = await invoke('get_lore_entries_content', {
+            names: ['Book::dragon'],
+        });
+
+        expect(result).toEqual({
+            entries: [
+                {
+                    name: 'Book::dragon',
+                    lorebook: 'Book',
+                    uid: 1,
+                    comment: 'Dragon Entry',
+                    content: 'Dragon content',
+                },
+            ],
+            count: 1,
+            content: 'Dragon content',
+            errors: [],
+        });
+    });
+
+    test('get_lore_entries_content preserves empty content for found entry', async () => {
+        WorldInfo.worldInfoCache.set('EmptyBook', {
+            aiManagedEnabled: true,
+            aiManagedDirectAccess: false,
+            entries: {
+                1: {
+                    uid: 1,
+                    aiFunctionName: 'empty',
+                    content: '',
+                    comment: 'Empty Entry',
+                },
+            },
+        });
+
+        const result = await invoke('get_lore_entries_content', {
+            names: ['EmptyBook::empty'],
+        });
+
+        expect(result).toEqual({
+            entries: [
+                {
+                    name: 'EmptyBook::empty',
+                    lorebook: 'EmptyBook',
+                    uid: 1,
+                    comment: 'Empty Entry',
+                    content: '',
+                },
+            ],
+            count: 1,
+            content: '',
+            errors: [],
+        });
+    });
+
+    test('get_lore_entries_content reports missing entries', async () => {
+        const result = await invoke('get_lore_entries_content', {
+            names: ['Book::missing'],
+        });
+
+        expect(result).toEqual({
+            entries: [],
+            count: 0,
+            content: '',
+            errors: [{ name: 'Book::missing', error: 'Entry not found' }],
+        });
     });
 
     test('load_lore_entries accepts arrays and reports per-name partial success', async () => {
@@ -377,7 +471,7 @@ describe('AI-managed lorebook tools', () => {
         expect(saveMetadata).toHaveBeenCalledTimes(1);
     });
 
-    test('direct access tool names disambiguate duplicate slugs and built-in collisions', () => {
+    test('direct access tool names disambiguate duplicate slugs and built-in collisions', async () => {
         WorldInfo.worldInfoCache.clear();
         WorldInfo.worldInfoCache.set('Book', {
             aiManagedEnabled: true,
@@ -421,6 +515,16 @@ describe('AI-managed lorebook tools', () => {
                     'set_active_book_same_name__2',
                     'get_loaded_lore_entries__3',
                 ]),
+            );
+
+            const directResult = await invoke('get_book_same_name__2', {});
+            expect(directResult).toEqual(
+                expect.objectContaining({
+                    name: 'Book::same-name',
+                    uid: 2,
+                    content: 'two',
+                    disabled: false,
+                }),
             );
 
             WorldInfo.refreshDirectAccessTools();

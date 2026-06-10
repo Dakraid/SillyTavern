@@ -1293,7 +1293,7 @@ function registerAIManagedLoreTools() {
         name: 'list_lore_entries',
         displayName: 'List Lore Entries',
         description:
-			'List all available lorebook entries that can be loaded. Each entry has a unique name, description, and lorebook source. Use this to discover what knowledge entries are available to load into context.',
+			'List all available lorebook entries that can be loaded. Returns an object with "entries" (array of entry objects), "count", and "reason" fields. Use this to discover what knowledge entries are available to load into context.',
         parameters: Object.freeze({
             type: 'object',
             properties: {
@@ -1306,10 +1306,19 @@ function registerAIManagedLoreTools() {
         action: async (args) => {
             const lorebook = typeof args?.lorebook === 'string' ? args.lorebook : '';
             const state = getAIManagedState();
-            return getAIManagedLoreRegistry(lorebook).map(({ entry, ...item }) => ({
-                ...item,
-                ...getAIManagedLoreStatus(item, state),
-            }));
+            const entries = getAIManagedLoreRegistry(lorebook).map(
+                ({ entry, ...item }) => ({
+                    ...item,
+                    ...getAIManagedLoreStatus(item, state),
+                }),
+            );
+            const reason =
+				entries.length === 0
+				    ? lorebook
+				        ? `No AI-managed entries found in lorebook "${lorebook}"`
+				        : 'No AI-managed lorebook entries are currently available'
+				    : `Found ${entries.length} available lorebook ${entries.length === 1 ? 'entry' : 'entries'}`;
+            return { entries, count: entries.length, reason };
         },
         shouldRegister: () =>
             hasAIManagedLorebooks() && !hasAIManagedDirectAccess(),
@@ -1563,12 +1572,12 @@ function registerAIManagedLoreTools() {
         name: 'get_loaded_lore_entries',
         displayName: 'Get Loaded Lore Entries',
         description:
-			'List all currently loaded lorebook entries, including how many turns remain before auto-unload.',
+			'List all currently loaded lorebook entries, including how many turns remain before auto-unload. Returns an object with "entries" (array), "count", and "reason" fields.',
         parameters: Object.freeze({ type: 'object', properties: {} }),
         action: async () => {
             const state = getAIManagedState();
             const registry = getAIManagedLoreRegistry();
-            return Object.entries(state).map(([key, value]) => {
+            const entries = Object.entries(state).map(([key, value]) => {
                 const [lorebook, uid] = key.split(AI_MANAGED_LORE_SEPARATOR);
                 const item = registry.find(
                     (entry) =>
@@ -1582,6 +1591,14 @@ function registerAIManagedLoreTools() {
                     remainingTurns: value.autoUnload || 0,
                 };
             });
+            return {
+                entries,
+                count: entries.length,
+                reason:
+					entries.length === 0
+					    ? 'No lorebook entries are currently loaded into context'
+					    : `${entries.length} lorebook ${entries.length === 1 ? 'entry' : 'entries'} currently loaded`,
+            };
         },
         shouldRegister: () => hasAIManagedLorebooks(),
         stealth: true,
@@ -1591,7 +1608,7 @@ function registerAIManagedLoreTools() {
         name: 'get_lore_entries_content',
         displayName: 'Get Lorebook Entries Content',
         description:
-			'Retrieve the full content of multiple lorebook entries by their registry names. Returns all content joined by newlines.',
+			'Retrieve the full content of multiple lorebook entries by their registry names. Returns an object with "entries" (array of {name, lorebook, uid, comment, content}), "count", "content" (all entry content joined), and "errors" fields.',
         parameters: Object.freeze({
             type: 'object',
             properties: {
@@ -1620,9 +1637,20 @@ function registerAIManagedLoreTools() {
                     errors.push({ name: trimmed, error: 'Entry not found' });
                     continue;
                 }
-                found.push({ name: trimmed, content: loreEntry.entry?.content || '' });
+                found.push({
+                    name: trimmed,
+                    lorebook: loreEntry.lorebook,
+                    uid: loreEntry.uid,
+                    comment: loreEntry.entry?.comment || '',
+                    content: loreEntry.entry?.content || '',
+                });
             }
-            return { content: found.map((f) => f.content).join('\n'), errors };
+            return {
+                entries: found,
+                count: found.length,
+                content: found.map((f) => f.content).join('\n'),
+                errors,
+            };
         },
     });
 
@@ -1700,13 +1728,17 @@ export function refreshDirectAccessTools() {
                     state = 'vectorized';
                 }
                 return {
+                    name: item.name,
+                    uid: item.uid,
                     content: entry.content || '',
+                    contentLength: (entry.content || '').length,
                     comment: entry.comment || '',
                     lorebook: item.lorebook,
                     position: entry.position,
                     depth: entry.depth,
                     order: entry.order,
                     state: state,
+                    disabled: Boolean(entry.disable),
                 };
             },
             shouldRegister: () => hasAIManagedDirectAccess(),

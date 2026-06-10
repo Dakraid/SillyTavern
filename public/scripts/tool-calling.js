@@ -1,15 +1,4 @@
-import {
-    addOneMessage,
-    chat,
-    event_types,
-    eventSource,
-    getGeneratingApi,
-    getGeneratingModel,
-    main_api,
-    saveChatConditional,
-    system_avatar,
-    systemUserName,
-} from '../script.js';
+import { main_api } from '../script.js';
 import {
     chat_completion_sources,
     custom_prompt_post_processing_types,
@@ -795,7 +784,7 @@ export class ToolManager {
     static canPerformToolCalls(type, settings = null, model = null) {
         settings = settings ?? oai_settings;
         model = model ?? getChatCompletionModel(settings);
-        const noToolCallTypes = ['impersonate', 'quiet', 'continue'];
+        const noToolCallTypes = ['impersonate', 'quiet', 'continue', 'swipe'];
         const isSupported = ToolManager.isToolCallingSupported(settings, model);
         return isSupported && !noToolCallTypes.includes(type);
     }
@@ -910,6 +899,72 @@ export class ToolManager {
     static hasToolCalls(data) {
         const toolCalls = ToolManager.#getToolCallsFromData(data);
         return Array.isArray(toolCalls) && toolCalls.length > 0;
+    }
+
+    /**
+	 * Gets a normalized finish reason from a tool-call response.
+	 * @param {any} data Response data
+	 * @param {object} [metadata] Additional finish metadata
+	 * @param {string?} [metadata.finishReason] Explicit finish reason
+	 * @returns {string?} Normalized finish reason
+	 */
+    static getToolCallFinishReason(data, { finishReason = null } = {}) {
+        return (
+            finishReason ??
+			data?.choices?.find?.((choice) => choice?.index === 0)?.finish_reason ??
+			data?.choices?.[0]?.finish_reason ??
+			data?.finish_reason ??
+			data?.finishReason ??
+			null
+        );
+    }
+
+    /**
+	 * Decides if tool calls require a follow-up model request.
+	 * @param {any} data Response data
+	 * @param {object} [metadata] Tool-flow metadata
+	 * @param {string?} [metadata.finishReason] Explicit finish reason from streaming/non-streaming state
+	 * @param {boolean} [metadata.hasVisibleContent] Whether assistant visible text was emitted with the tool call
+	 * @param {string?} [metadata.source] Chat completion provider/source
+	 * @returns {boolean} Whether to request a follow-up response after tool execution
+	 */
+    static shouldRecurseForToolCalls(
+        data,
+        { finishReason = null, hasVisibleContent = false, source = null } = {},
+    ) {
+        if (!ToolManager.hasToolCalls(data)) {
+            return false;
+        }
+
+        const normalizedFinishReason = ToolManager.getToolCallFinishReason(data, {
+            finishReason,
+        });
+
+        if (normalizedFinishReason === 'tool_calls') {
+            return true;
+        }
+
+        if (
+            normalizedFinishReason === null ||
+			normalizedFinishReason === undefined
+        ) {
+            return true;
+        }
+
+        // Some providers report a terminal stop even when tool calls require tool-result follow-up.
+        // For providers known to use stop with tool calls, continue even if visible content exists;
+        // otherwise visible content plus stop is treated as a completed response to avoid repeats.
+        if (normalizedFinishReason === 'stop') {
+            const followUpOnStopSources = [
+                chat_completion_sources.CLAUDE,
+                chat_completion_sources.COHERE,
+                chat_completion_sources.MAKERSUITE,
+                chat_completion_sources.VERTEXAI,
+            ];
+            return !hasVisibleContent || followUpOnStopSources.includes(source);
+        }
+
+        return false;
     }
 
     /**
@@ -1240,42 +1295,6 @@ export class ToolManager {
         });
 
         return container.outerHTML;
-    }
-
-    /**
-	 * Saves function tool invocations to the last user chat message extra metadata.
-	 * @param {ToolInvocation[]} invocations Successful tool invocations
-	 * @param {object} [options] Options.
-	 * @param {boolean} [options.visible=true] Whether to render a visible tool-call system message.
-	 */
-    static async saveFunctionToolInvocations(
-        invocations,
-        { visible = true } = {},
-    ) {
-        if (!Array.isArray(invocations) || invocations.length === 0) {
-            return;
-        }
-        const message = {
-            name: systemUserName,
-            force_avatar: system_avatar,
-            is_system: true,
-            is_user: false,
-            mes: ToolManager.#formatToolInvocationMessage(invocations),
-            extra: {
-                isSmallSys: true,
-                tool_invocations: invocations,
-                api: getGeneratingApi(),
-                model: getGeneratingModel(),
-                ...(visible ? {} : { isToolResult: true }),
-            },
-        };
-        chat.push(message);
-        await eventSource.emit(event_types.TOOL_CALLS_PERFORMED, invocations);
-        if (visible) {
-            addOneMessage(message);
-        }
-        await eventSource.emit(event_types.TOOL_CALLS_RENDERED, invocations);
-        await saveChatConditional();
     }
 
     /**

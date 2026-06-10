@@ -73,13 +73,13 @@ function formatScalarMinimal(value) {
 
     if (typeof value === 'string') {
         const needsQuote =
-            value.length === 0 ||
-            value.includes('"') ||
-            value.includes('\n') ||
-            value.startsWith(' ') ||
-            value.endsWith(' ') ||
-            value.startsWith('\t') ||
-            value.endsWith('\t');
+			value.length === 0 ||
+			value.includes('"') ||
+			value.includes('\n') ||
+			value.startsWith(' ') ||
+			value.endsWith(' ') ||
+			value.startsWith('\t') ||
+			value.endsWith('\t');
         return needsQuote ? JSON.stringify(value) : value;
     }
 
@@ -101,9 +101,9 @@ function pickArrayItemLabel(item, index) {
         const value = typeof candidate === 'number' ? String(candidate) : candidate;
         if (
             typeof value === 'string' &&
-            value.trim().length > 0 &&
-            !value.includes(']') &&
-            !value.includes('\n')
+			value.trim().length > 0 &&
+			!value.includes(']') &&
+			!value.includes('\n')
         ) {
             return value;
         }
@@ -335,16 +335,30 @@ function resolveFormatSettings(format) {
 
     const settings = { ...DEFAULT_SETTINGS, ...(format || {}) };
     const presets =
-        settings.embedZTrackerSnapshotTransformPresets ||
-        DEFAULT_SETTINGS.embedZTrackerSnapshotTransformPresets;
+		settings.embedZTrackerSnapshotTransformPresets ||
+		DEFAULT_SETTINGS.embedZTrackerSnapshotTransformPresets;
+    const legacyFormat = settings.embedSnapshotFormat;
     const presetKey = settings.embedZTrackerSnapshotTransformPreset || 'default';
     const preset = (presetKey && presets[presetKey]) || presets.default || {};
 
     return {
-        input: preset.input || 'pretty_json',
+        input: legacyFormat || preset.input || 'pretty_json',
         preset,
         presetKey,
     };
+}
+
+/**
+ * Resolve embedded snapshot header from old/new zTracker settings.
+ * @param {object} settings zTracker settings.
+ * @returns {string} Snapshot header.
+ */
+function getEmbeddedSnapshotHeader(settings) {
+    return (
+        settings.embedSnapshotHeader ??
+		settings.embedZTrackerSnapshotHeader ??
+		DEFAULT_EMBED_SNAPSHOT_HEADER
+    );
 }
 
 /**
@@ -390,13 +404,13 @@ export function formatEmbeddedTrackerSnapshot(
 
     return {
         lang:
-            preset.codeFenceLang ||
-            (input === 'toon' ? 'toon' : input === 'pretty_json' ? 'json' : 'text'),
+			preset.codeFenceLang ||
+			(input === 'toon' ? 'toon' : input === 'pretty_json' ? 'json' : 'text'),
         text,
         wrapInCodeFence:
-            typeof preset.wrapInCodeFence === 'boolean'
-                ? preset.wrapInCodeFence
-                : input !== 'top_level_lines',
+			typeof preset.wrapInCodeFence === 'boolean'
+			    ? preset.wrapInCodeFence
+			    : input !== 'top_level_lines',
     };
 }
 
@@ -425,7 +439,7 @@ function resolveEmbeddedTrackerRole(settings, options) {
     const configuredRole = settings.embedZTrackerRole ?? 'user';
     if (
         !options.preserveTextCompletionTurnAlternation ||
-        configuredRole !== 'system'
+		configuredRole !== 'system'
     ) {
         return configuredRole;
     }
@@ -454,8 +468,8 @@ function isAssistantConversationTurn(message) {
 
     if (
         message.role === 'user' ||
-        message.role === 'system' ||
-        message.is_system === true
+		message.role === 'system' ||
+		message.is_system === true
     ) {
         return false;
     }
@@ -489,7 +503,7 @@ function canInlineEmbeddedTracker(message, embedRole) {
 function getMessageText(message) {
     if (
         typeof message.content === 'string' &&
-        message.content.trim().length > 0
+		message.content.trim().length > 0
     ) {
         return message.content;
     }
@@ -499,6 +513,124 @@ function getMessageText(message) {
     }
 
     return '';
+}
+
+/**
+ * Set prompt-facing text fields on a message copy.
+ * @param {object} message Message.
+ * @param {string} text New content.
+ */
+function setMessageText(message, text) {
+    if (typeof message.content === 'string' || typeof message.mes !== 'string') {
+        message.content = text;
+    }
+
+    if (typeof message.mes === 'string') {
+        message.mes = text;
+    }
+}
+
+/**
+ * Escape a string for regex construction.
+ * @param {string} value Input string.
+ * @returns {string} Escaped string.
+ */
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Normalize snapshot text for exact duplicate checks.
+ * @param {string} value Text.
+ * @returns {string} Normalized text.
+ */
+function normalizeSnapshotText(value) {
+    return String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .trim();
+}
+
+/**
+ * Check whether message text already contains a snapshot.
+ * @param {object} message Message.
+ * @param {string} content Snapshot content.
+ * @returns {boolean} True when content already exists.
+ */
+function messageContainsSnapshot(message, content) {
+    const messageText = normalizeSnapshotText(getMessageText(message));
+    const snapshotText = normalizeSnapshotText(content);
+
+    return (
+        messageText === snapshotText ||
+		(snapshotText.length > 0 && messageText.includes(snapshotText))
+    );
+}
+
+/**
+ * Replace an existing embedded tracker block in copied prompt text.
+ * @param {object} message Message.
+ * @param {string} content New snapshot content.
+ * @param {object} settings zTracker settings.
+ * @param {{wrapInCodeFence:boolean, lang?:string}} snapshotParts Snapshot formatting parts.
+ * @returns {boolean} True when replaced or exact snapshot already exists.
+ */
+function upsertSnapshotInMessage(message, content, settings, snapshotParts) {
+    if (messageContainsSnapshot(message, content)) {
+        return true;
+    }
+
+    const messageText = getMessageText(message);
+    const header = getEmbeddedSnapshotHeader(settings);
+    const escapedHeader = escapeRegExp(header.trim());
+    const pattern = snapshotParts.wrapInCodeFence
+        ? new RegExp(
+            '(^|\\n\\n?)' + escapedHeader + '\\s*\\n```[\\w-]*\\n[\\s\\S]*?\\n```',
+        )
+        : new RegExp(`(^|\\n\\n?)${escapedHeader}\\s*\\n[\\s\\S]*$`);
+    const match = messageText.match(pattern);
+
+    if (!match) {
+        return false;
+    }
+
+    const separator = match[1] ?? '';
+    const replacement = `${separator}${content}`;
+    setMessageText(message, messageText.replace(pattern, replacement));
+    return true;
+}
+
+/**
+ * Check whether a message is an embedded zTracker snapshot candidate.
+ * @param {object} message Message.
+ * @param {object} settings zTracker settings.
+ * @param {{wrapInCodeFence:boolean, lang:string}} snapshotParts Snapshot formatting parts.
+ * @returns {boolean} True when message looks like an embedded snapshot.
+ */
+function isEmbeddedSnapshotCandidate(message, settings, snapshotParts) {
+    if (message?.[EMBEDDED_TRACKER_SNAPSHOT_MARKER]) {
+        return true;
+    }
+
+    if (message?.extra?.zTrackerEmbeddedSnapshot) {
+        return true;
+    }
+
+    if (getMessageExtra(message)?.[EXTENSION_KEY]) {
+        return false;
+    }
+
+    const text = getMessageText(message).trimStart();
+    const header = getEmbeddedSnapshotHeader(settings);
+
+    if (text.startsWith(header)) {
+        return true;
+    }
+
+    if (snapshotParts.wrapInCodeFence) {
+        return text.startsWith(`\`\`\`${snapshotParts.lang}\n`);
+    }
+
+    return false;
 }
 
 /**
@@ -513,7 +645,7 @@ function getMessageSpeakerName(message) {
 
     if (
         typeof message.source?.name === 'string' &&
-        message.source.name.trim().length > 0
+		message.source.name.trim().length > 0
     ) {
         return message.source.name.trim();
     }
@@ -555,8 +687,7 @@ function getSingleAssistantReplyLabel(messages) {
  * @returns {string} Speaker label.
  */
 function deriveEmbeddedTrackerSpeakerName(settings) {
-    const header =
-        settings.embedZTrackerSnapshotHeader ?? DEFAULT_EMBED_SNAPSHOT_HEADER;
+    const header = getEmbeddedSnapshotHeader(settings);
     const trimmedLabel = header.replace(/:+\s*$/, '').trim();
     return trimmedLabel || 'Tracker';
 }
@@ -578,13 +709,12 @@ function getMessageExtra(message) {
  * @returns {{text:string, lang:string, wrapInCodeFence:boolean, prefix:string}}
  */
 function buildEmbeddedContentParts(trackerValue, settings, useCharacterName) {
-    const header =
-        settings.embedZTrackerSnapshotHeader ?? DEFAULT_EMBED_SNAPSHOT_HEADER;
+    const header = getEmbeddedSnapshotHeader(settings);
     const snapshot = formatEmbeddedTrackerSnapshot(trackerValue, settings);
     const richSnapshot =
-        typeof snapshot === 'string'
-            ? { lang: 'text', text: snapshot, wrapInCodeFence: false }
-            : snapshot;
+		typeof snapshot === 'string'
+		    ? { lang: 'text', text: snapshot, wrapInCodeFence: false }
+		    : snapshot;
     const prefix = !useCharacterName && header ? `${header}\n` : '';
 
     return {
@@ -610,26 +740,26 @@ export function includeZTrackerMessages(
 ) {
     const copyMessages = safeClone(messages).map((message) => {
         const fallbackName =
-            typeof message?.name === 'string' && message.name.trim()
-                ? undefined
-                : typeof message?.source?.name === 'string' &&
-                        message.source.name.trim()
-                    ? message.source.name
-                    : undefined;
+			typeof message?.name === 'string' && message.name.trim()
+			    ? undefined
+			    : typeof message?.source?.name === 'string' &&
+						message.source.name.trim()
+			        ? message.source.name
+			        : undefined;
 
         return fallbackName ? { ...message, name: fallbackName } : message;
     });
     const embedRole = resolveEmbeddedTrackerRole(settings, options);
     const configuredAssistantReplyLabel =
-        typeof options.assistantReplyLabel === 'string' &&
-        options.assistantReplyLabel.trim().length > 0
-            ? options.assistantReplyLabel.trim()
-            : undefined;
+		typeof options.assistantReplyLabel === 'string' &&
+		options.assistantReplyLabel.trim().length > 0
+		    ? options.assistantReplyLabel.trim()
+		    : undefined;
     const includeCount = Math.max(
         0,
         Number(
             settings.includeLastXZTrackerMessages ??
-                DEFAULT_SETTINGS.includeLastXZTrackerMessages,
+				DEFAULT_SETTINGS.includeLastXZTrackerMessages,
         ) || 0,
     );
 
@@ -642,7 +772,7 @@ export function includeZTrackerMessages(
             const extra = getMessageExtra(message);
             if (
                 !message.zTrackerFound &&
-                extra?.[EXTENSION_KEY]?.[CHAT_MESSAGE_SCHEMA_VALUE_KEY]
+				extra?.[EXTENSION_KEY]?.[CHAT_MESSAGE_SCHEMA_VALUE_KEY]
             ) {
                 Object.defineProperty(message, 'zTrackerFound', {
                     value: true,
@@ -661,7 +791,7 @@ export function includeZTrackerMessages(
         let insertionIndex = foundIndex;
         const extra = getMessageExtra(foundMessage);
         const trackerValue =
-            extra?.[EXTENSION_KEY]?.[CHAT_MESSAGE_SCHEMA_VALUE_KEY] || {};
+			extra?.[EXTENSION_KEY]?.[CHAT_MESSAGE_SCHEMA_VALUE_KEY] || {};
         const useCharacterName = settings.embedZTrackerAsCharacter ?? false;
         const speakerName = useCharacterName
             ? deriveEmbeddedTrackerSpeakerName(settings)
@@ -676,18 +806,18 @@ export function includeZTrackerMessages(
             : `${prefix}${text}`;
         const trailingMessages = copyMessages.slice(foundIndex + 1);
         const hasTrailingAssistantPrefill =
-            embedRole === 'assistant' &&
-            trailingMessages.length === 1 &&
-            isAssistantConversationTurn(trailingMessages[0]) &&
-            getMessageText(trailingMessages[0]).length === 0;
+			embedRole === 'assistant' &&
+			trailingMessages.length === 1 &&
+			isAssistantConversationTurn(trailingMessages[0]) &&
+			getMessageText(trailingMessages[0]).length === 0;
 
         if (hasTrailingAssistantPrefill) {
             insertionIndex = copyMessages.length - 1;
         }
 
         const isTerminalTrackedUser =
-            foundIndex === copyMessages.length - 1 &&
-            isUserConversationTurn(foundMessage);
+			foundIndex === copyMessages.length - 1 &&
+			isUserConversationTurn(foundMessage);
         let terminalAssistantReplyLabel;
         if (hasTrailingAssistantPrefill) {
             terminalAssistantReplyLabel = getMessageSpeakerName(
@@ -702,20 +832,20 @@ export function includeZTrackerMessages(
         }
 
         const shouldInlineTerminalAssistantSnapshot =
-            options.preserveTextCompletionTurnAlternation &&
-            embedRole === 'assistant' &&
-            !hasTrailingAssistantPrefill &&
-            !terminalAssistantReplyLabel &&
-            isTerminalTrackedUser;
+			options.preserveTextCompletionTurnAlternation &&
+			embedRole === 'assistant' &&
+			!hasTrailingAssistantPrefill &&
+			!terminalAssistantReplyLabel &&
+			isTerminalTrackedUser;
         const needsRawTerminalAssistantSnapshot =
-            options.preserveTextCompletionTurnAlternation &&
-            embedRole === 'assistant' &&
-            (hasTrailingAssistantPrefill || Boolean(terminalAssistantReplyLabel));
+			options.preserveTextCompletionTurnAlternation &&
+			embedRole === 'assistant' &&
+			(hasTrailingAssistantPrefill || Boolean(terminalAssistantReplyLabel));
 
         if (
             options.preserveTextCompletionTurnAlternation &&
-            (canInlineEmbeddedTracker(foundMessage, embedRole) ||
-                shouldInlineTerminalAssistantSnapshot)
+			(canInlineEmbeddedTracker(foundMessage, embedRole) ||
+				shouldInlineTerminalAssistantSnapshot)
         ) {
             const inlineHeader = useCharacterName
                 ? `${speakerName ?? 'Tracker'}:\n`
@@ -723,21 +853,28 @@ export function includeZTrackerMessages(
             const inlineContent = wrapInCodeFence
                 ? `${inlineHeader}\`\`\`${lang}\n${text}\n\`\`\``
                 : `${inlineHeader}${text}`;
+
+            if (
+                upsertSnapshotInMessage(foundMessage, inlineContent, settings, {
+                    lang,
+                    wrapInCodeFence,
+                })
+            ) {
+                continue;
+            }
+
             const existingContent = getMessageText(foundMessage).trimEnd();
             const mergedContent =
-                existingContent.length > 0
-                    ? `${existingContent}\n\n${inlineContent}`
-                    : inlineContent;
-            copyMessages[foundIndex].content = mergedContent;
-            if (typeof copyMessages[foundIndex].mes === 'string') {
-                copyMessages[foundIndex].mes = mergedContent;
-            }
+				existingContent.length > 0
+				    ? `${existingContent}\n\n${inlineContent}`
+				    : inlineContent;
+            setMessageText(copyMessages[foundIndex], mergedContent);
             continue;
         }
 
         const rawTerminalAssistantHeader = speakerName
             ? `${speakerName}:`
-            : settings.embedZTrackerSnapshotHeader || 'Tracker:';
+            : getEmbeddedSnapshotHeader(settings);
         const rawTerminalAssistantPrefix = speakerName
             ? `${speakerName}:\n`
             : prefix || 'Tracker:\n';
@@ -750,11 +887,42 @@ export function includeZTrackerMessages(
                 : `${rawTerminalAssistantPrefix}${text}${rawTerminalAssistantSuffix}`
             : undefined;
         const embeddedContent = rawTerminalAssistantContent ?? content;
+        const snapshotParts = { lang, wrapInCodeFence };
+
+        if (
+            upsertSnapshotInMessage(
+                foundMessage,
+                embeddedContent,
+                settings,
+                snapshotParts,
+            )
+        ) {
+            continue;
+        }
+
+        const adjacentMessage = copyMessages[insertionIndex + 1];
+        if (
+            adjacentMessage &&
+			isEmbeddedSnapshotCandidate(adjacentMessage, settings, snapshotParts)
+        ) {
+            if (!messageContainsSnapshot(adjacentMessage, embeddedContent)) {
+                setMessageText(adjacentMessage, embeddedContent);
+            }
+            adjacentMessage.role = embedRole;
+            adjacentMessage.is_user = embedRole === 'user';
+            adjacentMessage.is_system = embedRole === 'system';
+            if (!needsRawTerminalAssistantSnapshot && speakerName) {
+                adjacentMessage.name = speakerName;
+            }
+            continue;
+        }
+
         const embeddedTrackerMessage = {
             content: embeddedContent,
             role: embedRole,
             is_user: embedRole === 'user',
             is_system: embedRole === 'system',
+            extra: { zTrackerEmbeddedSnapshot: true },
             ...(!needsRawTerminalAssistantSnapshot && speakerName
                 ? { name: speakerName }
                 : {}),
@@ -786,14 +954,14 @@ export function initZTrackerEmbedInterceptor({
 } = {}) {
     const interceptor = (chat) => {
         const context =
-            typeof getContext === 'function'
-                ? getContext()
-                : globalThis.SillyTavern?.getContext?.();
+			typeof getContext === 'function'
+			    ? getContext()
+			    : globalThis.SillyTavern?.getContext?.();
         const settings = { ...DEFAULT_SETTINGS, ...(getSettings?.() || {}) };
         const isGroupChat = Boolean(context?.selected_group);
         const newChat = includeZTrackerMessages(chat, settings, {
             preserveTextCompletionTurnAlternation:
-                context?.mainApi === 'textgenerationwebui',
+				context?.mainApi === 'textgenerationwebui',
             isGroupChat,
             assistantReplyLabel: isGroupChat ? undefined : context?.name2,
         });

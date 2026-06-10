@@ -371,7 +371,10 @@ import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
-import { ToolManager, scrubToolProcessingMetadata } from './scripts/tool-calling.js';
+import {
+    ToolManager,
+    scrubToolProcessingMetadata,
+} from './scripts/tool-calling.js';
 import { addShowdownPatch } from './scripts/util/showdown-patch.js';
 import { applyBrowserFixes } from './scripts/browser-fixes.js';
 import { initServerHistory } from './scripts/server-history.js';
@@ -379,6 +382,7 @@ import { initSettingsSearch } from './scripts/setting-search.js';
 import { initBulkEdit } from './scripts/bulk-edit.js';
 import { getContext } from './scripts/st-context.js';
 import {
+    extractReasoningDetailsFromData,
     extractReasoningFromData,
     extractReasoningSignatureFromData,
     initReasoning,
@@ -820,6 +824,8 @@ export let extension_prompts = {};
 
 export let main_api; // = "kobold";
 let abortController = new AbortController();
+let hadToolCallsInFlow = false;
+const TOOL_CONTINUATION_TYPE = 'tool-continue';
 
 //css
 var css_send_form_display = $('<div id=send_form></div>').css('display');
@@ -2095,13 +2101,139 @@ export async function deleteLastMessage() {
  */
 function canAttachToolTraceToMessage(messageId) {
     const message = chat[messageId];
-    return Boolean(message && !message.is_user);
+    return Boolean(
+        message && !message.is_user && !isHiddenToolResultMessage(message),
+    );
+}
+
+/**
+ * Adds reasoning from a follow-up response to an existing tool-flow message.
+ * @param {object} message Chat message
+ * @param {string} reasoning Reasoning text
+ */
+function appendToolFlowReasoningToMessage(message, reasoning) {
+    if (!reasoning) {
+        return;
+    }
+
+    message.extra = message.extra || {};
+    if (
+        !ReasoningHandler.hasProcessingSegments(message.extra) &&
+		message.extra.reasoning
+    ) {
+        ReasoningHandler.appendReasoningSegment(
+            message.extra,
+            message.extra.reasoning,
+        );
+    }
+    ReasoningHandler.appendReasoningSegment(message.extra, reasoning);
+    message.extra.reasoning = ReasoningHandler.getJoinedReasoning(message.extra);
+}
+
+/**
+ * Creates an assistant processing container for tool-only responses.
+ * @param {object} options Message options
+ * @param {string} options.type Generation type
+ * @param {string} [options.title] Message title
+ * @param {string} [options.reasoning] Reasoning text
+ * @param {string[]} [options.imageUrls] Image URLs
+ * @param {string?} [options.reasoningSignature] Reasoning signature
+ * @param {object[]?} [options.reasoningDetails] OpenRouter reasoning details
+ * @returns {Promise<number>} Created message index
+ */
+async function createToolProcessingMessage({
+    type,
+    title = '',
+    reasoning = '',
+    imageUrls = [],
+    reasoningSignature = null,
+    reasoningDetails = null,
+}) {
+    const newMessage = {};
+    chat.push(newMessage);
+    newMessage.extra = {};
+    newMessage.name = name2;
+    newMessage.is_user = false;
+    newMessage.send_date = getMessageTimeStamp();
+    newMessage.extra.api = getGeneratingApi();
+    newMessage.extra.model = getGeneratingModel();
+    newMessage.extra.reasoning = reasoning || '';
+    newMessage.extra.reasoning_duration = null;
+    newMessage.extra.reasoning_signature = reasoningSignature;
+    if (Array.isArray(reasoningDetails) && reasoningDetails.length > 0) {
+        newMessage.extra.reasoning_details = reasoningDetails
+            .filter((detail) => detail && typeof detail === 'object')
+            .map((detail) => structuredClone(detail));
+    }
+    newMessage.extra.isProcessingMessage = true;
+    newMessage.mes = '';
+    newMessage.title = title;
+    newMessage.gen_started = generation_started;
+    newMessage.gen_finished = new Date();
+
+    if (selected_group) {
+        let avatarImg = 'img/ai4.png';
+        if (characters[this_chid].avatar != 'none') {
+            avatarImg = getThumbnailUrl('avatar', characters[this_chid].avatar);
+        }
+        newMessage.force_avatar = avatarImg;
+        newMessage.original_avatar = characters[this_chid].avatar;
+        newMessage.extra.gen_id = group_generation_id;
+    }
+
+    await processImageAttachment(newMessage, { imageUrls });
+
+    const chatId = chat.length - 1;
+    await eventSource.emit(event_types.MESSAGE_RECEIVED, chatId, type);
+    addOneMessage(chat[chatId]);
+    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chatId, type);
+
+    newMessage.swipe_id = 0;
+    newMessage.swipes = [newMessage.mes];
+    newMessage.swipe_info = [
+        {
+            send_date: newMessage.send_date,
+            gen_started: newMessage.gen_started,
+            gen_finished: newMessage.gen_finished,
+            extra: structuredClone(newMessage.extra),
+        },
+    ];
+
+    statMesProcess(newMessage, type, characters, this_chid, '');
+    return chatId;
+}
+
+/**
+ * Removes processing state from a tool-flow message.
+ * @param {number} messageId Message index
+ */
+async function clearToolProcessingMessage(messageId) {
+    if (!canAttachToolTraceToMessage(messageId)) {
+        return;
+    }
+
+    const message = chat[messageId];
+    if (message?.extra?.isProcessingMessage) {
+        delete message.extra.isProcessingMessage;
+        updateMessageBlock(messageId, message);
+        await saveChatConditional();
+    }
+}
+
+/**
+ * Removes processing state from a tool-flow message if generation was aborted.
+ * @param {number} messageId Message index
+ */
+async function cleanupToolProcessingMessageOnAbort(messageId) {
+    if (abortController?.signal.aborted) {
+        await clearToolProcessingMessage(messageId);
+    }
 }
 
 /**
  * Summarizes visible vs stealth tool invocations for generation control.
  * @param {import('./scripts/tool-calling.js').ToolInvocationResult} invocationResult Invocation result
- * @returns {{ visibleInvocations: import('./scripts/tool-calling.js').ToolInvocation[], hasVisibleInvocations: boolean, hasOnlyStealthInvocations: boolean }} Tool flow state
+ * @returns {{ visibleInvocations: import('./scripts/tool-calling.js').ToolInvocation[], stealthInvocations: import('./scripts/tool-calling.js').ToolInvocation[], hasVisibleInvocations: boolean, hasOnlyStealthInvocations: boolean }} Tool flow state
  */
 function getToolInvocationFlowState(invocationResult) {
     const invocations = Array.isArray(invocationResult?.invocations)
@@ -2110,13 +2242,116 @@ function getToolInvocationFlowState(invocationResult) {
     const visibleInvocations = invocations.filter(
         (invocation) => !invocation.stealth,
     );
+    const stealthInvocations = invocations.filter(
+        (invocation) => invocation.stealth,
+    );
 
     return {
         visibleInvocations,
+        stealthInvocations,
         hasVisibleInvocations: visibleInvocations.length > 0,
         hasOnlyStealthInvocations:
 			invocations.length > 0 && visibleInvocations.length === 0,
     };
+}
+
+/**
+ * Appends a generated continuation to an existing assistant message.
+ * @param {string} previousText Existing message text
+ * @param {string} continuationText Continuation text
+ * @returns {string} Combined message text
+ */
+export function appendAssistantMessageText(previousText, continuationText) {
+    const previous = String(previousText ?? '');
+    const continuation = String(continuationText ?? '');
+
+    if (!continuation) {
+        return previous;
+    }
+
+    if (!previous || previous === '...') {
+        return continuation.trimStart();
+    }
+
+    const trimmedPrevious = previous.trimEnd();
+    const trimmedContinuation = continuation.trimStart();
+
+    if (!trimmedContinuation) {
+        return trimmedPrevious;
+    }
+
+    if (trimmedContinuation.startsWith(trimmedPrevious)) {
+        const remainder = trimmedContinuation
+            .slice(trimmedPrevious.length)
+            .trimStart();
+        return remainder ? `${trimmedPrevious}\n\n${remainder}` : trimmedPrevious;
+    }
+
+    if (trimmedPrevious.endsWith(trimmedContinuation)) {
+        return trimmedPrevious;
+    }
+
+    return `${trimmedPrevious}\n\n${trimmedContinuation}`;
+}
+
+/**
+ * Gets prefix used while streaming a continuation into an existing message.
+ * @param {string} previousText Existing message text
+ * @returns {string} Continuation prefix
+ */
+function getAssistantMessageContinuationPrefix(previousText) {
+    const previous = String(previousText ?? '').trimEnd();
+    return previous && previous !== '...' ? `${previous}\n\n` : '';
+}
+
+/**
+ * Stores tool invocations on the assistant message that requested them.
+ * @param {number} messageId Message index
+ * @param {import('./scripts/tool-calling.js').ToolInvocation[]} invocations Tool invocations
+ */
+function saveToolInvocationsToMessage(messageId, invocations) {
+    if (
+        !Number.isInteger(messageId) ||
+		!Array.isArray(invocations) ||
+		invocations.length === 0 ||
+		!canAttachToolTraceToMessage(messageId)
+    ) {
+        return;
+    }
+
+    chat[messageId].extra = chat[messageId].extra || {};
+    chat[messageId].extra.tool_invocations = [
+        ...(Array.isArray(chat[messageId].extra.tool_invocations)
+            ? chat[messageId].extra.tool_invocations
+            : []),
+        ...invocations,
+    ];
+}
+
+/**
+ * Stores OpenRouter reasoning details on the assistant message that requested tools.
+ * @param {number} messageId Message index
+ * @param {object[]?} reasoningDetails OpenRouter reasoning_details array
+ * @param {string?} reasoningSignature Encrypted assistant reasoning signature
+ */
+function saveToolReasoningArtifactsToMessage(
+    messageId,
+    reasoningDetails,
+    reasoningSignature = null,
+) {
+    if (!Number.isInteger(messageId) || !canAttachToolTraceToMessage(messageId)) {
+        return;
+    }
+
+    chat[messageId].extra = chat[messageId].extra || {};
+    if (Array.isArray(reasoningDetails) && reasoningDetails.length > 0) {
+        chat[messageId].extra.reasoning_details = reasoningDetails
+            .filter((detail) => detail && typeof detail === 'object')
+            .map((detail) => structuredClone(detail));
+    }
+    if (reasoningSignature) {
+        chat[messageId].extra.reasoning_signature = reasoningSignature;
+    }
 }
 
 /**
@@ -4409,6 +4644,7 @@ class StreamingProcessor {
 	 * @param {string} continueMessage Previous message if the type is 'continue'
 	 * @param {PromptReasoning} promptReasoning Prompt reasoning instance
 	 * @param {number?} processingMessageId Existing processing message to continue streaming into
+	 * @param {boolean} suppressContinuationPrefix If true, do not prefix existing message text while streaming
 	 */
     constructor(
         type,
@@ -4417,6 +4653,7 @@ class StreamingProcessor {
         continueMessage,
         promptReasoning,
         processingMessageId = null,
+        suppressContinuationPrefix = false,
     ) {
         this.result = '';
         this.messageId = Number.isInteger(processingMessageId)
@@ -4443,11 +4680,18 @@ class StreamingProcessor {
         /** @type {number?} */
         this.timeToFirstToken = null;
         this.createdAt = new Date();
-        this.continueMessage = type === 'continue' ? continueMessage : '';
+        this.continueMessage =
+			type === 'continue'
+			    ? continueMessage
+			    : suppressContinuationPrefix
+			        ? ''
+			        : getAssistantMessageContinuationPrefix(chat[this.messageId]?.mes);
         this.swipes = [];
         /** @type {import('./scripts/logprobs.js').TokenLogprobs[]} */
         this.messageLogprobs = [];
         this.toolCalls = [];
+        /** @type {string?} */
+        this.finishReason = null;
         // Initialize reasoning in its own handler
         this.reasoningHandler = new ReasoningHandler(timeStarted);
         /** @type {PromptReasoning} */
@@ -4456,6 +4700,8 @@ class StreamingProcessor {
         this.images = [];
         /** @type {string?} */
         this.reasoningSignature = null;
+        /** @type {object[]?} */
+        this.reasoningDetails = null;
     }
 
     /**
@@ -4624,7 +4870,11 @@ class StreamingProcessor {
                 if (power_user.stream_fade_in) {
                     applyStreamFadeIn(this.messageTextDom, messageHTML);
                 } else {
-                    this.messageTextDom.innerHTML = messageHTML;
+                    this.messageTextDom.replaceChildren(
+                        document
+                            .createRange()
+                            .createContextualFragment(DOMPurify.sanitize(messageHTML)),
+                    );
                 }
             }
 
@@ -4703,10 +4953,19 @@ class StreamingProcessor {
             appendMediaToMessage(message, $(this.messageDom));
         }
 
-        // Store reasoning signature for models that support multi-turn context
+        // Store reasoning artifacts for models that support multi-turn context
         if (this.reasoningSignature) {
             message.extra = message.extra || {};
             message.extra.reasoning_signature = this.reasoningSignature;
+        }
+        if (
+            Array.isArray(this.reasoningDetails) &&
+			this.reasoningDetails.length > 0
+        ) {
+            message.extra = message.extra || {};
+            message.extra.reasoning_details = this.reasoningDetails
+                .filter((detail) => detail && typeof detail === 'object')
+                .map((detail) => structuredClone(detail));
         }
 
         if (unlockUI) {
@@ -4732,10 +4991,20 @@ class StreamingProcessor {
     }
 
     async onFinishStreaming(messageId, text) {
-        await this.finalizeIntermediaryMessage(messageId, text, { unlockUI: true });
+        const finalText =
+			this.type !== 'continue'
+			    ? appendAssistantMessageText(this.continueMessage, text)
+			    : text;
+        await this.finalizeIntermediaryMessage(messageId, finalText, {
+            unlockUI: true,
+        });
 
         const isAborted = this.abortController.signal.aborted;
-        if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
+        if (
+            !isAborted &&
+			power_user.auto_swipe &&
+			generatedTextFiltered(finalText)
+        ) {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, {
                 source: SWIPE_SOURCE.AUTO_SWIPE,
                 repeated: true,
@@ -4795,7 +5064,7 @@ class StreamingProcessor {
     }
 
     /**
-	 * @returns {AsyncGenerator<{ text: string, swipes: string[], logprobs: import('./scripts/logprobs.js').TokenLogprobs, toolCalls: any[], state: any }, void, void>}
+	 * @returns {AsyncGenerator<{ text: string, swipes: string[], logprobs: import('./scripts/logprobs.js').TokenLogprobs, toolCalls: any[], finishReason?: string?, state: any }, void, void>}
 	 */
     async* nullStreamingGeneration() {
         throw new Error('Generation function for streaming is not hooked up');
@@ -4808,6 +5077,10 @@ class StreamingProcessor {
             scrollLock = false;
         } else {
             await this.#checkDomElements(this.messageId);
+            this.reasoningHandler.initHandleMessage(this.messageId);
+            if (this.type === TOOL_CONTINUATION_TYPE) {
+                this.reasoningHandler.beginToolFlowResponse(this.messageId);
+            }
             this.markUIGenStarted();
         }
 
@@ -4829,6 +5102,7 @@ class StreamingProcessor {
                 swipes,
                 logprobs,
                 toolCalls,
+                finishReason,
                 state,
             } of this.generator()) {
                 const now = Date.now();
@@ -4841,6 +5115,10 @@ class StreamingProcessor {
                 }
 
                 this.toolCalls = toolCalls;
+                const currentFinishReason = finishReason ?? state?.finishReason ?? null;
+                if (currentFinishReason) {
+                    this.finishReason = currentFinishReason;
+                }
                 this.result = text;
                 this.swipes = Array.from(swipes ?? []);
                 if (logprobs) {
@@ -4860,12 +5138,15 @@ class StreamingProcessor {
                 }
                 this.images = state?.images ?? [];
                 this.reasoningSignature = state?.signature ?? null;
+                this.reasoningDetails = Array.isArray(state?.reasoningDetails)
+                    ? state.reasoningDetails
+                    : null;
                 await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
                 await sw.tick(
                     async () =>
                         await this.onProgressStreaming(
                             this.messageId,
-                            this.continueMessage + text,
+                            appendAssistantMessageText(this.continueMessage, text),
                         ),
                 );
             }
@@ -5412,6 +5693,8 @@ function removeLastMessage() {
  * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
  * @property {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
  * @property {number?} [processingMessageId] Message ID of an in-progress tool-call processing container.
+ * @property {boolean} [isToolFlowContinuation] Whether this request continues an existing tool-call flow.
+ * @property {boolean} [suppressContinuationPrefix] Whether to avoid prefixing existing assistant text into the streamed continuation.
  */
 
 /**
@@ -5437,6 +5720,8 @@ export async function Generate(
         jsonSchema = null,
         depth = 0,
         processingMessageId = null,
+        isToolFlowContinuation: explicitToolFlowContinuation = false,
+        suppressContinuationPrefix = false,
     } = {},
     dryRun = false,
 ) {
@@ -5467,6 +5752,15 @@ export async function Generate(
     // Don't recreate abort controller if signal is passed
     if (!(abortController && signal)) {
         abortController = new AbortController();
+    }
+    const generationSignal = signal ?? abortController.signal;
+    const isToolFlowContinuation =
+		explicitToolFlowContinuation ||
+		type === TOOL_CONTINUATION_TYPE ||
+		depth > 0 ||
+		Number.isInteger(processingMessageId);
+    if (!isToolFlowContinuation) {
+        hadToolCallsInFlow = false;
     }
 
     // OpenAI doesn't need instruct mode. Use OAI main prompt instead.
@@ -5773,7 +6067,10 @@ export async function Generate(
 		depth < ToolManager.RECURSE_LIMIT;
     let coreChat = chat.filter(
         (x) =>
-            !x.extra?.isProcessingMessage &&
+            (!x.extra?.isProcessingMessage ||
+				String(x.mes ?? '').trim() ||
+				(Array.isArray(x.extra?.tool_invocations) &&
+					x.extra.tool_invocations.length > 0)) &&
 			(!x.is_system ||
 				(canUseTools && Array.isArray(x.extra?.tool_invocations))),
     );
@@ -6947,7 +7244,9 @@ export async function Generate(
                 continue_mag,
                 promptReasoning,
                 processingMessageId,
+                suppressContinuationPrefix,
             );
+            streamingProcessor.abortController = abortController;
             if (isContinue) {
                 // Save reply does add cycle text to the prompt, so it's not needed here
                 streamingProcessor.firstMessageText = '';
@@ -6984,52 +7283,110 @@ export async function Generate(
                 const hasToolCalls = ToolManager.hasToolCalls(
                     streamingProcessor.toolCalls,
                 );
-                const invocationResult = await ToolManager.invokeFunctionTools(
-                    streamingProcessor.toolCalls,
-                    {
-                        reasoningText: streamingProcessor.reasoningHandler.reasoning,
-                    },
-                );
-                const toolInvocationState =
-					getToolInvocationFlowState(invocationResult);
-                const shouldStopGeneration =
-					(!invocationResult.invocations.length &&
-						!invocationResult.errors.length) ||
-					toolInvocationState.hasOnlyStealthInvocations;
                 if (hasToolCalls) {
-                    const processingMessageId = streamingProcessor.messageId;
-                    const toolTrace = ToolManager.formatToolCallTrace(
+                    const invocationResult = await ToolManager.invokeFunctionTools(
+                        streamingProcessor.toolCalls,
+                        {
+                            reasoningText: streamingProcessor.reasoningHandler.reasoning,
+                        },
+                    );
+                    const toolInvocationState =
+						getToolInvocationFlowState(invocationResult);
+                    const shouldDeleteMessage =
+						['', '...'].includes(getMessage) &&
+						!streamingProcessor.reasoningHandler.reasoning;
+                    const hasVisibleContent = !['', '...'].includes(getMessage);
+                    const shouldRecurseForToolCalls =
+						ToolManager.shouldRecurseForToolCalls(
+						    streamingProcessor.toolCalls,
+						    {
+						        finishReason: streamingProcessor.finishReason,
+						        hasVisibleContent,
+						        source: oai_settings.chat_completion_source,
+						    },
+						);
+                    const shouldStopGeneration =
+						(!invocationResult.invocations.length &&
+							!invocationResult.errors.length &&
+							shouldDeleteMessage) ||
+						(toolInvocationState.hasOnlyStealthInvocations &&
+							!shouldRecurseForToolCalls) ||
+						!shouldRecurseForToolCalls;
+                    hadToolCallsInFlow = true;
+                    const currentProcessingMessageId = streamingProcessor.messageId;
+                    saveToolInvocationsToMessage(
+                        currentProcessingMessageId,
                         invocationResult.invocations,
                     );
-                    if (toolTrace && canAttachToolTraceToMessage(processingMessageId)) {
-                        chat[processingMessageId].extra =
-							chat[processingMessageId].extra || {};
-                        chat[processingMessageId].extra.isProcessingMessage = true;
+                    saveToolReasoningArtifactsToMessage(
+                        currentProcessingMessageId,
+                        streamingProcessor.reasoningDetails,
+                        streamingProcessor.reasoningSignature,
+                    );
+                    const toolTrace = ToolManager.formatToolCallTrace(
+                        toolInvocationState.visibleInvocations,
+                    );
+                    if (
+                        toolTrace &&
+						canAttachToolTraceToMessage(currentProcessingMessageId)
+                    ) {
+                        chat[currentProcessingMessageId].extra =
+							chat[currentProcessingMessageId].extra || {};
                         streamingProcessor.reasoningHandler.appendProcessingTrace(
-                            processingMessageId,
+                            currentProcessingMessageId,
                             toolTrace,
+                            {
+                                appendReasoningAsNewSegment:
+									Number.isInteger(processingMessageId),
+                            },
                         );
+                        if (!hasVisibleContent) {
+                            chat[currentProcessingMessageId].extra.isProcessingMessage = true;
+                        } else {
+                            delete chat[currentProcessingMessageId].extra.isProcessingMessage;
+                        }
                     }
                     streamingProcessor.messageDom?.classList.remove('displayNone');
 
                     if (shouldStopGeneration) {
+                        if (
+                            shouldDeleteMessage &&
+							!toolTrace &&
+							!Number.isInteger(processingMessageId)
+                        ) {
+                            await deleteLastMessage();
+                        } else if (hasVisibleContent) {
+                            await streamingProcessor.onFinishStreaming(
+                                currentProcessingMessageId,
+                                getMessage,
+                            );
+                        } else {
+                            await clearToolProcessingMessage(currentProcessingMessageId);
+                        }
                         unblockGeneration(type);
                         streamingProcessor = null;
                         return;
                     }
 
+                    if (hasVisibleContent) {
+                        const finalText =
+							streamingProcessor.type !== 'continue'
+							    ? appendAssistantMessageText(
+							        streamingProcessor.continueMessage,
+							        getMessage,
+							    )
+							    : getMessage;
+                        await streamingProcessor.finalizeIntermediaryMessage(
+                            currentProcessingMessageId,
+                            finalText,
+                            { unlockUI: false },
+                        );
+                    }
                     streamingProcessor = null;
                     depth = depth + 1;
-                    const isHiddenToolFlow =
-						oai_settings.chat_completion_source ===
-						chat_completion_sources.OPENROUTER;
-                    await ToolManager.saveFunctionToolInvocations(
-                        toolInvocationState.visibleInvocations,
-                        { visible: !isHiddenToolFlow },
-                    );
                     try {
                         return await Generate(
-                            'normal',
+                            TOOL_CONTINUATION_TYPE,
                             {
                                 automatic_trigger,
                                 force_name2,
@@ -7037,15 +7394,20 @@ export async function Generate(
                                 quietToLoud,
                                 skipWIAN,
                                 force_chid,
-                                signal,
+                                signal: generationSignal,
                                 quietImage,
                                 quietName,
                                 depth,
-                                processingMessageId,
+                                processingMessageId: currentProcessingMessageId,
+                                isToolFlowContinuation: true,
+                                suppressContinuationPrefix: false,
                             },
                             dryRun,
                         );
                     } finally {
+                        await cleanupToolProcessingMessageOnAbort(
+                            currentProcessingMessageId,
+                        );
                         await cleanupTemporaryZTrackerToolResults();
                     }
                 }
@@ -7057,7 +7419,9 @@ export async function Generate(
                     getMessage,
                 );
                 streamingProcessor = null;
-                triggerAutoContinue(messageChunk, isImpersonate);
+                if (!hadToolCallsInFlow) {
+                    triggerAutoContinue(messageChunk, isImpersonate);
+                }
                 return Object.defineProperties(new String(getMessage), {
                     messageChunk: { value: messageChunk },
                     fromStream: { value: true },
@@ -7108,6 +7472,7 @@ export async function Generate(
         let reasoning = extractReasoningFromData(data);
         let imageUrls = extractImagesFromData(data);
         const reasoningSignature = extractReasoningSignatureFromData(data);
+        const reasoningDetails = extractReasoningDetailsFromData(data);
         kobold_horde_model = title;
 
         const swipes = extractMultiSwipes(data, type);
@@ -7139,6 +7504,16 @@ export async function Generate(
             displayIncompleteSentences: displayIncomplete,
         });
 
+        const responseHasToolCalls =
+			canPerformToolCalls && ToolManager.hasToolCalls(data);
+        const responseFinishReason = ToolManager.getToolCallFinishReason(data);
+        const isToolOnlyResponse =
+			responseHasToolCalls &&
+			type !== 'swipe' &&
+			['', '...'].includes(getMessage);
+        const hasEmptyToolResponse = isToolOnlyResponse && !reasoning;
+        let createdToolProcessingMessageId = null;
+
         if (isImpersonate) {
             $('#send_textarea')
                 .val(getMessage)[0]
@@ -7155,27 +7530,40 @@ export async function Generate(
 				originalType !== 'continue'
             ) {
                 const message = chat[processingMessageId];
-                message.mes = getMessage;
-                message.gen_started = generation_started;
-                message.gen_finished = new Date();
+                if (!isToolOnlyResponse) {
+                    message.mes = appendAssistantMessageText(message.mes, getMessage);
+                    message.gen_started = generation_started;
+                    message.gen_finished = new Date();
+                }
                 message.extra = message.extra || {};
-                delete message.extra.isProcessingMessage;
+                if (!isToolOnlyResponse) {
+                    delete message.extra.isProcessingMessage;
+                }
                 if (reasoning) {
-                    message.extra.reasoning = [message.extra.reasoning, reasoning]
-                        .filter(Boolean)
-                        .join('\n\n');
+                    appendToolFlowReasoningToMessage(message, reasoning);
                 }
                 updateMessageBlock(processingMessageId, message);
             } else if (originalType !== 'continue') {
-                ({ type, getMessage } = await saveReply({
-                    type,
-                    getMessage,
-                    title,
-                    swipes,
-                    reasoning,
-                    imageUrls,
-                    reasoningSignature,
-                }));
+                if (isToolOnlyResponse) {
+                    createdToolProcessingMessageId = await createToolProcessingMessage({
+                        type,
+                        title,
+                        reasoning,
+                        imageUrls,
+                        reasoningSignature,
+                        reasoningDetails,
+                    });
+                } else {
+                    ({ type, getMessage } = await saveReply({
+                        type,
+                        getMessage,
+                        title,
+                        swipes,
+                        reasoning,
+                        imageUrls,
+                        reasoningSignature,
+                    }));
+                }
             } else {
                 ({ type, getMessage } = await saveReply({
                     type: 'appendFinal',
@@ -7188,85 +7576,126 @@ export async function Generate(
                 }));
             }
 
-            // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
+            // This relies on a reply or processing container having been added to the chat, so it must be last.
             parseAndSaveLogprobs(data, continue_mag);
         }
 
-        if (canPerformToolCalls) {
-            const hasToolCalls = ToolManager.hasToolCalls(data);
-            const shouldDeleteMessage =
-				type !== 'swipe' && ['', '...'].includes(getMessage) && !reasoning;
+        if (canPerformToolCalls && responseHasToolCalls) {
+            const shouldDeleteMessage = hasEmptyToolResponse;
+            const toolProcessingMessageId =
+				Number.isInteger(processingMessageId) &&
+				canAttachToolTraceToMessage(processingMessageId)
+				    ? processingMessageId
+				    : Number.isInteger(createdToolProcessingMessageId)
+				        ? createdToolProcessingMessageId
+				        : getLastVisibleMessageId();
             const invocationResult = await ToolManager.invokeFunctionTools(data, {
                 reasoningText: reasoning,
             });
             const toolInvocationState = getToolInvocationFlowState(invocationResult);
+            const hasVisibleContent = !['', '...'].includes(getMessage);
+            const shouldRecurseForToolCalls = ToolManager.shouldRecurseForToolCalls(
+                data,
+                {
+                    finishReason: responseFinishReason,
+                    hasVisibleContent,
+                    source: oai_settings.chat_completion_source,
+                },
+            );
             const shouldStopGeneration =
 				(!invocationResult.invocations.length &&
 					!invocationResult.errors.length &&
 					shouldDeleteMessage) ||
-				toolInvocationState.hasOnlyStealthInvocations;
-            if (hasToolCalls) {
-                const currentProcessingMessageId =
-					Number.isInteger(processingMessageId) &&
-					canAttachToolTraceToMessage(processingMessageId)
-					    ? processingMessageId
-					    : chat.length - 1;
-                const toolTrace = ToolManager.formatToolCallTrace(
-                    invocationResult.invocations,
-                );
-                if (
-                    toolTrace &&
-					canAttachToolTraceToMessage(currentProcessingMessageId)
-                ) {
-                    chat[currentProcessingMessageId].extra =
-						chat[currentProcessingMessageId].extra || {};
-                    chat[currentProcessingMessageId].extra.isProcessingMessage = true;
-                    chat[currentProcessingMessageId].extra.processing_trace = [
-                        chat[currentProcessingMessageId].extra.processing_trace,
-                        toolTrace,
-                    ]
-                        .filter(Boolean)
-                        .join('\n\n');
-                    updateReasoningUI(currentProcessingMessageId);
-                }
-
-                if (shouldStopGeneration) {
-                    if (shouldDeleteMessage && !toolTrace) {
-                        await deleteLastMessage();
-                    }
-                    unblockGeneration(type);
-                    return;
-                }
-
-                depth = depth + 1;
-                const isHiddenToolFlow =
-					oai_settings.chat_completion_source ===
-					chat_completion_sources.OPENROUTER;
-                await ToolManager.saveFunctionToolInvocations(
-                    toolInvocationState.visibleInvocations,
-                    { visible: !isHiddenToolFlow },
-                );
-                try {
-                    return await Generate(
-                        'normal',
-                        {
-                            automatic_trigger,
-                            force_name2,
-                            quiet_prompt,
-                            quietToLoud,
-                            skipWIAN,
-                            force_chid,
-                            signal,
-                            quietImage,
-                            quietName,
-                            depth,
-                            processingMessageId: currentProcessingMessageId,
-                        },
-                        dryRun,
+				(toolInvocationState.hasOnlyStealthInvocations &&
+					!shouldRecurseForToolCalls) ||
+				!shouldRecurseForToolCalls;
+            hadToolCallsInFlow = true;
+            const currentProcessingMessageId = toolProcessingMessageId;
+            saveToolInvocationsToMessage(
+                currentProcessingMessageId,
+                invocationResult.invocations,
+            );
+            saveToolReasoningArtifactsToMessage(
+                currentProcessingMessageId,
+                reasoningDetails,
+                reasoningSignature,
+            );
+            const toolTrace = ToolManager.formatToolCallTrace(
+                toolInvocationState.visibleInvocations,
+            );
+            if (
+                toolTrace &&
+				canAttachToolTraceToMessage(currentProcessingMessageId)
+            ) {
+                chat[currentProcessingMessageId].extra =
+					chat[currentProcessingMessageId].extra || {};
+                if (reasoning) {
+                    ReasoningHandler.upsertReasoningSegment(
+                        chat[currentProcessingMessageId].extra,
+                        reasoning,
                     );
-                } finally {
-                    await cleanupTemporaryZTrackerToolResults();
+                    chat[currentProcessingMessageId].extra.reasoning =
+						ReasoningHandler.getJoinedReasoning(
+						    chat[currentProcessingMessageId].extra,
+						);
                 }
+                ReasoningHandler.appendTraceSegment(
+                    chat[currentProcessingMessageId].extra,
+                    toolTrace,
+                );
+                if (!hasVisibleContent) {
+                    chat[currentProcessingMessageId].extra.isProcessingMessage = true;
+                } else {
+                    delete chat[currentProcessingMessageId].extra.isProcessingMessage;
+                }
+                chat[currentProcessingMessageId].extra.processing_trace = [
+                    chat[currentProcessingMessageId].extra.processing_trace,
+                    toolTrace,
+                ]
+                    .filter(Boolean)
+                    .join('\n\n');
+                updateReasoningUI(currentProcessingMessageId);
+            }
+
+            if (shouldStopGeneration) {
+                if (
+                    shouldDeleteMessage &&
+					!toolTrace &&
+					!Number.isInteger(processingMessageId)
+                ) {
+                    await deleteLastMessage();
+                } else {
+                    await clearToolProcessingMessage(currentProcessingMessageId);
+                    await saveChatConditional();
+                }
+                unblockGeneration(type);
+                return;
+            }
+
+            depth = depth + 1;
+            try {
+                return await Generate(
+                    TOOL_CONTINUATION_TYPE,
+                    {
+                        automatic_trigger,
+                        force_name2,
+                        quiet_prompt,
+                        quietToLoud,
+                        skipWIAN,
+                        force_chid,
+                        signal: generationSignal,
+                        quietImage,
+                        quietName,
+                        depth,
+                        processingMessageId: currentProcessingMessageId,
+                        isToolFlowContinuation: true,
+                        suppressContinuationPrefix: false,
+                    },
+                    dryRun,
+                );
+            } finally {
+                await cleanupToolProcessingMessageOnAbort(currentProcessingMessageId);
+                await cleanupTemporaryZTrackerToolResults();
             }
         }
 
@@ -7293,7 +7722,7 @@ export async function Generate(
         unblockGeneration(type);
         streamingProcessor = null;
 
-        if (type !== 'quiet') {
+        if (type !== 'quiet' && !hadToolCallsInFlow) {
             triggerAutoContinue(messageChunk, isImpersonate);
         }
 
@@ -8926,8 +9355,41 @@ export async function saveReply({
         } else {
             lastMessage.mes = getMessage;
         }
-    } else if (type === 'append' || type === 'continue') {
+    } else if (type === 'append') {
         console.debug('Trying to append.');
+        oldMessage = lastMessage.mes;
+        lastMessage.title = title;
+        lastMessage.mes = appendAssistantMessageText(lastMessage.mes, getMessage);
+        lastMessage.gen_started = generation_started;
+        lastMessage.gen_finished = generationFinished;
+        lastMessage.send_date = getMessageTimeStamp();
+        lastMessage.extra.api = getGeneratingApi();
+        lastMessage.extra.model = getGeneratingModel();
+        lastMessage.extra.reasoning = [lastMessage.extra.reasoning, reasoning]
+            .filter(Boolean)
+            .join('\n\n');
+        lastMessage.extra.reasoning_duration = null;
+        lastMessage.extra.reasoning_signature = reasoningSignature;
+        await processImageAttachment(lastMessage, { imageUrls });
+        if (power_user.message_token_count_enabled) {
+            const tokenCountText = (reasoning || '') + lastMessage.mes;
+            lastMessage.extra.token_count = await getTokenCountAsync(
+                tokenCountText,
+                0,
+            );
+        }
+        const chat_id = chat.length - 1;
+        !fromStreaming &&
+			(await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type));
+        addOneMessage(chat[chat_id], { type: 'swipe' });
+        !fromStreaming &&
+			(await eventSource.emit(
+			    event_types.CHARACTER_MESSAGE_RENDERED,
+			    chat_id,
+			    type,
+			));
+    } else if (type === 'continue') {
+        console.debug('Trying to continue.');
         oldMessage = lastMessage.mes;
         lastMessage.title = title;
         lastMessage.mes += String(getMessage ?? '');
@@ -8967,7 +9429,9 @@ export async function saveReply({
         lastMessage.send_date = getMessageTimeStamp();
         lastMessage.extra.api = getGeneratingApi();
         lastMessage.extra.model = getGeneratingModel();
-        lastMessage.extra.reasoning += reasoning;
+        lastMessage.extra.reasoning = [lastMessage.extra.reasoning, reasoning]
+            .filter(Boolean)
+            .join('\n\n');
         lastMessage.extra.reasoning_signature = reasoningSignature;
         await processImageAttachment(lastMessage, { imageUrls });
         // We don't know if the reasoning duration extended, so we don't update it here on purpose.
@@ -9901,8 +10365,20 @@ export async function showIntegrityDiffPopup(memoryMessages, diskMessages) {
     container.style.fontSize = '14px';
 
     const summary = document.createElement('div');
-    summary.innerHTML = `<p><strong>Your tab:</strong> ${memoryMessages.length} messages | <strong>Saved file:</strong> ${diskMessages.length} messages</p>
-        <p>${sharedKeys.length} messages are identical.</p>`;
+    const counts = document.createElement('p');
+    const memoryLabel = document.createElement('strong');
+    memoryLabel.textContent = 'Your tab:';
+    const diskLabel = document.createElement('strong');
+    diskLabel.textContent = 'Saved file:';
+    counts.append(
+        memoryLabel,
+        ` ${memoryMessages.length} messages | `,
+        diskLabel,
+        ` ${diskMessages.length} messages`,
+    );
+    const shared = document.createElement('p');
+    shared.textContent = `${sharedKeys.length} messages are identical.`;
+    summary.append(counts, shared);
     container.append(summary);
 
     const createMessageSection = (title, keys, map, source, background) => {
@@ -9911,7 +10387,10 @@ export async function showIntegrityDiffPopup(memoryMessages, diskMessages) {
         }
 
         const section = document.createElement('div');
-        section.innerHTML = `<hr><h4>${title}</h4>`;
+        section.append(document.createElement('hr'));
+        const heading = document.createElement('h4');
+        heading.textContent = title;
+        section.append(heading);
 
         for (const key of keys) {
             const { msg } = map.get(key);
@@ -9929,10 +10408,13 @@ export async function showIntegrityDiffPopup(memoryMessages, diskMessages) {
             checkbox.dataset.source = source;
             checkbox.dataset.key = key;
 
-            label.append(checkbox);
-            label.insertAdjacentHTML(
-                'beforeend',
-                ` <strong>${escapeHtml(msg.name || 'Unknown')}</strong> (${escapeHtml(msg.send_date || 'no date')}): ${escapeHtml(preview)}${msg.mes && msg.mes.length > 200 ? '...' : ''}`,
+            const name = document.createElement('strong');
+            name.textContent = msg.name || 'Unknown';
+            label.append(
+                checkbox,
+                ' ',
+                name,
+                ` (${msg.send_date || 'no date'}): ${preview}${msg.mes && msg.mes.length > 200 ? '...' : ''}`,
             );
             item.append(label);
             section.append(item);
@@ -12031,7 +12513,17 @@ function isHiddenToolResultMessage(message) {
     return Boolean(message?.extra?.isToolResult);
 }
 
-function getLastVisibleMessageId() {
+export function getVisibleMessageIds() {
+    return chat
+        .map((_message, index) => index)
+        .filter((index) => !isHiddenToolResultMessage(chat[index]));
+}
+
+export function getVisibleMessageCount() {
+    return getVisibleMessageIds().length;
+}
+
+export function getLastVisibleMessageId() {
     for (let index = chat.length - 1; index >= 0; index--) {
         if (!isHiddenToolResultMessage(chat[index])) {
             return index;
