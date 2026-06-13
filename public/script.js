@@ -7654,7 +7654,10 @@ export async function Generate(
                 ]
                     .filter(Boolean)
                     .join('\n\n');
-                updateReasoningUI(currentProcessingMessageId);
+                updateMessageBlock(
+                    currentProcessingMessageId,
+                    chat[currentProcessingMessageId],
+                );
             }
 
             if (shouldStopGeneration) {

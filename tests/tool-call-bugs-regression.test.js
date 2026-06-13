@@ -261,13 +261,57 @@ describe('Tool-call continuation regressions', () => {
         expect(source).toContain(
             '(!x.extra?.isProcessingMessage ||\n\t\t\t\tString(x.mes ?? \'\').trim() ||',
         );
+        expect(source).toContain(
+            'updateMessageBlock(\n                    currentProcessingMessageId,\n                    chat[currentProcessingMessageId],\n                );',
+        );
     });
 
-    test('prompt reconstruction keeps assistant content and reasoning on tool-call messages', () => {
+    test('active tool-flow injections are moved before assistant tool-call pair', () => {
+        const source = readSource('public/scripts/openai.js');
+        const moveActiveToolFlowInjectionsBeforeToolCall = loadFunction(
+            source,
+            'moveActiveToolFlowInjectionsBeforeToolCall',
+        );
+        const toolTurn = {
+            role: 'assistant',
+            content: '',
+            invocations: [{ id: 'call_1', result: 'failed', error: true }],
+        };
+        const depthZeroInjection = {
+            role: 'system',
+            content: '</chat_history><last_message>',
+            injected: true,
+        };
+
+        const ordered = moveActiveToolFlowInjectionsBeforeToolCall([
+            { role: 'system', content: 'system' },
+            { role: 'assistant', content: 'previous' },
+            { role: 'user', content: 'request' },
+            toolTurn,
+            depthZeroInjection,
+        ]);
+
+        expect(ordered.map((message) => message.content)).toEqual([
+            'system',
+            'previous',
+            'request',
+            '</chat_history><last_message>',
+            '',
+        ]);
+        expect(ordered[3]).toBe(depthZeroInjection);
+        expect(ordered[4]).toBe(toolTurn);
+    });
+
+    test('prompt reconstruction keeps assistant tool-call shape and carries reasoning through tool results', () => {
         const source = readSource('public/scripts/openai.js');
 
         expect(source).toContain(
-            'const toolCallMessage = await Message.createAsync(\n                chatMessage.role,\n                addToolCallReasoningToContent(',
+            'const toolCallMessage = await Message.createAsync(\n                chatMessage.role,\n                /** @type {string} */ (chatMessage.content),',
+        );
+        expect(source).toContain('function addToolReasoningToResultContent(');
+        expect(source).toContain('Assistant reasoning before this tool call:');
+        expect(source).toContain(
+            'addToolReasoningToResultContent(\n                                invocation.result,\n                                invocation.reasoning || activeToolReasoning,',
         );
         expect(source).toContain(
             'chatPrompt.reasoning ||\n\t\t\t\tinvocations.find',

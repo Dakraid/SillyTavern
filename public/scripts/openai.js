@@ -906,30 +906,21 @@ function cloneReasoningDetails(reasoningDetails) {
 }
 
 /**
- * Ensures the active tool-call reasoning is visible in the assistant tool-call
- * message content. Some providers ignore non-standard reasoning metadata on
- * previous messages, but every provider conditions on message content.
- * @param {string} content Assistant content.
- * @param {string} reasoning Active tool-call reasoning.
- * @returns {string} Content with reasoning prepended when needed.
+ * Adds active tool-call reasoning to prompt-only tool result content.
+ * Standard tool result text is accepted by every provider and does not mutate
+ * visible chat content or the assistant tool-call message shape.
+ * @param {string} content Tool result content.
+ * @param {string?} reasoning Active tool-call reasoning.
+ * @returns {string} Tool result content with reasoning context when available.
  */
-function addToolCallReasoningToContent(content, reasoning) {
-    content = String(content ?? '');
+function addToolReasoningToResultContent(content, reasoning) {
+    content = String(content || '[No content]');
     reasoning = String(reasoning ?? '').trim();
     if (!reasoning || content.includes(reasoning)) {
         return content;
     }
 
-    const prefix = substituteParams(power_user?.reasoning?.prefix || '');
-    const suffix = substituteParams(power_user?.reasoning?.suffix || '');
-    const separator = substituteParams(
-        power_user?.reasoning?.separator || '\n\n',
-    );
-    const reasoningBlock = `${prefix}${reasoning}${suffix}`;
-
-    return content.trim()
-        ? `${reasoningBlock}${separator}${content}`
-        : reasoningBlock;
+    return `Assistant reasoning before this tool call:\n${reasoning}\n\nTool result:\n${content}`;
 }
 
 /**
@@ -1335,6 +1326,46 @@ async function populationInjectionPrompts(prompts, messages) {
 }
 
 /**
+ * Keeps prompt injections out of the active assistant tool_call -> tool result span.
+ * @param {object[]} chatPool Chronological chat prompt messages.
+ * @returns {object[]} Chat pool with active-chain injections moved before tool call.
+ */
+function moveActiveToolFlowInjectionsBeforeToolCall(chatPool) {
+    const newestUserIndex = chatPool.findLastIndex(
+        (message) => message?.role === 'user' && !message?.injected,
+    );
+    const toolCallIndex = chatPool.findIndex(
+        (message, index) =>
+            index > newestUserIndex &&
+			Array.isArray(message?.invocations) &&
+			message.invocations.length > 0,
+    );
+
+    if (toolCallIndex === -1) {
+        return chatPool;
+    }
+
+    const injectedAfterToolCall = [];
+    const remaining = [];
+    for (let index = 0; index < chatPool.length; index++) {
+        const message = chatPool[index];
+        if (index > toolCallIndex && message?.injected) {
+            injectedAfterToolCall.push(message);
+            continue;
+        }
+        remaining.push(message);
+    }
+
+    if (!injectedAfterToolCall.length) {
+        return chatPool;
+    }
+
+    const adjustedToolCallIndex = remaining.indexOf(chatPool[toolCallIndex]);
+    remaining.splice(adjustedToolCallIndex, 0, ...injectedAfterToolCall);
+    return remaining;
+}
+
+/**
  * Populates the chat history of the conversation.
  * @param {object[]} messages - Array containing all messages.
  * @param {import('./PromptManager').PromptCollection} prompts - Map object containing all prompts where the key is the prompt identifier and the value is the prompt object.
@@ -1449,8 +1480,14 @@ async function populateChatHistory(
     // message has the lowest index among user messages.
     const newestUserIdx = messages.findIndex((x) => x.role === 'user');
 
-    // Insert chat messages as long as there is budget available
-    const chatPool = [...messages].reverse();
+    // Insert chat messages as long as there is budget available.
+    // Depth-0/current-message injections can otherwise land after an active
+    // assistant tool_call and its tool result messages. Providers require that
+    // assistant tool_calls are immediately followed by their tool messages, so
+    // move active-chain injections before the assistant tool-call turn.
+    const chatPool = moveActiveToolFlowInjectionsBeforeToolCall(
+        [...messages].reverse(),
+    );
     for (let index = 0; index < chatPool.length; index++) {
         const chatPrompt = chatPool[index];
 
@@ -1587,10 +1624,7 @@ async function populateChatHistory(
 				previousAssistantReasoning;
             const toolCallMessage = await Message.createAsync(
                 chatMessage.role,
-                addToolCallReasoningToContent(
-                    /** @type {string} */ (chatMessage.content),
-                    activeToolReasoning,
-                ),
+                /** @type {string} */ (chatMessage.content),
                 'toolCall-' + chatMessage.identifier,
             );
             const toolResultMessages = await Promise.all(
@@ -1600,7 +1634,10 @@ async function populateChatHistory(
                     .map((invocation) =>
                         Message.createAsync(
                             'tool',
-                            invocation.result || '[No content]',
+                            addToolReasoningToResultContent(
+                                invocation.result,
+                                invocation.reasoning || activeToolReasoning,
+                            ),
                             invocation.id,
                         ),
                     ),
