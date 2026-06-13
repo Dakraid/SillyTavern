@@ -2160,6 +2160,7 @@ async function createToolProcessingMessage({
     newMessage.extra.reasoning = reasoning || '';
     newMessage.extra.reasoning_duration = null;
     newMessage.extra.reasoning_signature = reasoningSignature;
+    newMessage.extra.processing_started_at = generation_started.toISOString();
     if (Array.isArray(reasoningDetails) && reasoningDetails.length > 0) {
         newMessage.extra.reasoning_details = reasoningDetails
             .filter((detail) => detail && typeof detail === 'object')
@@ -2204,9 +2205,25 @@ async function createToolProcessingMessage({
 }
 
 /**
- * Removes processing state from a tool-flow message.
- * @param {number} messageId Message index
+ * Persists the total processing duration from the first tool-flow request.
+ * @param {object} message Chat message
  */
+function persistToolProcessingDuration(message) {
+    const startedAt = message?.extra?.processing_started_at;
+    if (!startedAt) {
+        return;
+    }
+
+    const start = new Date(startedAt);
+    const finish = message.gen_finished
+        ? new Date(message.gen_finished)
+        : new Date();
+    const duration = finish.getTime() - start.getTime();
+    if (Number.isFinite(duration) && duration > 0) {
+        message.extra.reasoning_duration = duration;
+    }
+}
+
 async function clearToolProcessingMessage(messageId) {
     if (!canAttachToolTraceToMessage(messageId)) {
         return;
@@ -2214,6 +2231,8 @@ async function clearToolProcessingMessage(messageId) {
 
     const message = chat[messageId];
     if (message?.extra?.isProcessingMessage) {
+        message.gen_finished = new Date();
+        persistToolProcessingDuration(message);
         delete message.extra.isProcessingMessage;
         updateMessageBlock(messageId, message);
         await saveChatConditional();
@@ -2233,7 +2252,7 @@ async function cleanupToolProcessingMessageOnAbort(messageId) {
 /**
  * Summarizes visible vs stealth tool invocations for generation control.
  * @param {import('./scripts/tool-calling.js').ToolInvocationResult} invocationResult Invocation result
- * @returns {{ visibleInvocations: import('./scripts/tool-calling.js').ToolInvocation[], stealthInvocations: import('./scripts/tool-calling.js').ToolInvocation[], hasVisibleInvocations: boolean, hasOnlyStealthInvocations: boolean }} Tool flow state
+ * @returns {{ visibleInvocations: import('./scripts/tool-calling.js').ToolInvocation[], stealthInvocations: import('./scripts/tool-calling.js').ToolInvocation[], traceInvocations: import('./scripts/tool-calling.js').ToolInvocation[], hasVisibleInvocations: boolean, hasOnlyStealthInvocations: boolean }} Tool flow state
  */
 function getToolInvocationFlowState(invocationResult) {
     const invocations = Array.isArray(invocationResult?.invocations)
@@ -2249,6 +2268,7 @@ function getToolInvocationFlowState(invocationResult) {
     return {
         visibleInvocations,
         stealthInvocations,
+        traceInvocations: invocations,
         hasVisibleInvocations: visibleInvocations.length > 0,
         hasOnlyStealthInvocations:
 			invocations.length > 0 && visibleInvocations.length === 0,
@@ -2320,6 +2340,9 @@ function saveToolInvocationsToMessage(messageId, invocations) {
     }
 
     chat[messageId].extra = chat[messageId].extra || {};
+    chat[messageId].extra.processing_started_at =
+		chat[messageId].extra.processing_started_at ||
+		new Date(chat[messageId].gen_started || generation_started).toISOString();
     chat[messageId].extra.tool_invocations = [
         ...(Array.isArray(chat[messageId].extra.tool_invocations)
             ? chat[messageId].extra.tool_invocations
@@ -4824,12 +4847,16 @@ class StreamingProcessor {
             this.#updateMessageBlockVisibility();
             const currentTime = new Date();
             chat[messageId].mes = processedText;
-            chat[messageId].gen_started = this.timeStarted;
-            chat[messageId].gen_finished = currentTime;
             if (!chat[messageId].extra) {
                 chat[messageId].extra = {};
             }
+            const processingStartedAt = chat[messageId].extra.processing_started_at;
+            chat[messageId].gen_started = processingStartedAt
+                ? new Date(processingStartedAt)
+                : this.timeStarted;
+            chat[messageId].gen_finished = currentTime;
             chat[messageId].extra.time_to_first_token = this.timeToFirstToken;
+            persistToolProcessingDuration(chat[messageId]);
 
             // Update reasoning
             await this.reasoningHandler.process(
@@ -5759,6 +5786,12 @@ export async function Generate(
 		type === TOOL_CONTINUATION_TYPE ||
 		depth > 0 ||
 		Number.isInteger(processingMessageId);
+    const processingStartedAt = Number.isInteger(processingMessageId)
+        ? chat[processingMessageId]?.extra?.processing_started_at
+        : null;
+    if (isToolFlowContinuation && processingStartedAt) {
+        generation_started = new Date(processingStartedAt);
+    }
     if (!isToolFlowContinuation) {
         hadToolCallsInFlow = false;
     }
@@ -7302,6 +7335,8 @@ export async function Generate(
 						    {
 						        finishReason: streamingProcessor.finishReason,
 						        hasVisibleContent,
+						        stopOnContentBeforeToolCall:
+									oai_settings.stop_on_content_before_tool_call,
 						        source: oai_settings.chat_completion_source,
 						    },
 						);
@@ -7324,7 +7359,7 @@ export async function Generate(
                         streamingProcessor.reasoningSignature,
                     );
                     const toolTrace = ToolManager.formatToolCallTrace(
-                        toolInvocationState.visibleInvocations,
+                        toolInvocationState.traceInvocations,
                     );
                     if (
                         toolTrace &&
@@ -7536,6 +7571,7 @@ export async function Generate(
                     message.gen_finished = new Date();
                 }
                 message.extra = message.extra || {};
+                persistToolProcessingDuration(message);
                 if (!isToolOnlyResponse) {
                     delete message.extra.isProcessingMessage;
                 }
@@ -7599,6 +7635,8 @@ export async function Generate(
                 {
                     finishReason: responseFinishReason,
                     hasVisibleContent,
+                    stopOnContentBeforeToolCall:
+						oai_settings.stop_on_content_before_tool_call,
                     source: oai_settings.chat_completion_source,
                 },
             );
@@ -7621,7 +7659,7 @@ export async function Generate(
                 reasoningSignature,
             );
             const toolTrace = ToolManager.formatToolCallTrace(
-                toolInvocationState.visibleInvocations,
+                toolInvocationState.traceInvocations,
             );
             if (
                 toolTrace &&

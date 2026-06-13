@@ -925,14 +925,24 @@ export class ToolManager {
 	 * @param {object} [metadata] Tool-flow metadata
 	 * @param {string?} [metadata.finishReason] Explicit finish reason from streaming/non-streaming state
 	 * @param {boolean} [metadata.hasVisibleContent] Whether assistant visible text was emitted with the tool call
+	 * @param {boolean} [metadata.stopOnContentBeforeToolCall] Whether visible content before a tool call should stop the turn
 	 * @param {string?} [metadata.source] Chat completion provider/source
 	 * @returns {boolean} Whether to request a follow-up response after tool execution
 	 */
     static shouldRecurseForToolCalls(
         data,
-        { finishReason = null, hasVisibleContent = false, source = null } = {},
+        {
+            finishReason = null,
+            hasVisibleContent = false,
+            stopOnContentBeforeToolCall = false,
+            source = null,
+        } = {},
     ) {
         if (!ToolManager.hasToolCalls(data)) {
+            return false;
+        }
+
+        if (stopOnContentBeforeToolCall && hasVisibleContent) {
             return false;
         }
 

@@ -62,22 +62,52 @@ describe('Tool-call continuation regressions', () => {
         expect(source).toContain('saveToolInvocationsToMessage(');
     });
 
-    test('streaming tool traces exclude stealth invocations and stop stealth-only flows', () => {
+    test('streaming tool traces include stealth invocations in Processing while keeping stop semantics', () => {
         const source = readSource('public/script.js');
         const streamingToolBranch = source.slice(
             source.indexOf('const isStreamFinished ='),
             source.indexOf('if (isStreamFinished) {'),
         );
+        const getToolInvocationFlowState = loadFunction(
+            source,
+            'getToolInvocationFlowState',
+        );
+        const stealthInvocation = { name: 'Lorebook Lookup', stealth: true };
 
         expect(streamingToolBranch).toContain(
             'toolInvocationState.hasOnlyStealthInvocations',
         );
         expect(streamingToolBranch).toContain(
-            'ToolManager.formatToolCallTrace(\n                        toolInvocationState.visibleInvocations,\n                    )',
+            'ToolManager.formatToolCallTrace(\n                        toolInvocationState.traceInvocations,\n                    )',
         );
-        expect(streamingToolBranch).not.toContain(
-            'ToolManager.formatToolCallTrace(\n                        invocationResult.invocations,\n                    )',
+        expect(
+            getToolInvocationFlowState({ invocations: [stealthInvocation] }),
+        ).toMatchObject({
+            visibleInvocations: [],
+            stealthInvocations: [stealthInvocation],
+            traceInvocations: [stealthInvocation],
+            hasOnlyStealthInvocations: true,
+        });
+    });
+
+    test('processing duration persists original tool-flow start across continuations', () => {
+        const source = readSource('public/script.js');
+        const persistToolProcessingDuration = loadFunction(
+            source,
+            'persistToolProcessingDuration',
         );
+        const message = {
+            extra: { processing_started_at: '2026-06-13T10:00:00.000Z' },
+            gen_finished: new Date('2026-06-13T10:00:03.500Z'),
+        };
+
+        persistToolProcessingDuration(message);
+
+        expect(message.extra.reasoning_duration).toBe(3500);
+        expect(source).toContain(
+            'chat[processingMessageId]?.extra?.processing_started_at',
+        );
+        expect(source).toContain('newMessage.extra.processing_started_at');
     });
 
     test('tool flows suppress native auto-continue at streaming and non-streaming completion points', () => {
@@ -175,11 +205,19 @@ describe('Tool-call continuation regressions', () => {
 
     test('tool recursion uses normalized provider-aware helper', () => {
         const scriptSource = readSource('public/script.js');
+        const openaiSource = readSource('public/scripts/openai.js');
+        const indexSource = readSource('public/index.html');
+        const cssSource = readSource('public/css/toggle-dependent.css');
         const toolCallingSource = readSource('public/scripts/tool-calling.js');
 
         expect(scriptSource).toContain('this.finishReason = null;');
         expect(scriptSource).toContain('this.finishReason = currentFinishReason;');
         expect(toolCallingSource).toContain('static shouldRecurseForToolCalls(');
+        expect(toolCallingSource).toContain('stopOnContentBeforeToolCall = false');
+        expect(scriptSource).toContain('stopOnContentBeforeToolCall:');
+        expect(openaiSource).toContain('stop_on_content_before_tool_call: false');
+        expect(indexSource).toContain('id="stop_on_content_before_tool_call"');
+        expect(cssSource).toContain('#stop_on_content_before_tool_call_block');
         expect(scriptSource).toMatch(
             /ToolManager\.shouldRecurseForToolCalls\(\s*streamingProcessor\.toolCalls/,
         );
@@ -300,6 +338,54 @@ describe('Tool-call continuation regressions', () => {
         ]);
         expect(ordered[3]).toBe(depthZeroInjection);
         expect(ordered[4]).toBe(toolTurn);
+    });
+
+    test('flattened prompt invariant moves injections before assistant tool-call results', () => {
+        const source = readSource('public/scripts/openai.js');
+        const reorderActiveToolFlowMessages = loadFunction(
+            source,
+            'reorderActiveToolFlowMessages',
+        );
+        const assistantToolCall = {
+            role: 'assistant',
+            content: 'checking tools',
+            tool_calls: [
+                { id: 'call_1', type: 'function', function: { name: 'lookup' } },
+                { id: 'call_2', type: 'function', function: { name: 'tracker' } },
+            ],
+        };
+        const injection = {
+            role: 'system',
+            content: '</chat_history><last_message>',
+        };
+        const firstTool = {
+            role: 'tool',
+            tool_call_id: 'call_1',
+            content: 'lookup result',
+        };
+        const secondTool = {
+            role: 'tool',
+            tool_call_id: 'call_2',
+            content: 'tracker result',
+        };
+
+        const ordered = reorderActiveToolFlowMessages([
+            { role: 'user', content: 'request' },
+            assistantToolCall,
+            injection,
+            firstTool,
+            secondTool,
+            { role: 'assistant', content: 'final' },
+        ]);
+
+        expect(ordered).toEqual([
+            { role: 'user', content: 'request' },
+            injection,
+            assistantToolCall,
+            firstTool,
+            secondTool,
+            { role: 'assistant', content: 'final' },
+        ]);
     });
 
     test('prompt reconstruction keeps assistant tool-call shape and carries reasoning through tool results', () => {

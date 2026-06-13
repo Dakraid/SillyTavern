@@ -656,6 +656,12 @@ export const settingsToUpdate = {
         false,
         false,
     ],
+    stop_on_content_before_tool_call: [
+        '#stop_on_content_before_tool_call',
+        'stop_on_content_before_tool_call',
+        true,
+        false,
+    ],
     show_thoughts: ['#openai_show_thoughts', 'show_thoughts', true, false],
     reasoning_effort: [
         '#openai_reasoning_effort',
@@ -805,6 +811,7 @@ const default_settings = {
     continue_prefill: false,
     function_calling: false,
     tool_call_recurse_limit: 5,
+    stop_on_content_before_tool_call: false,
     names_behavior: character_names_behavior.DEFAULT,
     continue_postfix: continue_postfix_types.SPACE,
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
@@ -1363,6 +1370,84 @@ function moveActiveToolFlowInjectionsBeforeToolCall(chatPool) {
     const adjustedToolCallIndex = remaining.indexOf(chatPool[toolCallIndex]);
     remaining.splice(adjustedToolCallIndex, 0, ...injectedAfterToolCall);
     return remaining;
+}
+
+/**
+ * Keeps flattened assistant tool_calls immediately adjacent to their tool results.
+ * Prompt injections/depth-0 blocks may be inserted before flattening, so enforce
+ * provider-required tool-call adjacency on the final payload as the last pass.
+ * @param {object[]} chat Flattened chat completion messages.
+ * @returns {object[]} Flattened chat with tool-call spans made contiguous.
+ */
+function reorderActiveToolFlowMessages(chat) {
+    if (!Array.isArray(chat) || chat.length < 2) {
+        return chat;
+    }
+
+    let ordered = [...chat];
+    for (let index = 0; index < ordered.length; index++) {
+        const message = ordered[index];
+        if (message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) {
+            continue;
+        }
+
+        const toolCallIds = message.tool_calls
+            .map((toolCall) => toolCall?.id)
+            .filter(Boolean);
+        if (!toolCallIds.length) {
+            continue;
+        }
+
+        const matchedIndices = [];
+        const matchedMessages = [];
+        for (const id of toolCallIds) {
+            const resultIndex = ordered.findIndex(
+                (candidate, candidateIndex) =>
+                    candidateIndex > index &&
+					candidate?.role === 'tool' &&
+					candidate.tool_call_id === id &&
+					!matchedIndices.includes(candidateIndex),
+            );
+            if (resultIndex === -1) {
+                continue;
+            }
+            matchedIndices.push(resultIndex);
+            matchedMessages.push(ordered[resultIndex]);
+        }
+
+        if (!matchedMessages.length) {
+            continue;
+        }
+
+        const farthestMatchIndex = Math.max(...matchedIndices);
+        const expectedBlock = ordered.slice(
+            index + 1,
+            index + 1 + matchedMessages.length,
+        );
+        const alreadyContiguous = matchedMessages.every(
+            (toolMessage, toolIndex) => expectedBlock[toolIndex] === toolMessage,
+        );
+        if (alreadyContiguous) {
+            index += matchedMessages.length;
+            continue;
+        }
+
+        const matchedIndexSet = new Set(matchedIndices);
+        const interveningMessages = ordered
+            .slice(index + 1, farthestMatchIndex + 1)
+            .filter((_, offset) => !matchedIndexSet.has(index + 1 + offset));
+
+        ordered = [
+            ...ordered.slice(0, index),
+            ...interveningMessages,
+            message,
+            ...matchedMessages,
+            ...ordered.slice(farthestMatchIndex + 1),
+        ];
+        index += interveningMessages.length + matchedMessages.length;
+    }
+
+    return ordered;
 }
 
 /**
@@ -2386,7 +2471,7 @@ export async function prepareOpenAIMessages(
         if (false === dryRun) promptManager.render(false);
     }
 
-    const chat = chatCompletion.getChat();
+    const chat = reorderActiveToolFlowMessages(chatCompletion.getChat());
 
     const eventData = { chat, dryRun };
     await eventSource.emit(event_types.CHAT_COMPLETION_PROMPT_READY, eventData);
@@ -9386,6 +9471,11 @@ export function initOpenAI() {
             oai_settings.tool_call_recurse_limit,
         );
         ToolManager.RECURSE_LIMIT = oai_settings.tool_call_recurse_limit;
+        saveSettingsDebounced();
+    });
+
+    $('#stop_on_content_before_tool_call').on('input', function () {
+        oai_settings.stop_on_content_before_tool_call = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

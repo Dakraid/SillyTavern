@@ -231,7 +231,7 @@ describe('OpenRouter Chat Completion tool call parsing', () => {
         ]);
     });
 
-    test('continues OpenRouter tool loop when finish_reason is tool_calls with visible content', () => {
+    test('continues OpenRouter tool loop when finish_reason is tool_calls with visible content by default', () => {
         const response = {
             choices: [
                 {
@@ -261,6 +261,39 @@ describe('OpenRouter Chat Completion tool call parsing', () => {
                 source: 'openrouter',
             }),
         ).toBe(true);
+    });
+
+    test('stops tool loop when content-before-tool-call setting is enabled', () => {
+        const response = {
+            choices: [
+                {
+                    index: 0,
+                    finish_reason: 'tool_calls',
+                    message: {
+                        content: 'I already wrote a completion.',
+                        tool_calls: [
+                            {
+                                id: 'call_late_lookup',
+                                type: 'function',
+                                function: {
+                                    name: 'lookup',
+                                    arguments: '{"id":1}',
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        };
+
+        expect(
+            ToolManager.shouldRecurseForToolCalls(response, {
+                finishReason: 'tool_calls',
+                hasVisibleContent: true,
+                stopOnContentBeforeToolCall: true,
+                source: 'openrouter',
+            }),
+        ).toBe(false);
     });
 
     test('continues OpenRouter tool loop when finish_reason is tool_calls for stealth-only tools', () => {
