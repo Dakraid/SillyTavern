@@ -47,6 +47,7 @@ import {
     calculateClaudeBudgetTokens,
     calculateGoogleBudgetTokens,
     postProcessPrompt,
+    mergeConsecutiveRoles,
     PROMPT_PROCESSING_TYPE,
     addAssistantPrefix,
     embedOpenRouterMedia,
@@ -2722,6 +2723,16 @@ router.post('/generate', async function (request, response) {
                 request.body.messages,
                 postProcessingType,
                 getPromptNames(request),
+            );
+        }
+
+        if (
+            Array.isArray(request.body.messages) &&
+            request.body.merge_consecutive_roles
+        ) {
+            console.info('Applying global merge of consecutive roles');
+            request.body.messages = mergeConsecutiveRoles(
+                request.body.messages,
             );
         }
 

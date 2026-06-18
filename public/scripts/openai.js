@@ -635,6 +635,12 @@ export const settingsToUpdate = {
         true,
         false,
     ],
+    merge_consecutive_roles: [
+        '#merge_consecutive_roles',
+        'merge_consecutive_roles',
+        true,
+        false,
+    ],
     media_inlining: ['#openai_media_inlining', 'media_inlining', true, false],
     inline_image_quality: [
         '#openai_inline_image_quality',
@@ -805,6 +811,7 @@ const default_settings = {
     vertexai_region: 'us-central1',
     vertexai_express_project_id: '',
     squash_system_messages: false,
+    merge_consecutive_roles: false,
     media_inlining: true,
     inline_image_quality: 'auto',
     bypass_status_check: false,
@@ -4000,6 +4007,7 @@ export async function createGenerationParameters(
         request_image_resolution: String(settings.request_image_resolution),
         request_image_aspect_ratio: String(settings.request_image_aspect_ratio),
         custom_prompt_post_processing: settings.custom_prompt_post_processing,
+        merge_consecutive_roles: Boolean(settings.merge_consecutive_roles),
         verbosity: getVerbosity(settings),
     };
 
@@ -9441,6 +9449,11 @@ export function initOpenAI() {
 
     $('#squash_system_messages').on('input', function () {
         oai_settings.squash_system_messages = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#merge_consecutive_roles').on('input', function () {
+        oai_settings.merge_consecutive_roles = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

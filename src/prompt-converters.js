@@ -76,6 +76,60 @@ export function addAssistantPrefix(prompt, tools, property) {
 }
 
 /**
+ * Merges consecutive messages that share the same role into a single message.
+ * Tool-role messages are never merged. Roles, names, and tool_calls are preserved.
+ * Returns a new array; the input is not mutated.
+ * @param {any[]} messages Messages to merge
+ * @param {object} [_options] Unused options (present for API parity)
+ * @returns {any[]} New array with consecutive same-role messages merged
+ */
+export function mergeConsecutiveRoles(messages, _options) {
+    if (!Array.isArray(messages)) {
+        return messages;
+    }
+
+    /** @type {any[]} */
+    const mergedMessages = [];
+
+    for (const message of messages) {
+        const clone = structuredClone(message);
+        const last = mergedMessages[mergedMessages.length - 1];
+
+        if (
+            last !== undefined &&
+            last.role === clone.role &&
+            clone.role !== 'tool' &&
+            last.content &&
+            clone.content
+        ) {
+            if (Array.isArray(last.content) || Array.isArray(clone.content)) {
+                const left = Array.isArray(last.content)
+                    ? last.content
+                    : [{ type: 'text', text: String(last.content ?? '') }];
+                const right = Array.isArray(clone.content)
+                    ? clone.content
+                    : [{ type: 'text', text: String(clone.content ?? '') }];
+                last.content = [...left, ...right];
+            } else {
+                last.content = `${last.content}\n\n${clone.content}`;
+            }
+
+            if (Array.isArray(clone.tool_calls)) {
+                last.tool_calls = [
+                    ...(Array.isArray(last.tool_calls) ? last.tool_calls : []),
+                    ...clone.tool_calls,
+                ];
+            }
+            continue;
+        }
+
+        mergedMessages.push(clone);
+    }
+
+    return mergedMessages;
+}
+
+/**
  * Applies a post-processing step to the generated messages.
  * @param {object[]} messages Messages to post-process
  * @param {string} type Prompt conversion type
