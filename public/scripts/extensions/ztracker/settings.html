@@ -39,6 +39,51 @@
 
                 <div class="setting-row">
                     <label
+                        for="ztracker_generate_context_strategy"
+                        title="Controls prior context used when generating a tracker from a message action."
+                        >Generation Context Strategy</label
+                    >
+                    <select
+                        id="ztracker_generate_context_strategy"
+                        class="text_pole"
+                    >
+                        <option value="messages">Messages</option>
+                        <option value="trackers">Trackers</option>
+                    </select>
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_generate_context_message_count"
+                        title="Number of previous messages to include when strategy is Messages, and fallback count when no previous trackers exist."
+                        >Messages to Include</label
+                    >
+                    <input
+                        id="ztracker_generate_context_message_count"
+                        class="text_pole"
+                        type="number"
+                        min="1"
+                        value="20"
+                    />
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_generate_context_tracker_count"
+                        title="Number of previous trackers to include when strategy is Trackers. All messages back to the Nth tracker are included."
+                        >Trackers to Include</label
+                    >
+                    <input
+                        id="ztracker_generate_context_tracker_count"
+                        class="text_pole"
+                        type="number"
+                        min="1"
+                        value="2"
+                    />
+                </div>
+
+                <div class="setting-row">
+                    <label
                         for="ztracker_connection_source"
                         title="Use the active connection or a saved connection-manager profile."
                         >Connection Source</label

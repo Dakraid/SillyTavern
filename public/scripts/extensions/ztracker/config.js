@@ -167,6 +167,9 @@ export const defaultSettings = Object.freeze({
     embedSnapshotHeader: DEFAULT_EMBED_SNAPSHOT_HEADER,
     embedSnapshotFormat: EMBED_SNAPSHOT_FORMAT.PRETTY_JSON,
     includeLastXZTrackerMessages: 1,
+    generateContextStrategy: 'messages',
+    generateContextMessageCount: 20,
+    generateContextTrackerCount: 2,
     embedZTrackerRole: 'user',
     embedZTrackerAsCharacter: false,
 });

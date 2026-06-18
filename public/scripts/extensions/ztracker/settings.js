@@ -50,6 +50,9 @@ const DEFAULT_SETTINGS = Object.freeze({
     worldInfoPolicy: 'include_all',
     allowlistWorldInfo: [],
     includeLastXZTrackerMessages: 1,
+    generateContextStrategy: 'messages',
+    generateContextMessageCount: 20,
+    generateContextTrackerCount: 2,
     embedZTrackerSnapshotHeader: 'Tracker:',
     embedZTrackerSnapshotTransformPreset: 'default',
     embedZTrackerSnapshotTransformPresets: {
@@ -142,6 +145,11 @@ function getCurrentChatSchemaKey(settings) {
     return typeof key === 'string' && settings.schemaPresets[key]
         ? key
         : settings.schemaPreset;
+}
+
+function clampPositiveInteger(value, fallback) {
+    const number = Number(value);
+    return Number.isInteger(number) && number > 0 ? number : fallback;
 }
 
 function saveSettings() {
@@ -255,6 +263,12 @@ function renderSettings() {
         settings.embedZTrackerSnapshotHeader ?? '';
     byId('ztracker_embed_format').value =
         settings.embedZTrackerSnapshotTransformPreset ?? 'default';
+    byId('ztracker_generate_context_strategy').value =
+        settings.generateContextStrategy === 'trackers' ? 'trackers' : 'messages';
+    byId('ztracker_generate_context_message_count').value =
+        clampPositiveInteger(settings.generateContextMessageCount, 20);
+    byId('ztracker_generate_context_tracker_count').value =
+        clampPositiveInteger(settings.generateContextTrackerCount, 2);
     renderConnectionProfiles(settings);
     renderWorldInfoAllowlist(settings);
     renderSchemaSelectors(settings);
@@ -486,6 +500,25 @@ function bindEvents() {
         getSettings().allowlistWorldInfo = Array.from(
             event.target.selectedOptions,
         ).map((option) => option.value);
+        saveSettings();
+    });
+    byId('ztracker_generate_context_strategy').addEventListener('change', (event) => {
+        getSettings().generateContextStrategy =
+            event.target.value === 'trackers' ? 'trackers' : 'messages';
+        saveSettings();
+    });
+    byId('ztracker_generate_context_message_count').addEventListener('input', (event) => {
+        getSettings().generateContextMessageCount = clampPositiveInteger(
+            event.target.value,
+            20,
+        );
+        saveSettings();
+    });
+    byId('ztracker_generate_context_tracker_count').addEventListener('input', (event) => {
+        getSettings().generateContextTrackerCount = clampPositiveInteger(
+            event.target.value,
+            2,
+        );
         saveSettings();
     });
     byId('ztracker_schema_preset').addEventListener('change', (event) => {

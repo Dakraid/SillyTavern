@@ -10,6 +10,7 @@ import { ToolManager } from '../../tool-calling.js';
 import { getActiveSchemaPreset, getZTrackerSettings } from './config.js';
 import { CHAT_MESSAGE_SCHEMA_VALUE_KEY, EXTENSION_KEY } from './metadata.js';
 import { renderTracker } from './tracker.js';
+import { setActiveTrackerTarget } from './tools.js';
 
 let initialized = false;
 let activeGenerationMessageId = null;
@@ -120,20 +121,99 @@ function forceUpdateTrackerTool(generateData) {
     delete generateData.n;
 }
 
+function clampPositiveInteger(value, fallback) {
+    const number = Number(value);
+    return Number.isInteger(number) && number > 0 ? number : fallback;
+}
+
+function getContextTrackerValue(message) {
+    return message?.extra?.[EXTENSION_KEY]?.[CHAT_MESSAGE_SCHEMA_VALUE_KEY];
+}
+
+function isContextMessage(message) {
+    return Boolean(
+        message &&
+            message.is_system !== true &&
+            message.role !== 'system' &&
+            !message.extra?.zTrackerEmbeddedSnapshot,
+    );
+}
+
+function buildMessageContext(chatMessages, targetMessageId, count) {
+    const start = Math.max(0, targetMessageId - count);
+    const context = [];
+    for (let index = start; index < targetMessageId; index++) {
+        const message = chatMessages[index];
+        if (!isContextMessage(message)) continue;
+        context.push({
+            index,
+            message,
+            trackerValue: getContextTrackerValue(message),
+        });
+    }
+    return context;
+}
+
+export function buildGenerationContext(chatMessages, targetMessageId, settings = {}) {
+    if (!Array.isArray(chatMessages) || !Number.isInteger(targetMessageId)) {
+        return [];
+    }
+
+    const boundedTargetId = Math.min(
+        Math.max(targetMessageId, 0),
+        chatMessages.length,
+    );
+    const messageCount = clampPositiveInteger(
+        settings.generateContextMessageCount,
+        20,
+    );
+    const trackerCountLimit = clampPositiveInteger(
+        settings.generateContextTrackerCount,
+        2,
+    );
+
+    if (settings.generateContextStrategy === 'trackers') {
+        const context = [];
+        let trackersFound = 0;
+        for (let index = boundedTargetId - 1; index >= 0; index--) {
+            const message = chatMessages[index];
+            if (!isContextMessage(message)) continue;
+            const trackerValue = getContextTrackerValue(message);
+            context.unshift({ index, message, trackerValue });
+            if (trackerValue) {
+                trackersFound += 1;
+                if (trackersFound >= trackerCountLimit) break;
+            }
+        }
+        if (trackersFound > 0) {
+            return context;
+        }
+    }
+
+    return buildMessageContext(chatMessages, boundedTargetId, messageCount);
+}
+
+function formatGenerationContextMessage(entry) {
+    const { index, message, trackerValue } = entry;
+    const speaker = message?.name || (message?.is_user ? 'User' : 'Assistant');
+    const messageText = String(message?.mes ?? '').trim();
+    const lines = [`[${index}] ${speaker}: ${messageText}`];
+    if (trackerValue) {
+        lines.push(
+            `[Tracker (as of this message)]:\n${JSON.stringify(trackerValue, null, 2)}`,
+        );
+    }
+    return lines.join('\n');
+}
+
 function buildTrackerGenerationPrompt(messageId, preset, settings) {
     const messageText = String(chat[messageId]?.mes ?? '').trim();
     const schemaName = String(
         preset.name ?? settings.schemaPreset ?? 'active schema',
     );
     const schema = JSON.stringify(preset.value, null, 2);
-    const priorMessages = chat
-        .slice(Math.max(0, messageId - 10), messageId)
-        .map((message, index) => {
-            const absoluteIndex = Math.max(0, messageId - 10) + index;
-            const speaker =
-				message?.name || (message?.is_user ? 'User' : 'Assistant');
-            return `[${absoluteIndex}] ${speaker}: ${String(message?.mes ?? '').trim()}`;
-        })
+    const priorMessages = buildGenerationContext(chat, messageId, settings)
+        .map(formatGenerationContextMessage)
         .filter((line) => line.trim())
         .join('\n\n');
 
@@ -152,7 +232,7 @@ function buildTrackerGenerationPrompt(messageId, preset, settings) {
             role: 'user',
             content: [
                 `Target message index: ${messageId}`,
-                'Call update_tracker with this exact message_index and generated tracker_data.',
+                'Call update_tracker with tracker_data only. The tracker will be applied to the target message automatically.',
                 priorMessages ? `Relevant prior chat context:\n${priorMessages}` : '',
                 `Target message content:\n${messageText}`,
             ]
@@ -239,6 +319,7 @@ export async function generateTrackerForMessage(messageIndex) {
     }
 
     activeGenerationMessageId = messageId;
+    setActiveTrackerTarget(messageId);
     try {
         await requestTrackerToolCall(messageId, preset, settings);
         renderTracker(messageId);
@@ -247,6 +328,7 @@ export async function generateTrackerForMessage(messageIndex) {
         console.error('zTracker update failed:', error);
         return { ok: false, errors: [String(error?.message ?? error)] };
     } finally {
+        setActiveTrackerTarget(null);
         activeGenerationMessageId = null;
     }
 }
@@ -305,11 +387,11 @@ async function recreateTrackerField(messageId, button) {
     const idValue = button.dataset.ztrackerIdvalue;
 
     const initialValue =
-		fieldKey && Array.isArray(value)
-		    ? value[Number(index)]?.[fieldKey]
-		    : index !== undefined && Array.isArray(value)
-		        ? value[Number(index)]
-		        : value;
+        fieldKey && Array.isArray(value)
+            ? value[Number(index)]?.[fieldKey]
+            : index !== undefined && Array.isArray(value)
+                ? value[Number(index)]
+                : value;
     const newValue = await promptJson(
         `Update ${partKey}${fieldKey ? `.${fieldKey}` : ''}`,
         initialValue,
@@ -361,8 +443,8 @@ async function onZTrackerClick(event) {
     try {
         if (
             button.matches('.ztracker-part-regenerate-button') ||
-			button.matches('.ztracker-array-item-regenerate-button') ||
-			button.matches('.ztracker-array-item-field-regenerate-button')
+            button.matches('.ztracker-array-item-regenerate-button') ||
+            button.matches('.ztracker-array-item-field-regenerate-button')
         ) {
             await recreateTrackerField(messageId, button);
         } else if (button.matches('.ztracker-edit-button')) {
@@ -389,7 +471,7 @@ function createMessageButton() {
     const button = document.createElement('div');
     button.title = 'Generate Tracker for message';
     button.className =
-		'mes_button mes_ztracker_button fa-solid fa-truck-moving interactable';
+        'mes_button mes_ztracker_button fa-solid fa-truck-moving interactable';
     button.tabIndex = 0;
     return button;
 }
@@ -406,8 +488,8 @@ export function ensureZTrackerMessageButton(messageId) {
     }
 
     const host =
-		messageBlock.querySelector('.mes_buttons .extraMesButtons') ??
-		messageBlock.querySelector('.mes_buttons');
+        messageBlock.querySelector('.mes_buttons .extraMesButtons') ??
+        messageBlock.querySelector('.mes_buttons');
     const button = createMessageButton();
     button.dataset.mesid = String(messageId);
     host?.append(button);
