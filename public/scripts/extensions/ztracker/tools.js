@@ -24,6 +24,7 @@ import {
 } from './tracker.js';
 
 let trackerToolsRegistered = false;
+let activeTrackerTargetMessageId = null;
 
 const TOOL_NAMES = ['update_tracker', 'recreate_tracker_field', 'cleanup_tracker', 'edit_tracker'];
 
@@ -61,6 +62,23 @@ function recordToolResult(toolName, result) {
         globalThis.zTrackerLastError = errors.map(String).join('; ');
     }
     return result;
+}
+
+export function setActiveTrackerTarget(messageId) {
+    activeTrackerTargetMessageId = Number.isInteger(messageId) ? messageId : null;
+}
+
+export function resolveActiveTrackerTarget(targetChat = chat) {
+    if (Number.isInteger(activeTrackerTargetMessageId)) {
+        return activeTrackerTargetMessageId;
+    }
+    for (let i = (targetChat?.length ?? 0) - 1; i >= 0; i--) {
+        const message = targetChat[i];
+        if (message && message.is_user === false && message.is_system !== true) {
+            return i;
+        }
+    }
+    return null;
 }
 
 function resolveMessageIndex(messageIndex) {
@@ -389,34 +407,31 @@ async function persistTrackerUpdate(
 }
 
 function registerUpdateTrackerTool() {
+    let resolvedTargetId = null;
     ToolManager.registerFunctionTool({
         name: 'update_tracker',
         displayName: 'Update Tracker',
         description:
-            'Update the state tracker for the current message with complete tracker data matching the active zTracker schema.',
+            'Update the state tracker for the active target message with complete tracker data matching the active zTracker schema. The target message is resolved automatically.',
         parameters: Object.freeze({
             type: 'object',
             properties: {
-                message_index: {
-                    type: 'number',
-                    description:
-                        'Index of the message to update. Use -1 for the latest message.',
-                },
                 tracker_data: {
                     type: 'object',
                     description:
                         'Complete tracker state data matching the active zTracker schema.',
                 },
             },
-            required: ['message_index', 'tracker_data'],
+            required: ['tracker_data'],
         }),
         action: async (args) => {
-            const rawMessageIndex = args?.message_index;
-            let messageId;
-            try {
-                messageId = resolveMessageIndex(rawMessageIndex);
-            } catch {
-                return recordToolResult('update_tracker', fail(`Invalid message index: ${rawMessageIndex}`));
+            const messageId = resolveActiveTrackerTarget(chat);
+            resolvedTargetId = messageId;
+            if (messageId === null) {
+                return recordToolResult('update_tracker', fail('No valid target message found for tracker update'));
+            }
+            if (!Number.isInteger(messageId) || messageId < 0 || messageId >= chat.length) {
+                return recordToolResult('update_tracker', fail(`Invalid target message index: ${messageId}`));
             }
 
             try {
@@ -453,8 +468,8 @@ function registerUpdateTrackerTool() {
         },
         shouldRegister: shouldRegisterTrackerTool,
         stealth: false,
-        formatMessage: (args) =>
-            `Updating tracker for message ${args?.message_index ?? 'unknown'}`,
+        formatMessage: () =>
+            `Updating tracker for message ${resolvedTargetId ?? 'no target'}`,
     });
 }
 

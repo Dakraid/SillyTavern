@@ -73,3 +73,4 @@ export async function init() {
 export { getZTrackerSettings } from './config.js';
 export * from './metadata.js';
 export * from './tracker.js';
+export { includeZTrackerMessages, formatEmbeddedTrackerSnapshot } from './embed.js';
