@@ -371,7 +371,10 @@ import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
-import { ToolManager } from './scripts/tool-calling.js';
+import {
+    ToolManager,
+    scrubToolProcessingMetadata,
+} from './scripts/tool-calling.js';
 import { addShowdownPatch } from './scripts/util/showdown-patch.js';
 import { applyBrowserFixes } from './scripts/browser-fixes.js';
 import { initServerHistory } from './scripts/server-history.js';
@@ -379,6 +382,7 @@ import { initSettingsSearch } from './scripts/setting-search.js';
 import { initBulkEdit } from './scripts/bulk-edit.js';
 import { getContext } from './scripts/st-context.js';
 import {
+    extractReasoningDetailsFromData,
     extractReasoningFromData,
     extractReasoningSignatureFromData,
     initReasoning,
@@ -788,6 +792,13 @@ export const isGenerating = () => is_send_press || is_group_generating;
 
 let this_del_mes = -1;
 
+const ZTRACKER_TOOL_NAMES = new Set([
+    'update_tracker',
+    'recreate_tracker_field',
+    'cleanup_tracker',
+    'edit_tracker',
+]);
+
 /** @type {string} */
 let this_edit_mes_chname = '';
 /** @type {number|undefined} */
@@ -813,6 +824,8 @@ export let extension_prompts = {};
 
 export let main_api; // = "kobold";
 let abortController = new AbortController();
+let hadToolCallsInFlow = false;
+const TOOL_CONTINUATION_TYPE = 'tool-continue';
 
 //css
 var css_send_form_display = $('<div id=send_form></div>').css('display');
@@ -1956,12 +1969,24 @@ export async function redisplayChat({
     const messages = targetChat.slice(startIndex);
 
     if (messages.length > 0) {
-        const newMessageElements = messages.map((message, offset) => {
-            const i = startIndex + offset;
-            const messageElement = updateMessageElement(message, { messageId: i });
+        const newMessageElements = messages
+            .map((message, offset) => {
+                const i = startIndex + offset;
+                if (message?.extra?.isToolResult) {
+                    return null;
+                }
+                const messageElement = updateMessageElement(message, { messageId: i });
 
-            return messageElement[0];
-        });
+                return messageElement[0];
+            })
+            .filter(Boolean);
+
+        if (newMessageElements.length === 0) {
+            refreshSwipeButtons(false, fade);
+            applyStylePins();
+            updateEditArrowClasses();
+            return;
+        }
 
         //The last_mes has been removed, add it to the new last message.
         newMessageElements.at(-1).classList.add('last_mes');
@@ -2061,10 +2086,295 @@ export async function clearChat({ clearData = false } = {}) {
 }
 
 export async function deleteLastMessage() {
-    deleteItemizedPromptForMessage(chat.length - 1);
-    chat.length = chat.length - 1;
+    const messageId = chat.length - 1;
+    scrubToolProcessingMetadata(chat[messageId]);
+    deleteItemizedPromptForMessage(messageId);
+    chat.length = messageId;
     chatElement.children('.mes').last().remove();
     await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
+}
+
+/**
+ * Checks whether a message is an assistant/processing target for tool traces.
+ * @param {number} messageId Message index
+ * @returns {boolean} True if tool trace can be attached to the message
+ */
+function canAttachToolTraceToMessage(messageId) {
+    const message = chat[messageId];
+    return Boolean(
+        message && !message.is_user && !isHiddenToolResultMessage(message),
+    );
+}
+
+/**
+ * Adds reasoning from a follow-up response to an existing tool-flow message.
+ * @param {object} message Chat message
+ * @param {string} reasoning Reasoning text
+ */
+function appendToolFlowReasoningToMessage(message, reasoning) {
+    if (!reasoning) {
+        return;
+    }
+
+    message.extra = message.extra || {};
+    if (
+        !ReasoningHandler.hasProcessingSegments(message.extra) &&
+		message.extra.reasoning
+    ) {
+        ReasoningHandler.appendReasoningSegment(
+            message.extra,
+            message.extra.reasoning,
+        );
+    }
+    ReasoningHandler.appendReasoningSegment(message.extra, reasoning);
+    message.extra.reasoning = ReasoningHandler.getJoinedReasoning(message.extra);
+}
+
+/**
+ * Creates an assistant processing container for tool-only responses.
+ * @param {object} options Message options
+ * @param {string} options.type Generation type
+ * @param {string} [options.title] Message title
+ * @param {string} [options.reasoning] Reasoning text
+ * @param {string[]} [options.imageUrls] Image URLs
+ * @param {string?} [options.reasoningSignature] Reasoning signature
+ * @param {object[]?} [options.reasoningDetails] OpenRouter reasoning details
+ * @returns {Promise<number>} Created message index
+ */
+async function createToolProcessingMessage({
+    type,
+    title = '',
+    reasoning = '',
+    imageUrls = [],
+    reasoningSignature = null,
+    reasoningDetails = null,
+}) {
+    const newMessage = {};
+    chat.push(newMessage);
+    newMessage.extra = {};
+    newMessage.name = name2;
+    newMessage.is_user = false;
+    newMessage.send_date = getMessageTimeStamp();
+    newMessage.extra.api = getGeneratingApi();
+    newMessage.extra.model = getGeneratingModel();
+    newMessage.extra.reasoning = reasoning || '';
+    newMessage.extra.reasoning_duration = null;
+    newMessage.extra.reasoning_signature = reasoningSignature;
+    newMessage.extra.processing_started_at = generation_started.toISOString();
+    if (Array.isArray(reasoningDetails) && reasoningDetails.length > 0) {
+        newMessage.extra.reasoning_details = reasoningDetails
+            .filter((detail) => detail && typeof detail === 'object')
+            .map((detail) => structuredClone(detail));
+    }
+    newMessage.extra.isProcessingMessage = true;
+    newMessage.mes = '';
+    newMessage.title = title;
+    newMessage.gen_started = generation_started;
+    newMessage.gen_finished = new Date();
+
+    if (selected_group) {
+        let avatarImg = 'img/ai4.png';
+        if (characters[this_chid].avatar != 'none') {
+            avatarImg = getThumbnailUrl('avatar', characters[this_chid].avatar);
+        }
+        newMessage.force_avatar = avatarImg;
+        newMessage.original_avatar = characters[this_chid].avatar;
+        newMessage.extra.gen_id = group_generation_id;
+    }
+
+    await processImageAttachment(newMessage, { imageUrls });
+
+    const chatId = chat.length - 1;
+    await eventSource.emit(event_types.MESSAGE_RECEIVED, chatId, type);
+    addOneMessage(chat[chatId]);
+    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chatId, type);
+
+    newMessage.swipe_id = 0;
+    newMessage.swipes = [newMessage.mes];
+    newMessage.swipe_info = [
+        {
+            send_date: newMessage.send_date,
+            gen_started: newMessage.gen_started,
+            gen_finished: newMessage.gen_finished,
+            extra: structuredClone(newMessage.extra),
+        },
+    ];
+
+    statMesProcess(newMessage, type, characters, this_chid, '');
+    return chatId;
+}
+
+/**
+ * Persists the total processing duration from the first tool-flow request.
+ * @param {object} message Chat message
+ */
+function persistToolProcessingDuration(message) {
+    const startedAt = message?.extra?.processing_started_at;
+    if (!startedAt) {
+        return;
+    }
+
+    const start = new Date(startedAt);
+    const finish = message.gen_finished
+        ? new Date(message.gen_finished)
+        : new Date();
+    const duration = finish.getTime() - start.getTime();
+    if (Number.isFinite(duration) && duration > 0) {
+        message.extra.reasoning_duration = duration;
+    }
+}
+
+async function clearToolProcessingMessage(messageId) {
+    if (!canAttachToolTraceToMessage(messageId)) {
+        return;
+    }
+
+    const message = chat[messageId];
+    if (message?.extra?.isProcessingMessage) {
+        message.gen_finished = new Date();
+        persistToolProcessingDuration(message);
+        delete message.extra.isProcessingMessage;
+        updateMessageBlock(messageId, message);
+        await saveChatConditional();
+    }
+}
+
+/**
+ * Removes processing state from a tool-flow message if generation was aborted.
+ * @param {number} messageId Message index
+ */
+async function cleanupToolProcessingMessageOnAbort(messageId) {
+    if (abortController?.signal.aborted) {
+        await clearToolProcessingMessage(messageId);
+    }
+}
+
+/**
+ * Summarizes visible vs stealth tool invocations for generation control.
+ * @param {import('./scripts/tool-calling.js').ToolInvocationResult} invocationResult Invocation result
+ * @returns {{ visibleInvocations: import('./scripts/tool-calling.js').ToolInvocation[], stealthInvocations: import('./scripts/tool-calling.js').ToolInvocation[], traceInvocations: import('./scripts/tool-calling.js').ToolInvocation[], hasVisibleInvocations: boolean, hasOnlyStealthInvocations: boolean }} Tool flow state
+ */
+function getToolInvocationFlowState(invocationResult) {
+    const invocations = Array.isArray(invocationResult?.invocations)
+        ? invocationResult.invocations
+        : [];
+    const visibleInvocations = invocations.filter(
+        (invocation) => !invocation.stealth,
+    );
+    const stealthInvocations = invocations.filter(
+        (invocation) => invocation.stealth,
+    );
+
+    return {
+        visibleInvocations,
+        stealthInvocations,
+        traceInvocations: invocations,
+        hasVisibleInvocations: visibleInvocations.length > 0,
+        hasOnlyStealthInvocations:
+			invocations.length > 0 && visibleInvocations.length === 0,
+    };
+}
+
+/**
+ * Appends a generated continuation to an existing assistant message.
+ * @param {string} previousText Existing message text
+ * @param {string} continuationText Continuation text
+ * @returns {string} Combined message text
+ */
+export function appendAssistantMessageText(previousText, continuationText) {
+    const previous = String(previousText ?? '');
+    const continuation = String(continuationText ?? '');
+
+    if (!continuation) {
+        return previous;
+    }
+
+    if (!previous || previous === '...') {
+        return continuation.trimStart();
+    }
+
+    const trimmedPrevious = previous.trimEnd();
+    const trimmedContinuation = continuation.trimStart();
+
+    if (!trimmedContinuation) {
+        return trimmedPrevious;
+    }
+
+    if (trimmedContinuation.startsWith(trimmedPrevious)) {
+        const remainder = trimmedContinuation
+            .slice(trimmedPrevious.length)
+            .trimStart();
+        return remainder ? `${trimmedPrevious}\n\n${remainder}` : trimmedPrevious;
+    }
+
+    if (trimmedPrevious.endsWith(trimmedContinuation)) {
+        return trimmedPrevious;
+    }
+
+    return `${trimmedPrevious}\n\n${trimmedContinuation}`;
+}
+
+/**
+ * Gets prefix used while streaming a continuation into an existing message.
+ * @param {string} previousText Existing message text
+ * @returns {string} Continuation prefix
+ */
+function getAssistantMessageContinuationPrefix(previousText) {
+    const previous = String(previousText ?? '').trimEnd();
+    return previous && previous !== '...' ? `${previous}\n\n` : '';
+}
+
+/**
+ * Stores tool invocations on the assistant message that requested them.
+ * @param {number} messageId Message index
+ * @param {import('./scripts/tool-calling.js').ToolInvocation[]} invocations Tool invocations
+ */
+function saveToolInvocationsToMessage(messageId, invocations) {
+    if (
+        !Number.isInteger(messageId) ||
+		!Array.isArray(invocations) ||
+		invocations.length === 0 ||
+		!canAttachToolTraceToMessage(messageId)
+    ) {
+        return;
+    }
+
+    chat[messageId].extra = chat[messageId].extra || {};
+    chat[messageId].extra.processing_started_at =
+		chat[messageId].extra.processing_started_at ||
+		new Date(chat[messageId].gen_started || generation_started).toISOString();
+    chat[messageId].extra.tool_invocations = [
+        ...(Array.isArray(chat[messageId].extra.tool_invocations)
+            ? chat[messageId].extra.tool_invocations
+            : []),
+        ...invocations,
+    ];
+}
+
+/**
+ * Stores OpenRouter reasoning details on the assistant message that requested tools.
+ * @param {number} messageId Message index
+ * @param {object[]?} reasoningDetails OpenRouter reasoning_details array
+ * @param {string?} reasoningSignature Encrypted assistant reasoning signature
+ */
+function saveToolReasoningArtifactsToMessage(
+    messageId,
+    reasoningDetails,
+    reasoningSignature = null,
+) {
+    if (!Number.isInteger(messageId) || !canAttachToolTraceToMessage(messageId)) {
+        return;
+    }
+
+    chat[messageId].extra = chat[messageId].extra || {};
+    if (Array.isArray(reasoningDetails) && reasoningDetails.length > 0) {
+        chat[messageId].extra.reasoning_details = reasoningDetails
+            .filter((detail) => detail && typeof detail === 'object')
+            .map((detail) => structuredClone(detail));
+    }
+    if (reasoningSignature) {
+        chat[messageId].extra.reasoning_signature = reasoningSignature;
+    }
 }
 
 /**
@@ -2078,6 +2388,11 @@ export async function deleteMessage(
     swipeDeletionIndex = undefined,
     askConfirmation = false,
 ) {
+    if (id < 0 || id >= chat.length || !chat[id]) {
+        console.warn(`[deleteMessage] Invalid message ID: ${id}`);
+        return;
+    }
+
     const canDeleteSwipe =
 		swipeDeletionIndex !== undefined && swipeDeletionIndex !== null;
     if (canDeleteSwipe) {
@@ -2121,6 +2436,7 @@ export async function deleteMessage(
         return;
     }
 
+    scrubToolProcessingMetadata(chat[id]);
     chat.splice(id, 1);
     messageElement.remove();
 
@@ -3174,6 +3490,10 @@ export function addOneMessage(
         return chat.length - 1;
     })();
 
+    if (mes?.extra?.isToolResult) {
+        return $();
+    }
+
     let messageElement;
 
     if (type === 'swipe') {
@@ -3204,9 +3524,8 @@ export function addOneMessage(
         }
     }
 
-    //last_mes should always be updated.
-    chatElement.find('.mes').removeClass('last_mes');
-    chatElement.find('.mes').last().addClass('last_mes');
+    //last_mes should always be updated based on the last visible chat message.
+    updateLastMessageClass();
 
     if (showSwipes) refreshSwipeButtons();
     // Don't scroll if not inserting last
@@ -4347,10 +4666,22 @@ class StreamingProcessor {
 	 * @param {Date} timeStarted Date when generation was started
 	 * @param {string} continueMessage Previous message if the type is 'continue'
 	 * @param {PromptReasoning} promptReasoning Prompt reasoning instance
+	 * @param {number?} processingMessageId Existing processing message to continue streaming into
+	 * @param {boolean} suppressContinuationPrefix If true, do not prefix existing message text while streaming
 	 */
-    constructor(type, forceName2, timeStarted, continueMessage, promptReasoning) {
+    constructor(
+        type,
+        forceName2,
+        timeStarted,
+        continueMessage,
+        promptReasoning,
+        processingMessageId = null,
+        suppressContinuationPrefix = false,
+    ) {
         this.result = '';
-        this.messageId = -1;
+        this.messageId = Number.isInteger(processingMessageId)
+            ? processingMessageId
+            : -1;
         /** @type {HTMLElement} */
         this.messageDom = null;
         /** @type {HTMLElement} */
@@ -4372,11 +4703,18 @@ class StreamingProcessor {
         /** @type {number?} */
         this.timeToFirstToken = null;
         this.createdAt = new Date();
-        this.continueMessage = type === 'continue' ? continueMessage : '';
+        this.continueMessage =
+			type === 'continue'
+			    ? continueMessage
+			    : suppressContinuationPrefix
+			        ? ''
+			        : getAssistantMessageContinuationPrefix(chat[this.messageId]?.mes);
         this.swipes = [];
         /** @type {import('./scripts/logprobs.js').TokenLogprobs[]} */
         this.messageLogprobs = [];
         this.toolCalls = [];
+        /** @type {string?} */
+        this.finishReason = null;
         // Initialize reasoning in its own handler
         this.reasoningHandler = new ReasoningHandler(timeStarted);
         /** @type {PromptReasoning} */
@@ -4385,6 +4723,8 @@ class StreamingProcessor {
         this.images = [];
         /** @type {string?} */
         this.reasoningSignature = null;
+        /** @type {object[]?} */
+        this.reasoningDetails = null;
     }
 
     /**
@@ -4507,12 +4847,16 @@ class StreamingProcessor {
             this.#updateMessageBlockVisibility();
             const currentTime = new Date();
             chat[messageId].mes = processedText;
-            chat[messageId].gen_started = this.timeStarted;
-            chat[messageId].gen_finished = currentTime;
             if (!chat[messageId].extra) {
                 chat[messageId].extra = {};
             }
+            const processingStartedAt = chat[messageId].extra.processing_started_at;
+            chat[messageId].gen_started = processingStartedAt
+                ? new Date(processingStartedAt)
+                : this.timeStarted;
+            chat[messageId].gen_finished = currentTime;
             chat[messageId].extra.time_to_first_token = this.timeToFirstToken;
+            persistToolProcessingDuration(chat[messageId]);
 
             // Update reasoning
             await this.reasoningHandler.process(
@@ -4553,7 +4897,11 @@ class StreamingProcessor {
                 if (power_user.stream_fade_in) {
                     applyStreamFadeIn(this.messageTextDom, messageHTML);
                 } else {
-                    this.messageTextDom.innerHTML = messageHTML;
+                    this.messageTextDom.replaceChildren(
+                        document
+                            .createRange()
+                            .createContextualFragment(DOMPurify.sanitize(messageHTML)),
+                    );
                 }
             }
 
@@ -4592,6 +4940,10 @@ class StreamingProcessor {
         const message = chat[messageId];
         addCopyToCodeBlocks(messageElement);
 
+        if (message?.extra?.isProcessingMessage) {
+            delete message.extra.isProcessingMessage;
+        }
+
         await this.reasoningHandler.finish(messageId);
 
         if (Array.isArray(this.swipes) && this.swipes.length > 0) {
@@ -4628,10 +4980,19 @@ class StreamingProcessor {
             appendMediaToMessage(message, $(this.messageDom));
         }
 
-        // Store reasoning signature for models that support multi-turn context
+        // Store reasoning artifacts for models that support multi-turn context
         if (this.reasoningSignature) {
             message.extra = message.extra || {};
             message.extra.reasoning_signature = this.reasoningSignature;
+        }
+        if (
+            Array.isArray(this.reasoningDetails) &&
+			this.reasoningDetails.length > 0
+        ) {
+            message.extra = message.extra || {};
+            message.extra.reasoning_details = this.reasoningDetails
+                .filter((detail) => detail && typeof detail === 'object')
+                .map((detail) => structuredClone(detail));
         }
 
         if (unlockUI) {
@@ -4657,10 +5018,20 @@ class StreamingProcessor {
     }
 
     async onFinishStreaming(messageId, text) {
-        await this.finalizeIntermediaryMessage(messageId, text, { unlockUI: true });
+        const finalText =
+			this.type !== 'continue'
+			    ? appendAssistantMessageText(this.continueMessage, text)
+			    : text;
+        await this.finalizeIntermediaryMessage(messageId, finalText, {
+            unlockUI: true,
+        });
 
         const isAborted = this.abortController.signal.aborted;
-        if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
+        if (
+            !isAborted &&
+			power_user.auto_swipe &&
+			generatedTextFiltered(finalText)
+        ) {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, {
                 source: SWIPE_SOURCE.AUTO_SWIPE,
                 repeated: true,
@@ -4720,7 +5091,7 @@ class StreamingProcessor {
     }
 
     /**
-	 * @returns {AsyncGenerator<{ text: string, swipes: string[], logprobs: import('./scripts/logprobs.js').TokenLogprobs, toolCalls: any[], state: any }, void, void>}
+	 * @returns {AsyncGenerator<{ text: string, swipes: string[], logprobs: import('./scripts/logprobs.js').TokenLogprobs, toolCalls: any[], finishReason?: string?, state: any }, void, void>}
 	 */
     async* nullStreamingGeneration() {
         throw new Error('Generation function for streaming is not hooked up');
@@ -4731,6 +5102,13 @@ class StreamingProcessor {
             this.messageId = await this.onStartStreaming(this.firstMessageText);
             await delay(1); // delay for message to be rendered
             scrollLock = false;
+        } else {
+            await this.#checkDomElements(this.messageId);
+            this.reasoningHandler.initHandleMessage(this.messageId);
+            if (this.type === TOOL_CONTINUATION_TYPE) {
+                this.reasoningHandler.beginToolFlowResponse(this.messageId);
+            }
+            this.markUIGenStarted();
         }
 
         // Stopping strings are expensive to calculate, especially with macros enabled. To remove stopping strings
@@ -4751,6 +5129,7 @@ class StreamingProcessor {
                 swipes,
                 logprobs,
                 toolCalls,
+                finishReason,
                 state,
             } of this.generator()) {
                 const now = Date.now();
@@ -4763,6 +5142,10 @@ class StreamingProcessor {
                 }
 
                 this.toolCalls = toolCalls;
+                const currentFinishReason = finishReason ?? state?.finishReason ?? null;
+                if (currentFinishReason) {
+                    this.finishReason = currentFinishReason;
+                }
                 this.result = text;
                 this.swipes = Array.from(swipes ?? []);
                 if (logprobs) {
@@ -4772,14 +5155,25 @@ class StreamingProcessor {
                 }
                 // Get the updated reasoning string into the handler
                 this.reasoningHandler.updateReasoning(this.messageId, state?.reasoning);
+                if (
+                    oai_settings.chat_completion_source ===
+						chat_completion_sources.OPENROUTER &&
+					!this.reasoningHandler.hasToolCalls &&
+					ToolManager.hasToolCalls(toolCalls)
+                ) {
+                    this.reasoningHandler.markProcessing(this.messageId);
+                }
                 this.images = state?.images ?? [];
                 this.reasoningSignature = state?.signature ?? null;
+                this.reasoningDetails = Array.isArray(state?.reasoningDetails)
+                    ? state.reasoningDetails
+                    : null;
                 await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
                 await sw.tick(
                     async () =>
                         await this.onProgressStreaming(
                             this.messageId,
-                            this.continueMessage + text,
+                            appendAssistantMessageText(this.continueMessage, text),
                         ),
                 );
             }
@@ -5325,6 +5719,9 @@ function removeLastMessage() {
  * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
  * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
  * @property {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
+ * @property {number?} [processingMessageId] Message ID of an in-progress tool-call processing container.
+ * @property {boolean} [isToolFlowContinuation] Whether this request continues an existing tool-call flow.
+ * @property {boolean} [suppressContinuationPrefix] Whether to avoid prefixing existing assistant text into the streamed continuation.
  */
 
 /**
@@ -5349,6 +5746,9 @@ export async function Generate(
         quietName,
         jsonSchema = null,
         depth = 0,
+        processingMessageId = null,
+        isToolFlowContinuation: explicitToolFlowContinuation = false,
+        suppressContinuationPrefix = false,
     } = {},
     dryRun = false,
 ) {
@@ -5379,6 +5779,21 @@ export async function Generate(
     // Don't recreate abort controller if signal is passed
     if (!(abortController && signal)) {
         abortController = new AbortController();
+    }
+    const generationSignal = signal ?? abortController.signal;
+    const isToolFlowContinuation =
+		explicitToolFlowContinuation ||
+		type === TOOL_CONTINUATION_TYPE ||
+		depth > 0 ||
+		Number.isInteger(processingMessageId);
+    const processingStartedAt = Number.isInteger(processingMessageId)
+        ? chat[processingMessageId]?.extra?.processing_started_at
+        : null;
+    if (isToolFlowContinuation && processingStartedAt) {
+        generation_started = new Date(processingStartedAt);
+    }
+    if (!isToolFlowContinuation) {
+        hadToolCallsInFlow = false;
     }
 
     // OpenAI doesn't need instruct mode. Use OAI main prompt instead.
@@ -5545,6 +5960,7 @@ export async function Generate(
 			!depth &&
 			chat.length
         ) {
+            scrubToolProcessingMetadata(chat[chat.length - 1]);
             deleteItemizedPromptForMessage(chat.length - 1);
             chat.length = chat.length - 1;
             await removeLastMessage();
@@ -5684,7 +6100,12 @@ export async function Generate(
 		depth < ToolManager.RECURSE_LIMIT;
     let coreChat = chat.filter(
         (x) =>
-            !x.is_system || (canUseTools && Array.isArray(x.extra?.tool_invocations)),
+            (!x.extra?.isProcessingMessage ||
+				String(x.mes ?? '').trim() ||
+				(Array.isArray(x.extra?.tool_invocations) &&
+					x.extra.tool_invocations.length > 0)) &&
+			(!x.is_system ||
+				(canUseTools && Array.isArray(x.extra?.tool_invocations))),
     );
     if (type === 'swipe') {
         coreChat.pop();
@@ -6855,7 +7276,10 @@ export async function Generate(
                 generation_started,
                 continue_mag,
                 promptReasoning,
+                processingMessageId,
+                suppressContinuationPrefix,
             );
+            streamingProcessor.abortController = abortController;
             if (isContinue) {
                 // Save reply does add cycle text to the prompt, so it's not needed here
                 streamingProcessor.firstMessageText = '';
@@ -6889,66 +7313,138 @@ export async function Generate(
 				Array.isArray(streamingProcessor.toolCalls) &&
 				streamingProcessor.toolCalls.length;
             if (canPerformToolCalls && isStreamFinished && isStreamWithToolCalls) {
-                const lastMessage = chat[chat.length - 1];
                 const hasToolCalls = ToolManager.hasToolCalls(
                     streamingProcessor.toolCalls,
                 );
-                const shouldDeleteMessage =
-					type !== 'swipe' &&
-					['', '...'].includes(lastMessage?.mes) &&
-					!lastMessage?.extra?.reasoning &&
-					['', '...'].includes(streamingProcessor?.result);
-                hasToolCalls && shouldDeleteMessage && (await deleteLastMessage());
-                if (hasToolCalls && !shouldDeleteMessage) {
-                    await streamingProcessor.finalizeIntermediaryMessage(
-                        streamingProcessor.messageId,
-                        getMessage,
-                        { unlockUI: false },
-                    );
-                }
-                const invocationResult = await ToolManager.invokeFunctionTools(
-                    streamingProcessor.toolCalls,
-                    {
-                        reasoningText: streamingProcessor.reasoningHandler.reasoning,
-                    },
-                );
-                const shouldStopGeneration =
-					(!invocationResult.invocations.length && shouldDeleteMessage) ||
-					invocationResult.stealthCalls.length;
                 if (hasToolCalls) {
+                    const invocationResult = await ToolManager.invokeFunctionTools(
+                        streamingProcessor.toolCalls,
+                        {
+                            reasoningText: streamingProcessor.reasoningHandler.reasoning,
+                        },
+                    );
+                    const toolInvocationState =
+						getToolInvocationFlowState(invocationResult);
+                    const shouldDeleteMessage =
+						['', '...'].includes(getMessage) &&
+						!streamingProcessor.reasoningHandler.reasoning;
+                    const hasVisibleContent = !['', '...'].includes(getMessage);
+                    const shouldRecurseForToolCalls =
+						ToolManager.shouldRecurseForToolCalls(
+						    streamingProcessor.toolCalls,
+						    {
+						        finishReason: streamingProcessor.finishReason,
+						        hasVisibleContent,
+						        stopOnContentBeforeToolCall:
+									oai_settings.stop_on_content_before_tool_call,
+						        source: oai_settings.chat_completion_source,
+						    },
+						);
+                    const shouldStopGeneration =
+						(!invocationResult.invocations.length &&
+							!invocationResult.errors.length &&
+							shouldDeleteMessage) ||
+						(toolInvocationState.hasOnlyStealthInvocations &&
+							!shouldRecurseForToolCalls) ||
+						!shouldRecurseForToolCalls;
+                    hadToolCallsInFlow = true;
+                    const currentProcessingMessageId = streamingProcessor.messageId;
+                    saveToolInvocationsToMessage(
+                        currentProcessingMessageId,
+                        invocationResult.invocations,
+                    );
+                    saveToolReasoningArtifactsToMessage(
+                        currentProcessingMessageId,
+                        streamingProcessor.reasoningDetails,
+                        streamingProcessor.reasoningSignature,
+                    );
+                    const toolTrace = ToolManager.formatToolCallTrace(
+                        toolInvocationState.traceInvocations,
+                    );
+                    if (
+                        toolTrace &&
+						canAttachToolTraceToMessage(currentProcessingMessageId)
+                    ) {
+                        chat[currentProcessingMessageId].extra =
+							chat[currentProcessingMessageId].extra || {};
+                        streamingProcessor.reasoningHandler.appendProcessingTrace(
+                            currentProcessingMessageId,
+                            toolTrace,
+                            {
+                                appendReasoningAsNewSegment:
+									Number.isInteger(processingMessageId),
+                            },
+                        );
+                        if (!hasVisibleContent) {
+                            chat[currentProcessingMessageId].extra.isProcessingMessage = true;
+                        } else {
+                            delete chat[currentProcessingMessageId].extra.isProcessingMessage;
+                        }
+                    }
+                    streamingProcessor.messageDom?.classList.remove('displayNone');
+
                     if (shouldStopGeneration) {
                         if (
-                            Array.isArray(invocationResult.errors) &&
-							invocationResult.errors.length
+                            shouldDeleteMessage &&
+							!toolTrace &&
+							!Number.isInteger(processingMessageId)
                         ) {
-                            ToolManager.showToolCallError(invocationResult.errors);
+                            await deleteLastMessage();
+                        } else if (hasVisibleContent) {
+                            await streamingProcessor.onFinishStreaming(
+                                currentProcessingMessageId,
+                                getMessage,
+                            );
+                        } else {
+                            await clearToolProcessingMessage(currentProcessingMessageId);
                         }
                         unblockGeneration(type);
                         streamingProcessor = null;
                         return;
                     }
 
+                    if (hasVisibleContent) {
+                        const finalText =
+							streamingProcessor.type !== 'continue'
+							    ? appendAssistantMessageText(
+							        streamingProcessor.continueMessage,
+							        getMessage,
+							    )
+							    : getMessage;
+                        await streamingProcessor.finalizeIntermediaryMessage(
+                            currentProcessingMessageId,
+                            finalText,
+                            { unlockUI: false },
+                        );
+                    }
                     streamingProcessor = null;
                     depth = depth + 1;
-                    await ToolManager.saveFunctionToolInvocations(
-                        invocationResult.invocations,
-                    );
-                    return Generate(
-                        'normal',
-                        {
-                            automatic_trigger,
-                            force_name2,
-                            quiet_prompt,
-                            quietToLoud,
-                            skipWIAN,
-                            force_chid,
-                            signal,
-                            quietImage,
-                            quietName,
-                            depth,
-                        },
-                        dryRun,
-                    );
+                    try {
+                        return await Generate(
+                            TOOL_CONTINUATION_TYPE,
+                            {
+                                automatic_trigger,
+                                force_name2,
+                                quiet_prompt,
+                                quietToLoud,
+                                skipWIAN,
+                                force_chid,
+                                signal: generationSignal,
+                                quietImage,
+                                quietName,
+                                depth,
+                                processingMessageId: currentProcessingMessageId,
+                                isToolFlowContinuation: true,
+                                suppressContinuationPrefix: false,
+                            },
+                            dryRun,
+                        );
+                    } finally {
+                        await cleanupToolProcessingMessageOnAbort(
+                            currentProcessingMessageId,
+                        );
+                        await cleanupTemporaryZTrackerToolResults();
+                    }
                 }
             }
 
@@ -6958,7 +7454,9 @@ export async function Generate(
                     getMessage,
                 );
                 streamingProcessor = null;
-                triggerAutoContinue(messageChunk, isImpersonate);
+                if (!hadToolCallsInFlow) {
+                    triggerAutoContinue(messageChunk, isImpersonate);
+                }
                 return Object.defineProperties(new String(getMessage), {
                     messageChunk: { value: messageChunk },
                     fromStream: { value: true },
@@ -7009,6 +7507,7 @@ export async function Generate(
         let reasoning = extractReasoningFromData(data);
         let imageUrls = extractImagesFromData(data);
         const reasoningSignature = extractReasoningSignatureFromData(data);
+        const reasoningDetails = extractReasoningDetailsFromData(data);
         kobold_horde_model = title;
 
         const swipes = extractMultiSwipes(data, type);
@@ -7040,6 +7539,16 @@ export async function Generate(
             displayIncompleteSentences: displayIncomplete,
         });
 
+        const responseHasToolCalls =
+			canPerformToolCalls && ToolManager.hasToolCalls(data);
+        const responseFinishReason = ToolManager.getToolCallFinishReason(data);
+        const isToolOnlyResponse =
+			responseHasToolCalls &&
+			type !== 'swipe' &&
+			['', '...'].includes(getMessage);
+        const hasEmptyToolResponse = isToolOnlyResponse && !reasoning;
+        let createdToolProcessingMessageId = null;
+
         if (isImpersonate) {
             $('#send_textarea')
                 .val(getMessage)[0]
@@ -7050,16 +7559,47 @@ export async function Generate(
             return getMessage;
         } else {
             // Without streaming we'll be having a full message on continuation. Treat it as a last chunk.
-            if (originalType !== 'continue') {
-                ({ type, getMessage } = await saveReply({
-                    type,
-                    getMessage,
-                    title,
-                    swipes,
-                    reasoning,
-                    imageUrls,
-                    reasoningSignature,
-                }));
+            if (
+                Number.isInteger(processingMessageId) &&
+				chat[processingMessageId] &&
+				originalType !== 'continue'
+            ) {
+                const message = chat[processingMessageId];
+                if (!isToolOnlyResponse) {
+                    message.mes = appendAssistantMessageText(message.mes, getMessage);
+                    message.gen_started = generation_started;
+                    message.gen_finished = new Date();
+                }
+                message.extra = message.extra || {};
+                persistToolProcessingDuration(message);
+                if (!isToolOnlyResponse) {
+                    delete message.extra.isProcessingMessage;
+                }
+                if (reasoning) {
+                    appendToolFlowReasoningToMessage(message, reasoning);
+                }
+                updateMessageBlock(processingMessageId, message);
+            } else if (originalType !== 'continue') {
+                if (isToolOnlyResponse) {
+                    createdToolProcessingMessageId = await createToolProcessingMessage({
+                        type,
+                        title,
+                        reasoning,
+                        imageUrls,
+                        reasoningSignature,
+                        reasoningDetails,
+                    });
+                } else {
+                    ({ type, getMessage } = await saveReply({
+                        type,
+                        getMessage,
+                        title,
+                        swipes,
+                        reasoning,
+                        imageUrls,
+                        reasoningSignature,
+                    }));
+                }
             } else {
                 ({ type, getMessage } = await saveReply({
                     type: 'appendFinal',
@@ -7072,39 +7612,111 @@ export async function Generate(
                 }));
             }
 
-            // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
+            // This relies on a reply or processing container having been added to the chat, so it must be last.
             parseAndSaveLogprobs(data, continue_mag);
         }
 
-        if (canPerformToolCalls) {
-            const hasToolCalls = ToolManager.hasToolCalls(data);
-            const shouldDeleteMessage =
-				type !== 'swipe' && ['', '...'].includes(getMessage) && !reasoning;
-            hasToolCalls && shouldDeleteMessage && (await deleteLastMessage());
+        if (canPerformToolCalls && responseHasToolCalls) {
+            const shouldDeleteMessage = hasEmptyToolResponse;
+            const toolProcessingMessageId =
+				Number.isInteger(processingMessageId) &&
+				canAttachToolTraceToMessage(processingMessageId)
+				    ? processingMessageId
+				    : Number.isInteger(createdToolProcessingMessageId)
+				        ? createdToolProcessingMessageId
+				        : getLastVisibleMessageId();
             const invocationResult = await ToolManager.invokeFunctionTools(data, {
                 reasoningText: reasoning,
             });
+            const toolInvocationState = getToolInvocationFlowState(invocationResult);
+            const hasVisibleContent = !['', '...'].includes(getMessage);
+            const shouldRecurseForToolCalls = ToolManager.shouldRecurseForToolCalls(
+                data,
+                {
+                    finishReason: responseFinishReason,
+                    hasVisibleContent,
+                    stopOnContentBeforeToolCall:
+						oai_settings.stop_on_content_before_tool_call,
+                    source: oai_settings.chat_completion_source,
+                },
+            );
             const shouldStopGeneration =
-				(!invocationResult.invocations.length && shouldDeleteMessage) ||
-				invocationResult.stealthCalls.length;
-            if (hasToolCalls) {
-                if (shouldStopGeneration) {
-                    if (
-                        Array.isArray(invocationResult.errors) &&
-						invocationResult.errors.length
-                    ) {
-                        ToolManager.showToolCallError(invocationResult.errors);
-                    }
-                    unblockGeneration(type);
-                    return;
+				(!invocationResult.invocations.length &&
+					!invocationResult.errors.length &&
+					shouldDeleteMessage) ||
+				(toolInvocationState.hasOnlyStealthInvocations &&
+					!shouldRecurseForToolCalls) ||
+				!shouldRecurseForToolCalls;
+            hadToolCallsInFlow = true;
+            const currentProcessingMessageId = toolProcessingMessageId;
+            saveToolInvocationsToMessage(
+                currentProcessingMessageId,
+                invocationResult.invocations,
+            );
+            saveToolReasoningArtifactsToMessage(
+                currentProcessingMessageId,
+                reasoningDetails,
+                reasoningSignature,
+            );
+            const toolTrace = ToolManager.formatToolCallTrace(
+                toolInvocationState.traceInvocations,
+            );
+            if (
+                toolTrace &&
+				canAttachToolTraceToMessage(currentProcessingMessageId)
+            ) {
+                chat[currentProcessingMessageId].extra =
+					chat[currentProcessingMessageId].extra || {};
+                if (reasoning) {
+                    ReasoningHandler.upsertReasoningSegment(
+                        chat[currentProcessingMessageId].extra,
+                        reasoning,
+                    );
+                    chat[currentProcessingMessageId].extra.reasoning =
+						ReasoningHandler.getJoinedReasoning(
+						    chat[currentProcessingMessageId].extra,
+						);
                 }
-
-                depth = depth + 1;
-                await ToolManager.saveFunctionToolInvocations(
-                    invocationResult.invocations,
+                ReasoningHandler.appendTraceSegment(
+                    chat[currentProcessingMessageId].extra,
+                    toolTrace,
                 );
-                return Generate(
-                    'normal',
+                if (!hasVisibleContent) {
+                    chat[currentProcessingMessageId].extra.isProcessingMessage = true;
+                } else {
+                    delete chat[currentProcessingMessageId].extra.isProcessingMessage;
+                }
+                chat[currentProcessingMessageId].extra.processing_trace = [
+                    chat[currentProcessingMessageId].extra.processing_trace,
+                    toolTrace,
+                ]
+                    .filter(Boolean)
+                    .join('\n\n');
+                updateMessageBlock(
+                    currentProcessingMessageId,
+                    chat[currentProcessingMessageId],
+                );
+            }
+
+            if (shouldStopGeneration) {
+                if (
+                    shouldDeleteMessage &&
+					!toolTrace &&
+					!Number.isInteger(processingMessageId)
+                ) {
+                    await deleteLastMessage();
+                } else {
+                    await clearToolProcessingMessage(currentProcessingMessageId);
+                    await saveChatConditional();
+                }
+                unblockGeneration(type);
+                return;
+            }
+
+            depth = depth + 1;
+            try {
+                return await Generate(
+                    TOOL_CONTINUATION_TYPE,
                     {
                         automatic_trigger,
                         force_name2,
@@ -7112,13 +7724,19 @@ export async function Generate(
                         quietToLoud,
                         skipWIAN,
                         force_chid,
-                        signal,
+                        signal: generationSignal,
                         quietImage,
                         quietName,
                         depth,
+                        processingMessageId: currentProcessingMessageId,
+                        isToolFlowContinuation: true,
+                        suppressContinuationPrefix: false,
                     },
                     dryRun,
                 );
+            } finally {
+                await cleanupToolProcessingMessageOnAbort(currentProcessingMessageId);
+                await cleanupTemporaryZTrackerToolResults();
             }
         }
 
@@ -7145,7 +7763,7 @@ export async function Generate(
         unblockGeneration(type);
         streamingProcessor = null;
 
-        if (type !== 'quiet') {
+        if (type !== 'quiet' && !hadToolCallsInFlow) {
             triggerAutoContinue(messageChunk, isImpersonate);
         }
 
@@ -8778,8 +9396,41 @@ export async function saveReply({
         } else {
             lastMessage.mes = getMessage;
         }
-    } else if (type === 'append' || type === 'continue') {
+    } else if (type === 'append') {
         console.debug('Trying to append.');
+        oldMessage = lastMessage.mes;
+        lastMessage.title = title;
+        lastMessage.mes = appendAssistantMessageText(lastMessage.mes, getMessage);
+        lastMessage.gen_started = generation_started;
+        lastMessage.gen_finished = generationFinished;
+        lastMessage.send_date = getMessageTimeStamp();
+        lastMessage.extra.api = getGeneratingApi();
+        lastMessage.extra.model = getGeneratingModel();
+        lastMessage.extra.reasoning = [lastMessage.extra.reasoning, reasoning]
+            .filter(Boolean)
+            .join('\n\n');
+        lastMessage.extra.reasoning_duration = null;
+        lastMessage.extra.reasoning_signature = reasoningSignature;
+        await processImageAttachment(lastMessage, { imageUrls });
+        if (power_user.message_token_count_enabled) {
+            const tokenCountText = (reasoning || '') + lastMessage.mes;
+            lastMessage.extra.token_count = await getTokenCountAsync(
+                tokenCountText,
+                0,
+            );
+        }
+        const chat_id = chat.length - 1;
+        !fromStreaming &&
+			(await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type));
+        addOneMessage(chat[chat_id], { type: 'swipe' });
+        !fromStreaming &&
+			(await eventSource.emit(
+			    event_types.CHARACTER_MESSAGE_RENDERED,
+			    chat_id,
+			    type,
+			));
+    } else if (type === 'continue') {
+        console.debug('Trying to continue.');
         oldMessage = lastMessage.mes;
         lastMessage.title = title;
         lastMessage.mes += String(getMessage ?? '');
@@ -8819,7 +9470,9 @@ export async function saveReply({
         lastMessage.send_date = getMessageTimeStamp();
         lastMessage.extra.api = getGeneratingApi();
         lastMessage.extra.model = getGeneratingModel();
-        lastMessage.extra.reasoning += reasoning;
+        lastMessage.extra.reasoning = [lastMessage.extra.reasoning, reasoning]
+            .filter(Boolean)
+            .join('\n\n');
         lastMessage.extra.reasoning_signature = reasoningSignature;
         await processImageAttachment(lastMessage, { imageUrls });
         // We don't know if the reasoning duration extended, so we don't update it here on purpose.
@@ -9753,8 +10406,20 @@ export async function showIntegrityDiffPopup(memoryMessages, diskMessages) {
     container.style.fontSize = '14px';
 
     const summary = document.createElement('div');
-    summary.innerHTML = `<p><strong>Your tab:</strong> ${memoryMessages.length} messages | <strong>Saved file:</strong> ${diskMessages.length} messages</p>
-        <p>${sharedKeys.length} messages are identical.</p>`;
+    const counts = document.createElement('p');
+    const memoryLabel = document.createElement('strong');
+    memoryLabel.textContent = 'Your tab:';
+    const diskLabel = document.createElement('strong');
+    diskLabel.textContent = 'Saved file:';
+    counts.append(
+        memoryLabel,
+        ` ${memoryMessages.length} messages | `,
+        diskLabel,
+        ` ${diskMessages.length} messages`,
+    );
+    const shared = document.createElement('p');
+    shared.textContent = `${sharedKeys.length} messages are identical.`;
+    summary.append(counts, shared);
     container.append(summary);
 
     const createMessageSection = (title, keys, map, source, background) => {
@@ -9763,7 +10428,10 @@ export async function showIntegrityDiffPopup(memoryMessages, diskMessages) {
         }
 
         const section = document.createElement('div');
-        section.innerHTML = `<hr><h4>${title}</h4>`;
+        section.append(document.createElement('hr'));
+        const heading = document.createElement('h4');
+        heading.textContent = title;
+        section.append(heading);
 
         for (const key of keys) {
             const { msg } = map.get(key);
@@ -9781,10 +10449,13 @@ export async function showIntegrityDiffPopup(memoryMessages, diskMessages) {
             checkbox.dataset.source = source;
             checkbox.dataset.key = key;
 
-            label.append(checkbox);
-            label.insertAdjacentHTML(
-                'beforeend',
-                ` <strong>${escapeHtml(msg.name || 'Unknown')}</strong> (${escapeHtml(msg.send_date || 'no date')}): ${escapeHtml(preview)}${msg.mes && msg.mes.length > 200 ? '...' : ''}`,
+            const name = document.createElement('strong');
+            name.textContent = msg.name || 'Unknown';
+            label.append(
+                checkbox,
+                ' ',
+                name,
+                ` (${msg.send_date || 'no date'}): ${preview}${msg.mes && msg.mes.length > 200 ? '...' : ''}`,
             );
             item.append(label);
             section.append(item);
@@ -11867,6 +12538,75 @@ export function isSwipingAllowed() {
     );
 }
 
+function isZTrackerToolResultMessage(message) {
+    const invocations = message?.extra?.tool_invocations;
+    return Boolean(
+        message?.extra?.isToolResult &&
+			Array.isArray(invocations) &&
+			invocations.length > 0 &&
+			invocations.every((invocation) =>
+			    ZTRACKER_TOOL_NAMES.has(invocation?.name),
+			),
+    );
+}
+
+function isHiddenToolResultMessage(message) {
+    return Boolean(message?.extra?.isToolResult);
+}
+
+export function getVisibleMessageIds() {
+    return chat
+        .map((_message, index) => index)
+        .filter((index) => !isHiddenToolResultMessage(chat[index]));
+}
+
+export function getVisibleMessageCount() {
+    return getVisibleMessageIds().length;
+}
+
+export function getLastVisibleMessageId() {
+    for (let index = chat.length - 1; index >= 0; index--) {
+        if (!isHiddenToolResultMessage(chat[index])) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+function updateLastMessageClass() {
+    const messageElements = chatElement.find('.mes');
+    messageElements.removeClass('last_mes');
+
+    const lastVisibleMessageId = getLastVisibleMessageId();
+    const lastVisibleElement = messageElements.filter(
+        `.mes[mesid="${lastVisibleMessageId}"]`,
+    );
+    if (lastVisibleElement.length) {
+        lastVisibleElement.addClass('last_mes');
+        return;
+    }
+
+    messageElements.last().addClass('last_mes');
+}
+
+async function cleanupTemporaryZTrackerToolResults() {
+    let removed = false;
+    for (let index = chat.length - 1; index >= 0; index--) {
+        if (!isZTrackerToolResultMessage(chat[index])) {
+            continue;
+        }
+        chat.splice(index, 1);
+        deleteItemizedPromptForMessage(index);
+        removed = true;
+    }
+    if (!removed) {
+        return;
+    }
+    updateViewMessageIds();
+    refreshSwipeButtons(true);
+    await saveChatConditional();
+}
+
 /**
  * Returns true if the message is swipeable.
  * This does not check if messages are generally swipeable. See isSwipingAllowed().
@@ -11887,8 +12627,8 @@ export function isMessageSwipeable(messageId, message = undefined) {
     //Only messages below the currently edited message can be swiped, if it's not mid-swipe edit.
         messageId > (this_edit_mes_id ?? -1) &&
 		swipeState != SWIPE_STATE.EDITING &&
-		//If the message is the last message, and it exists.
-		messageId == chat.length - 1 &&
+		//If the message is the last visible message, and it exists.
+		messageId == getLastVisibleMessageId() &&
 		message &&
 		//Small system messages cannot be swiped.
 		!message?.extra?.isSmallSys &&
@@ -11962,15 +12702,19 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
     //Non-messages can appear in chat. '.mes' is required.
     const messageElements = chatElement.children('.mes[mesid]');
 
-    const firstDisplayedMesId = Number(messageElements.first().attr('mesid'));
-
     //Group each message.
-    messageElements.each((index, div) => {
-        //This assumes the messages are in order and their Id's are accurate.
-        const messageId = firstDisplayedMesId + index;
-        //Number($(div).attr('mesid')); Would not misscount due to a missing div, but is much slower.
+    messageElements.each((_index, div) => {
+        const messageId = Number(div.getAttribute('mesid'));
+        if (!Number.isInteger(messageId)) {
+            div.classList.remove('swipes_visible', 'last_swipe');
+            return;
+        }
 
         const message = chat[messageId];
+        if (!message) {
+            div.classList.remove('swipes_visible', 'last_swipe');
+            return;
+        }
 
         //Chevrons should not fade-in during printMessages. //https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3539315919
         div.classList.toggle('fade', fade);
@@ -12224,16 +12968,22 @@ export async function importCharacterChat(formData, { refresh = true } = {}) {
 
 export function updateViewMessageIds(startIndex = null) {
     const minId = startIndex ?? getFirstDisplayedMessageId();
+    let nextMessageId = minId;
 
-    chatElement.find('.mes').each(function (index, element) {
-        $(element).attr('mesid', minId + index);
-        $(element)
-            .find('.mesIDDisplay')
-            .text(`#${minId + index}`);
+    chatElement.find('.mes').each(function (_index, element) {
+        while (
+            nextMessageId < chat.length &&
+			isHiddenToolResultMessage(chat[nextMessageId])
+        ) {
+            nextMessageId++;
+        }
+
+        $(element).attr('mesid', nextMessageId);
+        $(element).find('.mesIDDisplay').text(`#${nextMessageId}`);
+        nextMessageId++;
     });
 
-    chatElement.find('.mes').removeClass('last_mes');
-    chatElement.find('.mes').last().addClass('last_mes');
+    updateLastMessageClass();
 
     updateEditArrowClasses();
 }
@@ -13093,6 +13843,14 @@ export async function swipe(
             delete message.extra.negative;
             delete message.extra.title;
             delete message.extra.append_title;
+            // Reset generation metadata per swipe
+            delete message.extra.reasoning;
+            delete message.extra.reasoning_duration;
+            delete message.extra.reasoning_duration_ms;
+            delete message.extra.token_count;
+            scrubToolProcessingMetadata(message);
+            delete message.extra.reasoning_signature;
+            delete message.extra.time_to_first_token;
         }
         delete message.gen_started;
         delete message.gen_finished;
@@ -15046,6 +15804,7 @@ jQuery(async function () {
 
         if (this_del_mes >= 0) {
             for (let i = chat.length - 1; i >= this_del_mes; i--) {
+                scrubToolProcessingMetadata(chat[i]);
                 deleteItemizedPromptForMessage(i);
             }
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).nextAll('div').remove();
@@ -15055,8 +15814,7 @@ jQuery(async function () {
             await saveChatConditional();
             chatElement.scrollTop(chatElement[0].scrollHeight);
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
-            chatElement.find('.mes').removeClass('last_mes');
-            chatElement.find('.mes').last().addClass('last_mes');
+            updateLastMessageClass();
         } else {
             console.log('this_del_mes is not >= 0, not deleting');
         }

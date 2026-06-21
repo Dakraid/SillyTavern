@@ -81,6 +81,8 @@ jest.unstable_mockModule('../public/scripts/world-info.js', () => ({
         selective: false,
     },
     world_names: mockWorldNames,
+    saveWorldInfo: jest.fn(),
+    worldInfoCache: new Map(),
 }));
 jest.unstable_mockModule('../public/scripts/openai.js', () => ({
     oai_settings: {},
@@ -356,13 +358,13 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
         const lorebookData = mod.buildDynamicLorebookData(xml);
 
         expect(Object.keys(lorebookData.entries)).toEqual(['0', '1']);
-        expect(lorebookData.entries[0].key).toEqual(['Alice']);
-        expect(lorebookData.entries[0].comment).toBe('Alice');
+        expect(lorebookData.entries[0].key).toEqual(['Alice', 'alice']);
+        expect(lorebookData.entries[0].comment).toBe('Alice — Dynamic Entry');
         expect(lorebookData.entries[0].content).toBe(
             '<character><name>Alice</name><description>Full Alice</description></character>',
         );
         expect(lorebookData.entries[0].content).not.toContain('<summary>');
-        expect(lorebookData.entries[1].key).toEqual(['Bob']);
+        expect(lorebookData.entries[1].key).toEqual(['Bob', 'bob']);
         expect(lorebookData.entries[1].content).toContain(
             '<description>Full Bob</description>',
         );
@@ -373,7 +375,7 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
             '<setting>Keep in card</setting>\n\n<character><summary>Brief</summary><name>Alice</name></character>',
         );
         expect(Object.keys(lorebookData.entries)).toEqual(['0']);
-        expect(lorebookData.entries[0].key).toEqual(['Alice']);
+        expect(lorebookData.entries[0].key).toEqual(['Alice', 'alice']);
     });
 
     test('buildDynamicSummaryDescription converts character blocks and preserves non-character blocks', () => {
@@ -591,8 +593,9 @@ Trailing text
         expect(entry).toMatchObject({
             uid: 3,
             enabled: true,
-            key: ['Alice'],
-            comment: 'Alice',
+            key: ['Alice', 'alice'],
+            comment:
+				'Alice — Description, Personality, Scenario, First mes, Mes example',
             addMemo: true,
             order: 97,
             keysecondary: [],
@@ -613,8 +616,8 @@ Trailing text
         ]);
 
         expect(Object.keys(lorebookData.entries)).toEqual(['0', '1']);
-        expect(lorebookData.entries[0].key).toEqual(['Alice']);
-        expect(lorebookData.entries[1].key).toEqual(['Bob']);
+        expect(lorebookData.entries[0].key).toEqual(['Alice', 'alice']);
+        expect(lorebookData.entries[1].key).toEqual(['Bob', 'bob']);
     });
 
     test('saves, overwrites, and deletes prompt presets', async () => {

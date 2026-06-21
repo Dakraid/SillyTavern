@@ -1,0 +1,332 @@
+.ztracker-settings .ztracker-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.ztracker-settings .setting-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ztracker-settings .setting-row:last-child {
+    margin-top: 10px;
+}
+
+.ztracker-settings .setting-row button {
+    align-self: flex-start;
+}
+
+.ztracker-settings .success {
+    color: var(--success-color, #4caf50);
+}
+
+.ztracker-settings .warning {
+    color: var(--warning-color, #ffc107);
+}
+
+.ztracker-settings .error {
+    color: var(--error-color, #f44336);
+}
+
+.mes_ztracker_button.spinning,
+.ztracker-regenerate-button.spinning,
+.ztracker-part-regenerate-button.spinning,
+.ztracker-array-item-regenerate-button.spinning,
+.ztracker-array-item-field-regenerate-button.spinning {
+    animation: spin 2s linear infinite;
+}
+
+.mes.ztracker-auto-mode-hold .mes_text {
+    opacity: 0.72;
+    transition: opacity 0.2s ease-in-out;
+}
+
+.ztracker-message-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 8px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(127, 127, 127, 0.22);
+    background: rgba(127, 127, 127, 0.12);
+    color: var(--text_color);
+    font-size: 0.9em;
+    line-height: 1.2;
+    width: fit-content;
+    max-width: 100%;
+}
+
+.ztracker-message-status-icon {
+    animation: spin 1.6s linear infinite;
+    font-size: 0.95em;
+}
+
+.ztracker-message-status-icon--static {
+    animation: none;
+}
+
+.ztracker-message-status-text {
+    white-space: normal;
+}
+
+.ztracker-render-error-status {
+    border-color: rgba(255, 170, 0, 0.3);
+    background: rgba(255, 170, 0, 0.14);
+}
+
+.ztracker-pending-redactions-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 8px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 196, 0, 0.24);
+    background: rgba(255, 196, 0, 0.12);
+    color: var(--text_color);
+    font-size: 0.86em;
+    line-height: 1.2;
+    width: fit-content;
+    max-width: 100%;
+}
+
+.mes_ztracker {
+    position: relative;
+    z-index: 50;
+}
+
+.mes_ztracker .ztracker-controls {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 0;
+    z-index: 5000;
+}
+
+.mes_ztracker .ztracker-regenerate-button,
+.mes_ztracker .ztracker-cleanup-button,
+.mes_ztracker .ztracker-edit-button,
+.mes_ztracker .ztracker-delete-button,
+.mes_ztracker .ztracker-parts-summary,
+.mes_ztracker .ztracker-btn-generate,
+.mes_ztracker .ztracker-control-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    width: 1em;
+    height: 1em;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    color: var(--text_color);
+    opacity: 0.3;
+    transition: opacity 0.2s ease-in-out;
+}
+
+.mes_ztracker .ztracker-regenerate-button:hover,
+.mes_ztracker .ztracker-cleanup-button:hover,
+.mes_ztracker .ztracker-edit-button:hover,
+.mes_ztracker .ztracker-delete-button:hover,
+.mes_ztracker .ztracker-parts-summary:hover,
+.mes_ztracker .ztracker-btn-generate:hover,
+.mes_ztracker .ztracker-control-button:hover {
+    opacity: 1;
+}
+
+.mes_ztracker .ztracker-btn-generate:disabled,
+.mes_ztracker .ztracker-control-button:disabled,
+.mes_ztracker .ztracker-button-busy {
+    cursor: wait;
+    opacity: 0.65;
+}
+
+.mes_ztracker .ztracker-parts-details {
+    position: relative;
+    margin: 0;
+    padding: 0;
+    background: none;
+}
+
+.mes_ztracker .ztracker-parts-details summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 0;
+    line-height: 1;
+    list-style: none;
+}
+
+.mes_ztracker .ztracker-parts-details summary::marker {
+    content: "";
+}
+
+.mes_ztracker .ztracker-parts-details summary::-webkit-details-marker {
+    display: none;
+}
+
+.ztracker-parts-list {
+    min-width: 260px;
+    padding: 10px;
+    background-color: var(--ztracker-menu-bg, rgba(0, 0, 0, 0.92));
+    background-image: none;
+    border: 1px solid var(--ztracker-menu-border, rgba(255, 255, 255, 0.12));
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 50vh;
+    overflow: auto;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    font-size: 0.95em;
+    line-height: 1.25;
+    position: absolute;
+    right: 0;
+    top: 22px;
+    z-index: 6000;
+}
+
+.ztracker-parts-list.ztracker-parts-list-portal {
+    position: absolute;
+    right: auto;
+    left: auto;
+    z-index: 2147483647;
+}
+
+.ztracker-part-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ztracker-part-row:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+}
+
+.ztracker-part-regenerate-button {
+    cursor: pointer;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 0.95em;
+    font-weight: 600;
+    opacity: 0.95;
+    user-select: none;
+    white-space: nowrap;
+    background: var(--ztracker-menu-part-bg, rgba(255, 255, 255, 0.06));
+}
+
+.ztracker-part-regenerate-button:hover {
+    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.1));
+}
+
+.ztracker-part-items {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-left: 10px;
+    max-height: 35vh;
+    overflow: auto;
+}
+
+.ztracker-array-item-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ztracker-array-item-regenerate-button {
+    cursor: pointer;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 0.92em;
+    opacity: 0.98;
+    user-select: none;
+    white-space: normal;
+    word-break: break-word;
+    background: var(--ztracker-menu-item-bg, rgba(255, 255, 255, 0.03));
+}
+
+.ztracker-array-item-regenerate-button:hover {
+    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.1));
+}
+
+.ztracker-array-item-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-left: 8px;
+}
+
+.ztracker-array-item-field-regenerate-button {
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 999px;
+    font-size: 0.82em;
+    opacity: 0.98;
+    user-select: none;
+    white-space: nowrap;
+    background: var(--ztracker-menu-item-bg, rgba(255, 255, 255, 0.03));
+    border: 1px solid var(--ztracker-menu-border, rgba(255, 255, 255, 0.12));
+}
+
+.ztracker-array-item-field-regenerate-button:hover {
+    background: var(--ztracker-menu-hover-bg, rgba(255, 255, 255, 0.1));
+}
+
+.ztracker-part-regenerate-button.is-pending-redaction,
+.ztracker-array-item-regenerate-button.is-pending-redaction,
+.ztracker-array-item-field-regenerate-button.is-pending-redaction {
+    border-color: rgba(255, 196, 0, 0.32);
+    box-shadow: inset 0 0 0 1px rgba(255, 196, 0, 0.18);
+}
+
+.mes_ztracker .ztracker_default_mes_template {
+    font-size: smaller;
+}
+
+.mes_ztracker .ztracker_default_mes_template details {
+    background: none;
+    padding: 0;
+}
+
+.mes_ztracker .ztracker_default_mes_template hr {
+    margin: 5px 0;
+}
+
+.mes_ztracker .ztracker_default_mes_template table {
+    padding-bottom: 5px;
+}
+
+.mes_ztracker .mes_ztracker_characters {
+    padding-left: 20px;
+}
+.mes_buttons .mes_ztracker_button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mes_buttons .mes_ztracker_button.ztracker-button-busy,
+.mes_buttons .mes_ztracker_button.spinning {
+    cursor: wait;
+    opacity: 0.65;
+}
+
+.ztracker-json-editor {
+    width: 100%;
+    min-height: 320px;
+    font-family: var(--monoFontFamily, monospace);
+    resize: vertical;
+}

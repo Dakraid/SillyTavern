@@ -1,0 +1,290 @@
+<div id="ztracker_settings" class="ztracker-settings inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+        <b>zTracker</b>
+        <div
+            class="inline-drawer-icon fa-solid fa-circle-chevron-down down"
+        ></div>
+    </div>
+    <div class="inline-drawer-content">
+        <div class="setting-row">
+            <label
+                for="ztracker_enabled"
+                title="Enable native zTracker state tracking tools."
+                >Enabled</label
+            >
+            <input id="ztracker_enabled" type="checkbox" />
+        </div>
+
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>Tracker Generation</b>
+                <div
+                    class="inline-drawer-icon fa-solid fa-circle-chevron-down down"
+                ></div>
+            </div>
+            <div class="inline-drawer-content">
+                <div class="setting-row">
+                    <label
+                        for="ztracker_auto_mode"
+                        title="Controls when the model should update tracker state."
+                        >Auto Mode</label
+                    >
+                    <select id="ztracker_auto_mode" class="text_pole">
+                        <option value="none">None</option>
+                        <option value="input">User input</option>
+                        <option value="output">Character output</option>
+                        <option value="both">Both</option>
+                    </select>
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_generate_context_strategy"
+                        title="Controls prior context used when generating a tracker from a message action."
+                        >Generation Context Strategy</label
+                    >
+                    <select
+                        id="ztracker_generate_context_strategy"
+                        class="text_pole"
+                    >
+                        <option value="messages">Messages</option>
+                        <option value="trackers">Trackers</option>
+                    </select>
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_generate_context_message_count"
+                        title="Number of previous messages to include when strategy is Messages, and fallback count when no previous trackers exist."
+                        >Messages to Include</label
+                    >
+                    <input
+                        id="ztracker_generate_context_message_count"
+                        class="text_pole"
+                        type="number"
+                        min="1"
+                        value="20"
+                    />
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_generate_context_tracker_count"
+                        title="Number of previous trackers to include when strategy is Trackers. All messages back to the Nth tracker are included."
+                        >Trackers to Include</label
+                    >
+                    <input
+                        id="ztracker_generate_context_tracker_count"
+                        class="text_pole"
+                        type="number"
+                        min="1"
+                        value="2"
+                    />
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_connection_source"
+                        title="Use the active connection or a saved connection-manager profile."
+                        >Connection Source</label
+                    >
+                    <select id="ztracker_connection_source" class="text_pole">
+                        <option value="active">Active connection</option>
+                        <option value="saved">Saved profile</option>
+                    </select>
+                </div>
+
+                <div class="setting-row" id="ztracker_profile_row">
+                    <label
+                        for="ztracker_profile_id"
+                        title="Saved connection-manager profile used by zTracker."
+                        >Connection Profile</label
+                    >
+                    <select id="ztracker_profile_id" class="text_pole"></select>
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_world_info_policy"
+                        title="Controls which World Info books are available to tracker updates."
+                        >World Info Policy</label
+                    >
+                    <select id="ztracker_world_info_policy" class="text_pole">
+                        <option value="include_all">Include all</option>
+                        <option value="exclude_all">Exclude all</option>
+                        <option value="allowlist">Allowlist only</option>
+                    </select>
+                </div>
+
+                <div class="setting-row" id="ztracker_world_info_allowlist_row">
+                    <label
+                        for="ztracker_world_info_allowlist"
+                        title="World Info books allowed when policy is allowlist."
+                        >Allowed World Info Books</label
+                    >
+                    <select
+                        id="ztracker_world_info_allowlist"
+                        class="text_pole"
+                        multiple
+                        size="6"
+                    ></select>
+                </div>
+            </div>
+        </div>
+
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>Schema Presets</b>
+                <div
+                    class="inline-drawer-icon fa-solid fa-circle-chevron-down down"
+                ></div>
+            </div>
+            <div class="inline-drawer-content">
+                <div class="setting-row">
+                    <label
+                        for="ztracker_schema_preset"
+                        title="Default schema preset for tracker state."
+                        >Default Schema Preset</label
+                    >
+                    <div class="flex-container flexGap5">
+                        <select
+                            id="ztracker_schema_preset"
+                            class="text_pole flex1"
+                        ></select>
+                        <button
+                            id="ztracker_schema_add"
+                            class="menu_button fa-solid fa-file-circle-plus"
+                            title="Add schema preset"
+                        ></button>
+                        <button
+                            id="ztracker_schema_rename"
+                            class="menu_button fa-solid fa-pencil"
+                            title="Rename schema preset"
+                        ></button>
+                        <button
+                            id="ztracker_schema_delete"
+                            class="menu_button fa-solid fa-trash-can"
+                            title="Delete schema preset"
+                        ></button>
+                    </div>
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_chat_schema_preset"
+                        title="Schema preset bound to the current chat."
+                        >Current Chat Schema</label
+                    >
+                    <select
+                        id="ztracker_chat_schema_preset"
+                        class="text_pole"
+                    ></select>
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_schema_name"
+                        title="Display name for the selected schema preset."
+                        >Preset Name</label
+                    >
+                    <input
+                        id="ztracker_schema_name"
+                        class="text_pole"
+                        type="text"
+                    />
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_schema_json"
+                        title="JSON Schema used for tracker state and tool parameters."
+                        >Schema JSON</label
+                    >
+                    <textarea
+                        id="ztracker_schema_json"
+                        class="text_pole textarea_compact"
+                        rows="10"
+                        spellcheck="false"
+                    ></textarea>
+                    <div id="ztracker_schema_json_status" class="notes"></div>
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_schema_html"
+                        title="Handlebars HTML template used to render tracker state."
+                        >Schema HTML</label
+                    >
+                    <textarea
+                        id="ztracker_schema_html"
+                        class="text_pole textarea_compact"
+                        rows="10"
+                        spellcheck="false"
+                    ></textarea>
+                    <div id="ztracker_schema_html_status" class="notes"></div>
+                </div>
+
+                <div class="flex-container flexGap5">
+                    <button id="ztracker_schema_save" class="menu_button">
+                        Save Schema Preset
+                    </button>
+                    <button id="ztracker_schema_restore" class="menu_button">
+                        Restore Default Schema
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>Tracker Injection</b>
+                <div
+                    class="inline-drawer-icon fa-solid fa-circle-chevron-down down"
+                ></div>
+            </div>
+            <div class="inline-drawer-content">
+                <div class="setting-row">
+                    <label
+                        for="ztracker_embed_header"
+                        title="Header prepended to embedded tracker snapshots."
+                        >Embed Snapshot Header</label
+                    >
+                    <input
+                        id="ztracker_embed_header"
+                        class="text_pole"
+                        type="text"
+                    />
+                </div>
+
+                <div class="setting-row">
+                    <label
+                        for="ztracker_embed_format"
+                        title="Format used when embedding tracker snapshots into prompts."
+                        >Embed Format</label
+                    >
+                    <select id="ztracker_embed_format" class="text_pole">
+                        <option value="default">Pretty JSON</option>
+                        <option value="minimal">Top-level lines</option>
+                        <option value="toon">TOON</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>Diagnostics</b>
+                <div
+                    class="inline-drawer-icon fa-solid fa-circle-chevron-down down"
+                ></div>
+            </div>
+            <div class="inline-drawer-content">
+                <pre
+                    id="ztracker_diagnostics"
+                    class="text_pole"
+                    style="white-space: pre-wrap"
+                ></pre>
+            </div>
+        </div>
+    </div>
+</div>

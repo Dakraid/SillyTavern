@@ -110,6 +110,15 @@
                 </li>
                 <li>
                     <button
+                        id="character_context_menu_download"
+                        data-i18n="Download"
+                    >
+                        <i class="fa-solid fa-download"></i>
+                        Download
+                    </button>
+                </li>
+                <li>
+                    <button
                         id="character_context_menu_persona"
                         data-i18n="Persona"
                     >
@@ -6313,6 +6322,33 @@
                                                     </div>
                                                 </div>
                                             </div>
+                                            <div
+                                                id="stop_on_content_before_tool_call_block"
+                                                class="flex-container flexFlowColumn wide100p"
+                                            >
+                                                <label
+                                                    for="stop_on_content_before_tool_call"
+                                                    class="checkbox_label flexWrap widthFreeExpand"
+                                                >
+                                                    <input
+                                                        id="stop_on_content_before_tool_call"
+                                                        type="checkbox"
+                                                    />
+                                                    <span
+                                                        data-i18n="Stop on content before tool call"
+                                                        >Stop on content before
+                                                        tool call</span
+                                                    >
+                                                </label>
+                                                <small
+                                                    class="flexBasis100p toggle-description justifyLeft"
+                                                    data-i18n="Stops the current turn if a model writes visible completion text before its last tool call."
+                                                    >Stops the current turn if a
+                                                    model writes visible
+                                                    completion text before its
+                                                    last tool call.</small
+                                                >
+                                            </div>
                                         </div>
                                         <div
                                             class="range-block"
@@ -6326,9 +6362,9 @@
                                                 >
                                                     <label
                                                         for="tool_reasoning_mode"
-                                                        data-i18n="Interleaved Thinking"
+                                                        data-i18n="Interleaved Processing"
                                                     >
-                                                        Interleaved Thinking
+                                                        Interleaved Processing
                                                     </label>
                                                     <select
                                                         id="tool_reasoning_mode"
@@ -6374,11 +6410,11 @@
                                                 style="display: none"
                                             >
                                                 <em
-                                                    data-i18n='Enable "Request model reasoning" to use Interleaved Thinking.'
+                                                    data-i18n='Enable "Request model reasoning" to use Interleaved Processing.'
                                                 >
                                                     Enable "Request model
                                                     reasoning" to use
-                                                    Interleaved Thinking.
+                                                    Interleaved Processing.
                                                 </em>
                                             </div>
                                         </div>
@@ -9583,6 +9619,62 @@
                                         API.</span
                                     >
                                 </small>
+                                <label
+                                    for="openrouter_parallel_tool_calls"
+                                    class="checkbox_label marginTopBot5"
+                                    title="Allow OpenRouter to execute multiple tool calls in parallel."
+                                >
+                                    <input
+                                        id="openrouter_parallel_tool_calls"
+                                        type="checkbox"
+                                    />
+                                    <span>Parallel tool calls</span>
+                                </label>
+                                <div>
+                                    <h4>Tool choice</h4>
+                                    <select
+                                        id="openrouter_tool_choice"
+                                        class="text_pole"
+                                    >
+                                        <option value="none">none</option>
+                                        <option value="auto">auto</option>
+                                        <option value="ChatNamedToolChoice">
+                                            ChatNamedToolChoice
+                                        </option>
+                                        <option value="ChatServerToolChoice">
+                                            ChatServerToolChoice
+                                        </option>
+                                    </select>
+                                    <div
+                                        id="openrouter_tool_choice_named_block"
+                                        class="marginTopBot5"
+                                    >
+                                        <label
+                                            for="openrouter_tool_choice_named"
+                                            >Named tool</label
+                                        >
+                                        <input
+                                            id="openrouter_tool_choice_named"
+                                            class="text_pole width100p"
+                                            type="text"
+                                            placeholder="tool_name"
+                                        />
+                                    </div>
+                                    <div
+                                        id="openrouter_tool_choice_json_block"
+                                        class="marginTopBot5"
+                                    >
+                                        <label for="openrouter_tool_choice_json"
+                                            >Server tool choice JSON</label
+                                        >
+                                        <textarea
+                                            id="openrouter_tool_choice_json"
+                                            class="text_pole width100p"
+                                            rows="4"
+                                            placeholder='{"type":"function","function":{"name":"tool_name"}}'
+                                        ></textarea>
+                                    </div>
+                                </div>
                                 <div>
                                     <h4 data-i18n="Model Quantizations">
                                         Model Quantizations
@@ -11578,6 +11670,7 @@
                                     <option value="glm-5v-turbo">
                                         glm-5v-turbo
                                     </option>
+                                    <option value="glm-5.2">glm-5.2</option>
                                     <option value="glm-5.1">glm-5.1</option>
                                     <option value="glm-5">glm-5</option>
                                     <option value="glm-4.7">glm-4.7</option>
@@ -11893,6 +11986,34 @@
                                         </option>
                                     </optgroup>
                                 </select>
+                                <div class="range-block">
+                                    <label
+                                        for="merge_consecutive_roles"
+                                        title="Merge consecutive roles"
+                                        data-i18n="[title]Merge consecutive roles"
+                                        class="checkbox_label widthFreeExpand"
+                                    >
+                                        <input
+                                            id="merge_consecutive_roles"
+                                            type="checkbox"
+                                        />
+                                        <span
+                                            data-i18n="Merge consecutive roles"
+                                        >
+                                            Merge consecutive roles
+                                        </span>
+                                    </label>
+                                    <div class="toggle-description justifyLeft">
+                                        <span
+                                            data-i18n="Merges consecutive messages with the same role into one. Applied as a final pass regardless of the selected mode above."
+                                        >
+                                            Merges consecutive messages with the
+                                            same role into one. Applied as a
+                                            final pass regardless of the
+                                            selected mode above.
+                                        </span>
+                                    </div>
+                                </div>
                             </div>
                             <div class="flex-container flex">
                                 <div
@@ -15521,8 +15642,8 @@
                                         id="smooth_streaming_no_think"
                                         type="checkbox"
                                     />
-                                    <small data-i18n="Exclude 'Thinking...'">
-                                        Exclude 'Thinking...'
+                                    <small data-i18n="Exclude 'Processing...'">
+                                        Exclude 'Processing...'
                                     </small>
                                 </label>
                                 <div
@@ -16750,10 +16871,23 @@
                                     class="inline-drawer-toggle inline-drawer-header"
                                     id="active_jobs_toggle"
                                 >
-                                    <b><i class="fa-solid fa-list-check"></i> Background Tasks</b>
+                                    <b
+                                        ><i class="fa-solid fa-list-check"></i>
+                                        Background Tasks</b
+                                    >
                                     <span
                                         id="active_jobs_badge"
-                                        style="display:none;margin-left:0.5em;background:var(--SmartThemeQuoteColor);color:var(--SmartThemeBodyColor);border-radius:50%;padding:0 0.4em;font-size:0.8em;"
+                                        style="
+                                            display: none;
+                                            margin-left: 0.5em;
+                                            background: var(
+                                                --SmartThemeQuoteColor
+                                            );
+                                            color: var(--SmartThemeBodyColor);
+                                            border-radius: 50%;
+                                            padding: 0 0.4em;
+                                            font-size: 0.8em;
+                                        "
                                     ></span>
                                     <div
                                         class="fa-solid fa-chevron-down inline-drawer-icon down"
@@ -16762,12 +16896,19 @@
                                 <div
                                     class="inline-drawer-content"
                                     id="active_jobs_content"
-                                    style="display:none;"
+                                    style="display: none"
                                 >
                                     <div id="active_jobs_list">
                                         <div
                                             class="active-jobs-empty"
-                                            style="color:var(--SmartThemeBodyColor);opacity:0.5;padding:1em;text-align:center;"
+                                            style="
+                                                color: var(
+                                                    --SmartThemeBodyColor
+                                                );
+                                                opacity: 0.5;
+                                                padding: 1em;
+                                                text-align: center;
+                                            "
                                         >
                                             No active tasks.
                                         </div>
@@ -19264,12 +19405,23 @@
                         >- Advanced Definitions</span
                     >
                     <div
-                        id="group_card_wizard_edit_button"
-                        class="menu_button"
-                        style="display: none"
-                        data-i18n="Edit in Group Card Wizard"
+                        id="group_card_wizard_buttons"
+                        style="display: none; gap: 4px; flex-wrap: wrap"
                     >
-                        Edit in Group Card Wizard
+                        <div
+                            id="group_card_wizard_edit_button"
+                            class="menu_button"
+                            data-i18n="Edit in Group Card Wizard"
+                        >
+                            Edit in Group Card Wizard
+                        </div>
+                        <div
+                            id="group_card_wizard_quick_regen_button"
+                            class="menu_button"
+                            data-i18n="Quick Regen"
+                        >
+                            Quick Regen
+                        </div>
                     </div>
                 </div>
                 <hr class="margin-bot-10px" />
@@ -21884,8 +22036,8 @@
                                     >
                                         <span
                                             class="mes_reasoning_header_title"
-                                            data-i18n="Thought for some time"
-                                            >Thought for some time</span
+                                            data-i18n="Processed for some time"
+                                            >Processed for some time</span
                                         >
                                         <div
                                             class="mes_reasoning_arrow fa-solid fa-chevron-up"

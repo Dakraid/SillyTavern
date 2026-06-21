@@ -2413,6 +2413,9 @@ router.post('/generate-voronoi-composite', async function (request, response) {
                 : undefined;
         const layout = normalizeVoronoiLayout(request.body.layout);
         const gap = normalizeVoronoiGap(request.body.gap);
+        const maxCols = typeof request.body.maxCols === 'number' && Number.isFinite(request.body.maxCols) && request.body.maxCols > 0
+            ? Math.min(20, Math.max(1, Math.round(request.body.maxCols)))
+            : 0;
         const result =
             layout === 'grid-portrait' || layout === 'grid-square'
                 ? await generateGridComposite(avatarPaths, outputPath, {
@@ -2421,6 +2424,7 @@ router.post('/generate-voronoi-composite', async function (request, response) {
                     offsets,
                     cellAspect: layout,
                     gap,
+                    maxCols,
                 })
                 : await generateVoronoiComposite(avatarPaths, outputPath, {
                     cropStrategy,

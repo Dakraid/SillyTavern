@@ -164,7 +164,7 @@ export class StreamingDisplay {
 
         const reasoningLabel = document.createElement('div');
         reasoningLabel.classList.add(`${CSS_PREFIX}-reasoning-label`);
-        reasoningLabel.textContent = t`Thinking...`;
+        reasoningLabel.textContent = t`Processing...`;
         this.#reasoningSection.appendChild(reasoningLabel);
 
         this.#reasoningContent = document.createElement('div');

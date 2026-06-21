@@ -476,6 +476,99 @@ input[type="checkbox"]:focus-visible {
 	margin-bottom: 0;
 }
 
+.tool-call-trace {
+    margin-top: 0.75em;
+}
+
+.tool-call-trace-item {
+    margin: 4px 0;
+    padding-left: 6px;
+    border-left: 2px solid var(--reasoning-body-color);
+}
+
+.tool-call-trace-item.tool-call-trace-error {
+    border-left-color: #e74c3c;
+}
+
+.tool-call-trace-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 0.9em;
+    padding: 2px 0;
+}
+
+.tool-call-status {
+    font-size: 0.85em;
+    width: 16px;
+    text-align: center;
+}
+
+.tool-call-status.tool-call-success {
+    color: #2ecc71;
+}
+
+.tool-call-status.tool-call-error {
+    color: #e74c3c;
+}
+
+.tool-call-name {
+    font-weight: 600;
+}
+
+.tool-call-params-preview {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.7;
+}
+
+.tool-call-error-text {
+    color: #e74c3c;
+    font-style: italic;
+}
+
+.tool-call-details {
+    margin: 4px 0 4px 22px;
+    font-size: 0.85em;
+}
+
+.tool-call-details pre {
+    max-height: 200px;
+    margin: 2px 0;
+    padding: 4px;
+    overflow-x: auto;
+    overflow-y: auto;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 2px;
+}
+
+.tool-call-error-result {
+    color: #e74c3c;
+}
+
+
+.tool-call-trace {
+	margin-top: 0.75em;
+}
+
+.tool-call-trace-item {
+	margin-top: 0.5em;
+	padding-left: 0.5em;
+	border-left: 1px solid var(--reasoning-body-color);
+}
+
+.tool-call-trace-item summary {
+	cursor: pointer;
+	font-weight: 600;
+}
+
+.tool-call-trace-item pre {
+	margin-top: 0.5em;
+}
+
 .mes_reasoning_header_block {
 	flex-grow: 1;
 }
@@ -7270,4 +7363,28 @@ body:not(.movingUI) .drawer-content.maximized {
 	.bcw .offset-card label:has(.offset-scale) {
 		grid-template-columns: 1fr;
 	}
+}
+
+/* Reasoning block layout fix */
+.mes_reasoning_details {
+    margin-right: 0;
+    padding: 0;
+    background: none;
+    border-radius: 4px;
+}
+
+.mes_reasoning {
+    border-radius: 4px;
+}
+
+.mes_reasoning_details .mes_reasoning_summary {
+    margin-right: 0;
+}
+
+.mes_reasoning_header {
+    flex-grow: 1;
+}
+
+.mes_reasoning_actions {
+    align-content: center;
 }

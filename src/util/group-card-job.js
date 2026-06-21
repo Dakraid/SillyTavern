@@ -26,6 +26,8 @@ import {
     countXmlCorpus,
     extractXmlBlocksByTag,
     stripSummaryFromCharacterBlock,
+    extractCommentFromCharacterBlock,
+    extractKeysFromCharacterBlock,
     buildSummaryCharacterBlock,
     minifyXml,
 } from '../../public/scripts/group-card-xml-parser.js';
@@ -676,12 +678,14 @@ function extractCharacterBlockName(block, index) {
 
 function buildDynamicLorebookEntry(block, index) {
     const name = extractCharacterBlockName(block, index);
+    const extractedComment = extractCommentFromCharacterBlock(block);
+    const extractedKeys = extractKeysFromCharacterBlock(block);
 
     return {
         uid: index,
-        key: [name],
+        key: extractedKeys.length > 0 ? extractedKeys : [name],
         keysecondary: [],
-        comment: name,
+        comment: extractedComment.length > 0 ? extractedComment : name,
         content: stripSummaryFromCharacterBlock(block.raw),
         constant: false,
         vectorized: false,

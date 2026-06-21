@@ -411,6 +411,45 @@ function getCharacterBlockContent(xmlString) {
 }
 
 /**
+ * Gets inner content from a character block object or raw XML string.
+ * @param {{content?: string}|string|null|undefined} block Character block object or XML text.
+ * @returns {string} Character block content.
+ */
+function getCharacterBlockContentFromInput(block) {
+    if (block && typeof block === 'object' && 'content' in block) {
+        return String(block.content ?? '');
+    }
+
+    return getCharacterBlockContent(String(block ?? ''));
+}
+
+/**
+ * Extracts the first <comment> tag content from a character block.
+ * @param {{content?: string}|string|null|undefined} block Character block object or XML text.
+ * @returns {string} Trimmed comment content, or empty string.
+ */
+export function extractCommentFromCharacterBlock(block) {
+    const content = getCharacterBlockContentFromInput(block);
+    const comment = extractXmlBlocksByTag(content, 'comment')[0]?.content ?? '';
+    return String(comment).trim();
+}
+
+/**
+ * Extracts comma-separated keys from the first <keys> tag in a character block.
+ * @param {{content?: string}|string|null|undefined} block Character block object or XML text.
+ * @returns {string[]} Parsed keys.
+ */
+export function extractKeysFromCharacterBlock(block) {
+    const content = getCharacterBlockContentFromInput(block);
+    const keys = extractXmlBlocksByTag(content, 'keys')[0]?.content ?? '';
+
+    return String(keys)
+        .split(',')
+        .map((key) => key.replace(/[\r\n]/g, '').trim())
+        .filter(Boolean);
+}
+
+/**
  * Extracts summary content from the first summary-like tag inside a character block.
  * @param {string} xmlString Character XML block.
  * @param {string[]} [fallbackTags=['summary']] Tags to try in order.
@@ -452,21 +491,24 @@ export function extractSummaryBlockFromCharacterBlock(
 }
 
 /**
- * Removes the first <summary> block from a character block.
+ * Removes <summary>, <comment>, and <keys> blocks from a character block.
  * @param {string} xmlString Character XML block.
- * @returns {string} Character XML block without summary, or original input when absent.
+ * @returns {string} Character XML block without summary/comment/keys metadata.
  */
 export function stripSummaryFromCharacterBlock(xmlString) {
     const text = String(xmlString ?? '');
-    const summaryRegex =
-		/(?:[ \t]*\r?\n)?[ \t]*<summary(?:\s+[^>]*)?>[\s\S]*?<\/summary>[ \t]*(?:\r?\n)?/;
+    const metadataTags = ['summary', 'comment', 'keys'];
+    let stripped = text;
 
-    if (!summaryRegex.test(text)) {
-        return text;
+    for (const tag of metadataTags) {
+        const tagRegex = new RegExp(
+            `(?:[ \\t]*\\r?\\n)?[ \\t]*<${tag}(?:\\s+[^>]*)?>[\\s\\S]*?<\\/${tag}>[ \\t]*(?:\\r?\\n)?`,
+            'g',
+        );
+        stripped = stripped.replace(tagRegex, (match) => (match.includes('\n') ? '\n' : ''));
     }
 
-    return text
-        .replace(summaryRegex, (match) => (match.includes('\n') ? '\n' : ''))
+    return stripped
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 }

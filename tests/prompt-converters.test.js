@@ -1261,3 +1261,142 @@ describe('cachingAtDepthForOpenRouterClaude', () => {
         expect(typeof messages[1].content).toBe('string');
     });
 });
+
+describe('mergeConsecutiveRoles', () => {
+    test('returns non-array input unchanged', () => {
+        expect(mod.mergeConsecutiveRoles(undefined)).toBe(undefined);
+    });
+
+    test('empty array returns empty array', () => {
+        expect(mod.mergeConsecutiveRoles([])).toEqual([]);
+    });
+
+    test('no consecutive same-role messages are unchanged', () => {
+        const messages = [
+            { role: 'system', content: 'S' },
+            { role: 'user', content: 'A' },
+            { role: 'assistant', content: 'B' },
+        ];
+        expect(mod.mergeConsecutiveRoles(messages)).toEqual(messages);
+    });
+
+    test('merges two consecutive user messages with double newline', () => {
+        const messages = [
+            { role: 'user', content: 'A' },
+            { role: 'user', content: 'B' },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toEqual([{ role: 'user', content: 'A\n\nB' }]);
+    });
+
+    test('merges three consecutive assistant messages into one', () => {
+        const messages = [
+            { role: 'assistant', content: 'A' },
+            { role: 'assistant', content: 'B' },
+            { role: 'assistant', content: 'C' },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toEqual([{ role: 'assistant', content: 'A\n\nB\n\nC' }]);
+    });
+
+    test('does not merge consecutive tool messages', () => {
+        const messages = [
+            { role: 'tool', content: 'A', tool_call_id: '1' },
+            { role: 'tool', content: 'B', tool_call_id: '2' },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toEqual(messages);
+    });
+
+    test('merges mixed sequences leaving tool messages separate', () => {
+        const messages = [
+            { role: 'user', content: 'A' },
+            { role: 'user', content: 'B' },
+            { role: 'assistant', content: 'C' },
+            { role: 'assistant', content: 'D' },
+            { role: 'user', content: 'E' },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toEqual([
+            { role: 'user', content: 'A\n\nB' },
+            { role: 'assistant', content: 'C\n\nD' },
+            { role: 'user', content: 'E' },
+        ]);
+    });
+
+    test('concatenates tool_calls when merging assistant messages', () => {
+        const messages = [
+            { role: 'assistant', content: 'A', tool_calls: [{ id: '1' }] },
+            { role: 'assistant', content: 'B', tool_calls: [{ id: '2' }] },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toHaveLength(1);
+        expect(result[0].tool_calls).toEqual([{ id: '1' }, { id: '2' }]);
+        expect(result[0].content).toBe('A\n\nB');
+    });
+
+    test('merges content arrays preserving parts', () => {
+        const messages = [
+            { role: 'user', content: [{ type: 'text', text: 'A' }] },
+            { role: 'user', content: [{ type: 'text', text: 'B' }] },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toEqual([
+            {
+                role: 'user',
+                content: [
+                    { type: 'text', text: 'A' },
+                    { type: 'text', text: 'B' },
+                ],
+            },
+        ]);
+    });
+
+    test('merges mixed string and array content', () => {
+        const messages = [
+            { role: 'user', content: 'A' },
+            { role: 'user', content: [{ type: 'text', text: 'B' }] },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toHaveLength(1);
+        expect(result[0].content).toEqual([
+            { type: 'text', text: 'A' },
+            { type: 'text', text: 'B' },
+        ]);
+    });
+
+    test('does not mutate the input array or its messages', () => {
+        const messages = [
+            { role: 'user', content: 'A' },
+            { role: 'user', content: 'B' },
+        ];
+        const snapshot = JSON.parse(JSON.stringify(messages));
+        mod.mergeConsecutiveRoles(messages);
+        expect(messages).toEqual(snapshot);
+    });
+
+    test('skips merging when current content is empty', () => {
+        const messages = [
+            { role: 'user', content: 'A' },
+            { role: 'user', content: '' },
+            { role: 'user', content: 'B' },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toEqual([
+            { role: 'user', content: 'A' },
+            { role: 'user', content: '' },
+            { role: 'user', content: 'B' },
+        ]);
+    });
+
+    test('preserves name field on merged messages', () => {
+        const messages = [
+            { role: 'user', name: 'alice', content: 'A' },
+            { role: 'user', name: 'bob', content: 'B' },
+        ];
+        const result = mod.mergeConsecutiveRoles(messages);
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe('alice');
+        expect(result[0].content).toBe('A\n\nB');
+    });
+});
