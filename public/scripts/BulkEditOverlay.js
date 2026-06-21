@@ -63,6 +63,8 @@ import {
     parseGreetingsFromGeneratedOutput,
     stripGreetingBlocks,
     stripSummaryFromCharacterBlock,
+    extractCommentFromCharacterBlock,
+    extractKeysFromCharacterBlock,
     buildSummaryCharacterBlock,
     minifyXml,
 } from './group-card-xml-parser.js';
@@ -565,15 +567,20 @@ function buildDynamicLorebookData(
 				hasNameCollision && sourceAvatar
 				    ? `${characterName} (${sourceAvatar})`
 				    : characterName;
+            const extractedComment = extractCommentFromCharacterBlock(block);
+            const extractedKeys = extractKeysFromCharacterBlock(block);
+            const hasExtractedComment = extractedComment.length > 0;
+            const hasExtractedKeys = extractedKeys.length > 0;
             const entry = {
                 uid,
                 ...structuredClone(newWorldInfoEntryTemplate),
-                key:
-					hasNameCollision && sourceAvatar
-					    ? [displayName, characterName, characterName.toLowerCase()]
-					    : [displayName, characterName.toLowerCase()],
+                key: hasExtractedKeys
+                    ? extractedKeys
+                    : (hasNameCollision && sourceAvatar
+                        ? [displayName, characterName, characterName.toLowerCase()]
+                        : [displayName, characterName.toLowerCase()]),
                 keysecondary: [],
-                comment: `${displayName} — Dynamic Entry`,
+                comment: hasExtractedComment ? extractedComment : `${displayName} — Dynamic Entry`,
                 content: stripSummaryFromCharacterBlock(block.raw),
                 addMemo: true,
                 order: 100 - uid,
