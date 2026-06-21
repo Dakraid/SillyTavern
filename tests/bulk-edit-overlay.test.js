@@ -107,6 +107,7 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
             .replaceAll('>', '&gt;')
             .replaceAll('"', '&quot;')
             .replaceAll('\'', '&#39;'),
+    getSortableDelay: () => 200,
 }));
 
 /** @type {import('../public/scripts/BulkEditOverlay.js')} */

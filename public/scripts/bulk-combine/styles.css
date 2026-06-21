@@ -1,0 +1,1045 @@
+/*
+ * Bulk Card Combine Wizard styles.
+ *
+ * Naming convention: `.bcw-` prefix (Bulk Combine Wizard). All colors use
+ * SmartTheme CSS variables — no hardcoded palette values except status-badge
+ * tints (green / red / blue) called out in the design doc.
+ *
+ * Loading: this stylesheet is pulled in via an @import at the top of
+ * public/style.css. It is the canonical home for every `.bcw` rule.
+ *
+ * Variables in use:
+ *   --SmartThemeBodyColor          surfaces / backgrounds / text
+ *   --SmartThemeBlurTintColor      translucent overlays
+ *   --SmartThemeBorderColor        card + section borders
+ *   --SmartThemeQuoteColor         accents, active states, focus outlines
+ *   --SmartThemeShadowColor        card drop shadows
+ *   --monoFontFamily               XML / code editors
+ *
+ * Responsive breakpoints:
+ *   >768px      Desktop: two-column avatar studio, full card strip
+ *   480-768px   Tablet:  avatar controls stack below preview, strip scrolls
+ *   <480px      Mobile:  everything single-column, result grid 1 col
+ *
+ * Structure:
+ *   1. Legacy wizard rules (moved from public/style.css)
+ *   2. Tab / panel / progress overlay rules (extracted from BulkEditOverlay.js)
+ *   3. Redesign classes per DESIGN doc (bcw-stepper, bcw-stage, etc.)
+ *   4. Responsive breakpoints
+ */
+
+/* ========================================================================
+   1. Legacy wizard rules — moved verbatim from public/style.css.
+      These style the original wizard markup (.bcw .stage-indicator,
+      .bcw .result-card, etc.) which is still rendered by
+      BulkEditOverlay.js.
+   ======================================================================== */
+
+/* ===== Bulk Combine Wizard ===== */
+.bcw {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 1em;
+	color: var(--SmartThemeBodyColor);
+}
+
+.bcw > .header {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75em;
+	padding-bottom: 0.75em;
+	border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bcw > .header h3 {
+	margin-bottom: 0;
+}
+
+.bcw > .header .stages {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5em;
+	align-items: center;
+}
+
+.bcw .stage-indicator {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 2.25em;
+	min-height: 2.25em;
+	padding: 0.35em 0.7em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 999px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 88%,
+		var(--SmartThemeBodyColor) 12%
+	);
+	color: var(--SmartThemeBodyColor);
+	font-weight: 600;
+	opacity: 0.75;
+}
+
+.bcw .stage-indicator.active {
+	border-color: var(--SmartThemeQuoteColor);
+	box-shadow: 0 0 0 1px var(--SmartThemeQuoteColor) inset;
+	color: var(--SmartThemeQuoteColor);
+	opacity: 1;
+}
+
+.bcw .stage-indicator.completed {
+	border-color: rgba(76, 175, 80, 0.75);
+	color: #7fd37f;
+	opacity: 0.9;
+}
+
+.bcw > .body {
+	min-height: 12em;
+}
+
+.bcw .stage {
+	display: none;
+}
+
+.bcw .stage.active {
+	display: block;
+}
+
+.bcw > .footer {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.5em;
+	padding-top: 0.75em;
+	border-top: 1px solid var(--SmartThemeBorderColor);
+	align-items: center;
+	margin-top: 0.75em;
+}
+
+.bcw .results-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 18em), 1fr));
+	gap: 0.75em;
+}
+
+.bcw .result-card,
+.bcw .offset-card,
+.bcw .review-section {
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 92%,
+		var(--SmartThemeBodyColor) 8%
+	);
+	box-shadow: 0 1px 3px var(--SmartThemeShadowColor);
+}
+
+.bcw .result-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6em;
+	padding: 0.75em;
+}
+
+.bcw .result-card > .card-header {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+}
+
+.bcw .result-card .avatar,
+.bcw .offset-card .avatar {
+	width: 32px;
+	height: 32px;
+	flex: 0 0 32px;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	object-fit: cover;
+	background-color: var(--SmartThemeBlurTintColor);
+}
+
+.bcw .result-card .name {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	font-weight: 600;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.bcw .result-card .status {
+	flex: 0 0 auto;
+	font-weight: 700;
+}
+
+.bcw .result-card .status:has(.fa-check),
+.bcw .result-card .status.success {
+	color: #7fd37f;
+}
+
+.bcw .result-card .status:has(.fa-xmark),
+.bcw .result-card .status:has(.fa-times),
+.bcw .result-card .status.error {
+	color: #ff6b6b;
+}
+
+.bcw .result-card .xml {
+	width: 100%;
+	min-height: 10em;
+	resize: vertical;
+	font-family: var(--monoFontFamily, monospace);
+	font-size: 0.9em;
+}
+
+.bcw .result-card .actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.5em;
+}
+
+.bcw .result-card .autofix,
+.bcw .result-card .edit-btn {
+	min-width: 7em;
+}
+
+.bcw .skip-postprocess {
+	margin-top: 1em;
+}
+
+.bcw #bulk_combine_minify_single_line_label {
+	display: none;
+	margin-left: 2em;
+}
+
+.bcw .checkbox_label:has(input:disabled) {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+.bcw .dynamic-lorebook-info {
+	display: block;
+	margin-top: 0.5em;
+	color: var(--SmartThemeQuoteColor);
+}
+
+.bcw #bulk_combine_apply_postprocess.disabled {
+	opacity: 0.7;
+}
+
+.bcw .preview-area .fa-spinner {
+	margin-right: 0.5em;
+}
+
+.bcw .postprocess-mode {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75em;
+	align-items: center;
+	padding: 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 94%,
+		var(--SmartThemeBodyColor) 6%
+	);
+}
+
+.bcw .preview-area {
+	margin-top: 0.75em;
+	padding: 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 90%,
+		var(--SmartThemeQuoteColor) 10%
+	);
+	overflow: auto;
+	white-space: pre-wrap;
+}
+
+.bcw .review-section {
+	margin-bottom: 0.75em;
+	padding: 0.75em;
+}
+
+.bcw .offset-card {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 0.6em 0.75em;
+	align-items: center;
+	padding: 0.75em;
+	margin-bottom: 0.6em;
+}
+
+.bcw .offset-card label:has(.offset-x),
+.bcw .offset-card label:has(.offset-y),
+.bcw .offset-card label:has(.offset-scale) {
+	display: grid;
+	grid-template-columns: minmax(4em, auto) minmax(8em, 1fr) auto;
+	gap: 0.5em;
+	align-items: center;
+}
+
+.bcw .offset-x,
+.bcw .offset-y,
+.bcw .offset-scale {
+	width: 100%;
+	min-width: 8em;
+}
+
+.bcw .offset-x-val,
+.bcw .offset-y-val,
+.bcw .offset-scale-val,
+.bcw .offset-card output,
+.bcw .offset-card .offset-value {
+	min-width: 3.5em;
+	color: var(--SmartThemeQuoteColor);
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+
+.bcw .avatar-editor {
+	position: relative;
+	display: inline-block;
+	line-height: 0;
+	touch-action: none;
+}
+
+.bcw .avatar-editor > #bulk_combine_avatar_image {
+	max-width: 200px;
+	max-height: 300px;
+	border-radius: 8px;
+	display: block;
+}
+
+.bcw .avatar-editor .avatar-editor-cell {
+	position: absolute;
+	overflow: hidden;
+	box-sizing: border-box;
+	cursor: pointer;
+	border: 1px solid rgba(255, 255, 255, 0.15);
+	transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.bcw .avatar-editor .avatar-editor-cell:hover {
+	border-color: rgba(255, 255, 255, 0.4);
+}
+
+.bcw .avatar-editor .avatar-editor-cell.selected {
+	z-index: 2;
+	cursor: grab;
+	border-color: rgba(255, 255, 255, 0.8);
+	border-width: 2px;
+	box-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
+}
+
+.bcw .avatar-editor .avatar-editor-cell.selected:active {
+	cursor: grabbing;
+}
+
+.bcw .avatar-editor .avatar-editor-cell img {
+	position: absolute;
+	pointer-events: none;
+	user-select: none;
+	-webkit-user-drag: none;
+	transform-origin: center center;
+}
+
+.bcw .avatar-editor .avatar-editor-cell-image-rect {
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+/* Component-specific replacements for ST utility classes */
+.bcw .preset-controls,
+.bcw .layout-controls,
+.bcw .crop-controls,
+.bcw .mode-selector,
+.bcw .postprocess-mode-selector,
+.bcw .postprocess-preset-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5em;
+	align-items: center;
+}
+
+.bcw .desc {
+	display: block;
+	margin-bottom: 0.75em;
+}
+
+.bcw .config-section {
+	margin-bottom: 0.75em;
+}
+
+.bcw .config-section h4 {
+	margin-bottom: 0.25em;
+}
+
+.bcw .char-lists-row {
+	display: flex;
+	gap: 0.75em;
+	align-items: flex-start;
+	max-height: 260px;
+}
+
+.bcw .char-lists-row .char-list-panel {
+	flex: 1 1 50%;
+	min-width: 0;
+	max-height: 250px;
+	overflow-y: auto;
+}
+
+.bcw .char-lists-row .char-list-panel h4 {
+	--SmartThemeBodyColor: rgba(10, 10, 10, 1);
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	margin: 0 0 0.25em 0;
+	padding: 5px;
+	border-radius: 0.3rem;
+	background: var(--SmartThemeBodyColor);
+	font-size: 0.9em;
+	opacity: 1;
+}
+
+.bcw .add-section {
+	margin-top: 0.75em;
+}
+
+.bcw .field-group {
+	margin-top: 0.75em;
+}
+
+.bcw label.text_label {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35em;
+	margin-top: 0.75em;
+}
+
+.bcw input.text_pole,
+.bcw select.text_pole,
+.bcw textarea.text_pole {
+	width: 100%;
+	box-sizing: border-box;
+	margin: 0;
+}
+
+.bcw .character-item {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	margin: 0.25em;
+	padding: 0.25em;
+}
+
+.bcw .character-item img {
+	width: 32px;
+	height: 32px;
+	object-fit: cover;
+	border-radius: 4px;
+}
+
+.bcw .character-item .char-name {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.bcw .character-item .menu_button {
+	flex: 0 0 auto;
+}
+
+.bcw .regen-checkbox {
+	flex: 0 0 auto;
+	margin-left: auto;
+}
+
+.bcw .results-summary {
+	margin-top: 0.75em;
+}
+
+.bcw .results-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5em;
+	margin-top: 0.75em;
+}
+
+.bcw > .footer > div,
+.bcw .results-actions > div {
+	flex-grow: 1;
+}
+
+#bulk_combine_regenerate_avatar,
+#bulk_combine_apply_postprocess {
+	width: 100%;
+}
+
+#bulk_group_card_job_indicator {
+	--SmartThemeBodyColor: rgba(0, 0, 0, 0.4);
+}
+
+/* ========================================================================
+   2. Tab / panel / progress overlay rules — extracted from the inline
+      <style> tag in BulkEditOverlay.js #getCombineGroupCardWizardHtml.
+      The inline <style> is intentionally retained in the JS template so
+      the legacy wizard rendering keeps working independently.
+   ======================================================================== */
+
+.bcw-tabs {
+	display: flex;
+	gap: 0.35em;
+	margin: 0.5em 0 0.75em;
+	border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bcw-tab {
+	padding: 0.55em 0.85em;
+	cursor: pointer;
+	border: 1px solid transparent;
+	border-bottom: none;
+	border-radius: 8px 8px 0 0;
+	opacity: 0.75;
+}
+
+.bcw-tab.active {
+	opacity: 1;
+	background: var(--SmartThemeBlurTintColor);
+	border-color: var(--SmartThemeBorderColor);
+	font-weight: 600;
+}
+
+.bcw-panel {
+	min-height: 24em;
+}
+
+.bcw-placeholder {
+	padding: 1em;
+	border: 1px dashed var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	opacity: 0.85;
+}
+
+.bcw-progress-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 50;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 88%, transparent);
+	backdrop-filter: blur(2px);
+}
+
+.bcw-progress-card {
+	width: min(620px, 92%);
+	padding: 1.25em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 12px;
+	background: var(--SmartThemeBodyColor);
+	box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35);
+}
+
+.bcw-progress-card h4 {
+	margin-top: 0;
+}
+
+.bcw-progress-status {
+	margin: 0.5em 0;
+	font-weight: 600;
+}
+
+.bcw-progress-bar {
+	height: 0.75em;
+	overflow: hidden;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 999px;
+	background: rgba(127, 127, 127, 0.18);
+}
+
+.bcw-progress-fill {
+	height: 100%;
+	width: 0%;
+	transition: width 0.2s ease;
+	background: var(--SmartThemeQuoteColor);
+}
+
+.bcw-progress-fill.indeterminate {
+	width: 35%;
+	animation: bcw-progress-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.bcw-progress-stats {
+	display: flex;
+	justify-content: space-between;
+	gap: 1em;
+	margin: 0.5em 0;
+	font-size: 0.9em;
+	opacity: 0.8;
+}
+
+.bcw-progress-tokens {
+	max-height: 8em;
+	overflow: auto;
+	white-space: pre-wrap;
+	font-family: monospace;
+	font-size: 0.85em;
+	margin: 0.75em 0;
+	padding: 0.65em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background: rgba(127, 127, 127, 0.12);
+}
+
+.bcw-progress-cancel {
+	width: fit-content;
+	margin-left: auto;
+}
+
+@keyframes bcw-progress-pulse {
+	from { transform: translateX(-80%); }
+	to { transform: translateX(190%); }
+}
+
+/* ========================================================================
+   3. Redesign classes — per DESIGN doc (.pi/artifacts/*DESIGN*).
+      These implement the 5-stage wizard flow with a stepper, character
+      card strip, result grid, status badges, collapsible sections, and
+      the two-column avatar studio.
+   ======================================================================== */
+
+/* --- Stepper (stage indicator bar) --- */
+
+.bcw-stepper {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	flex-wrap: wrap;
+}
+
+/* Individual stage node: icon + label, pill-shaped */
+.bcw-stepper-node {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35em;
+	min-width: 2.25em;
+	min-height: 2.25em;
+	padding: 0.35em 0.7em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 999px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 88%,
+		var(--SmartThemeBodyColor) 12%
+	);
+	color: var(--SmartThemeBodyColor);
+	font-size: 0.85em;
+	font-weight: 600;
+	opacity: 0.4;
+	cursor: default;
+	transition: opacity 0.2s, transform 0.2s, border-color 0.2s;
+}
+
+.bcw-stepper-node.clickable {
+	cursor: pointer;
+}
+
+.bcw-stepper-node.active {
+	border-color: var(--SmartThemeQuoteColor);
+	box-shadow: 0 0 0 1px var(--SmartThemeQuoteColor) inset;
+	color: var(--SmartThemeQuoteColor);
+	opacity: 1;
+	transform: scale(1.05);
+}
+
+.bcw-stepper-node.completed {
+	border-color: rgba(76, 175, 80, 0.75);
+	color: #7fd37f;
+	opacity: 0.9;
+}
+
+/* Connecting line between nodes: dashed when upcoming, solid when done */
+.bcw-stepper-line {
+	flex: 1 1 auto;
+	min-width: 1.5em;
+	height: 0;
+	border-top: 2px dashed var(--SmartThemeBorderColor);
+}
+
+.bcw-stepper-line.completed {
+	border-top: 2px solid rgba(76, 175, 80, 0.6);
+}
+
+/* --- Stage panel (one visible at a time, 200 ms fade) --- */
+
+.bcw-stage {
+	display: none;
+	animation: bcw-stage-fade 0.2s ease;
+}
+
+.bcw-stage.active {
+	display: block;
+}
+
+@keyframes bcw-stage-fade {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+/* --- Stage 1: character card strip --- */
+
+.bcw-character-strip {
+	display: flex;
+	gap: 0.5em;
+	overflow-x: auto;
+	overflow-y: hidden;
+	padding-bottom: 0.5em;
+	scroll-snap-type: x mandatory;
+}
+
+/* Individual character card */
+.bcw-character-card {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.25em;
+	flex: 0 0 auto;
+	width: 90px;
+	padding: 0.5em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 92%,
+		var(--SmartThemeBodyColor) 8%
+	);
+	box-shadow: 0 1px 3px var(--SmartThemeShadowColor);
+	cursor: grab;
+	scroll-snap-align: start;
+	transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s, opacity 0.15s;
+}
+
+.bcw-character-card:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 3px 8px var(--SmartThemeShadowColor);
+}
+
+.bcw-character-card.selected {
+	border: 2px solid var(--SmartThemeQuoteColor);
+}
+
+.bcw-character-card.dragging {
+	opacity: 0.6;
+}
+
+.bcw-character-card .avatar {
+	width: 40px;
+	height: 40px;
+	border-radius: 50%;
+	object-fit: cover;
+	border: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bcw-character-card .name {
+	width: 100%;
+	font-size: 0.8em;
+	text-align: center;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* --- Stage 2: result grid --- */
+
+.bcw-result-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 18em), 1fr));
+	gap: 0.75em;
+}
+
+/* Individual result card */
+.bcw-result-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6em;
+	padding: 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 92%,
+		var(--SmartThemeBodyColor) 8%
+	);
+	box-shadow: 0 1px 3px var(--SmartThemeShadowColor);
+}
+
+.bcw-result-card > .card-header {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+}
+
+.bcw-result-card .avatar {
+	width: 32px;
+	height: 32px;
+	flex: 0 0 32px;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	object-fit: cover;
+	background-color: var(--SmartThemeBlurTintColor);
+}
+
+.bcw-result-card .name {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	font-weight: 600;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.bcw-result-card .xml {
+	width: 100%;
+	min-height: 10em;
+	resize: vertical;
+	font-family: var(--monoFontFamily, monospace);
+	font-size: 0.9em;
+}
+
+.bcw-result-card .actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.5em;
+}
+
+/* --- Status badge (pending / generating / complete / failed) --- */
+
+.bcw-status-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3em;
+	flex: 0 0 auto;
+	padding: 0.15em 0.5em;
+	border-radius: 999px;
+	font-size: 0.8em;
+	font-weight: 700;
+}
+
+.bcw-status-badge.pending {
+	color: var(--grey75);
+	opacity: 0.8;
+}
+
+.bcw-status-badge.generating {
+	color: #6aa9ff;
+	animation: bcw-status-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.bcw-status-badge.complete {
+	color: #7fd37f;
+}
+
+.bcw-status-badge.failed {
+	color: #ff6b6b;
+}
+
+@keyframes bcw-status-pulse {
+	from { opacity: 0.6; }
+	to { opacity: 1; }
+}
+
+/* --- Collapsible progressive-disclosure section --- */
+
+.bcw-collapsible {
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 94%,
+		var(--SmartThemeBodyColor) 6%
+	);
+	overflow: hidden;
+}
+
+.bcw-collapsible-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5em;
+	padding: 0.6em 0.75em;
+	cursor: pointer;
+	user-select: none;
+	font-weight: 600;
+}
+
+.bcw-collapsible-header:hover {
+	color: var(--SmartThemeQuoteColor);
+}
+
+.bcw-collapsible-content {
+	max-height: 0;
+	overflow: hidden;
+	transition: max-height 0.2s ease;
+}
+
+.bcw-collapsible.expanded .bcw-collapsible-content {
+	max-height: 1000px;
+}
+
+/* --- Stage 5: avatar studio (two-column) --- */
+
+.bcw-avatar-studio {
+	display: grid;
+	grid-template-columns: 1fr 140px;
+	gap: 1em;
+	align-items: start;
+}
+
+/* Left column: live composite preview */
+.bcw-avatar-preview {
+	position: relative;
+}
+
+.bcw-avatar-preview img {
+	max-width: 100%;
+	border-radius: 8px;
+	display: block;
+}
+
+/* Right column: controls sidebar */
+.bcw-avatar-controls {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6em;
+}
+
+/* Per-cell control item in the sidebar */
+.bcw-avatar-cell-control {
+	padding: 0.5em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background-color: color-mix(
+		in srgb,
+		var(--SmartThemeBlurTintColor) 90%,
+		var(--SmartThemeBodyColor) 10%
+	);
+	cursor: pointer;
+	transition: border-color 0.15s;
+}
+
+.bcw-avatar-cell-control.selected {
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+/* --- Footer + buttons --- */
+
+.bcw-footer {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.5em;
+	padding-top: 0.75em;
+	border-top: 1px solid var(--SmartThemeBorderColor);
+	align-items: center;
+	margin-top: 0.75em;
+}
+
+.bcw-button-primary {
+	min-width: 7em;
+	border-color: var(--SmartThemeQuoteColor);
+	color: var(--SmartThemeQuoteColor);
+	font-weight: 600;
+}
+
+.bcw-button-primary:hover {
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 15%, transparent);
+}
+
+.bcw-button-secondary {
+	min-width: 7em;
+}
+
+/* ========================================================================
+   4. Responsive breakpoints
+   ======================================================================== */
+
+/* Legacy wizard — narrow viewport adjustments (moved from public/style.css) */
+@media screen and (max-width: 600px) {
+	.bcw .char-lists-row {
+		flex-direction: column;
+		max-height: none;
+	}
+
+	.bcw .char-lists-row .char-list-panel {
+		max-height: 200px;
+	}
+
+	.bcw > .footer {
+		justify-content: stretch;
+	}
+
+	.bcw .result-card .actions {
+		justify-content: stretch;
+	}
+
+	.bcw .result-card .autofix,
+	.bcw .result-card .edit-btn,
+	.bcw > .footer .menu_button {
+		flex: 1 1 auto;
+	}
+
+	.bcw .offset-card {
+		grid-template-columns: 1fr;
+	}
+
+	.bcw .offset-card label:has(.offset-x),
+	.bcw .offset-card label:has(.offset-y),
+	.bcw .offset-card label:has(.offset-scale) {
+		grid-template-columns: 1fr;
+	}
+}
+
+/* Tablet (480–768px): avatar controls stack below preview */
+@media (max-width: 768px) {
+	.bcw-avatar-studio {
+		grid-template-columns: 1fr;
+	}
+
+	.bcw-avatar-controls {
+		flex-direction: row;
+		flex-wrap: wrap;
+	}
+}
+
+/* Mobile (<480px): everything single-column */
+@media (max-width: 480px) {
+	.bcw-result-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.bcw-character-strip {
+		scroll-snap-type: none;
+	}
+
+	.bcw-stepper {
+		overflow-x: auto;
+		flex-wrap: nowrap;
+	}
+
+	.bcw-button-primary,
+	.bcw-button-secondary {
+		flex: 1 1 auto;
+	}
+}
