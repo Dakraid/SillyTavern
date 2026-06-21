@@ -105,7 +105,7 @@ import {
     renderGroupCardPostMergePromptPresetSelect,
 } from './bulk-combine/services/PresetManager.js';
 
-import { setOpenWizardHandler } from './bulk-combine/index.js';
+import { openCombineWizard, runRegenWizardForCard, quickRegenGroupCard } from './bulk-combine/index.js';
 
 /**
  * Triggers a browser download for a Blob.
@@ -1487,14 +1487,8 @@ class BulkEditOverlay {
     handleContextMenuCombineGroupCard = async () => {
         const characterIds = this.selectedCharacters.slice();
 
-        const methodName = 'combineIntoGroupCard';
-        const combineIntoGroupCard =
-        /** @type {(characterIds: number[]) => Promise<void>} */ (
-                BulkEditOverlay[methodName]
-            );
-
         try {
-            await combineIntoGroupCard(characterIds);
+            await openCombineWizard(characterIds);
         } finally {
             this.browseState();
         }
@@ -1513,7 +1507,7 @@ class BulkEditOverlay {
         }
 
         try {
-            await BulkEditOverlay.#runRegenWizardForCard(wizardCharacterIds[0]);
+            await runRegenWizardForCard(wizardCharacterIds[0]);
         } finally {
             this.browseState();
         }
@@ -5455,7 +5449,7 @@ Respond with this exact JSON structure:
         editButton.dataset.characterId = hasMetadata ? String(characterId) : '';
         editButton.onclick = hasMetadata
             ? async () => {
-                await BulkEditOverlay.#runRegenWizardForCard(characterId);
+                await runRegenWizardForCard(characterId);
             }
             : null;
 
@@ -5465,7 +5459,7 @@ Respond with this exact JSON structure:
                 : '';
             quickRegenButton.onclick = hasMetadata
                 ? async () => {
-                    await BulkEditOverlay.quickRegenGroupCard(characterId);
+                    await quickRegenGroupCard(characterId);
                 }
                 : null;
         }
@@ -5716,7 +5710,7 @@ Respond with this exact JSON structure:
             }
         }
 
-        await BulkEditOverlay.combineIntoGroupCard(sourceCharacterIds, {
+        await openCombineWizard(sourceCharacterIds, {
             rerunAvatar: character.avatar,
             rerunMeta: meta,
             groupName: getCoreCharacterField(character, 'name'),
@@ -6330,7 +6324,7 @@ Respond with this exact JSON structure:
             content.closest('.popup').remove();
             const selectedCharacters =
 				bulkEditOverlayInstance?.selectedCharacters?.slice?.() ?? [];
-            await BulkEditOverlay.combineIntoGroupCard(selectedCharacters);
+            await openCombineWizard(selectedCharacters);
         });
         content.append(newCardButton);
         const list = $('<div></div>').css({ marginTop: '0.5em' });
@@ -6702,6 +6696,5 @@ export {
     buildLorebookEntry,
 } from './bulk-combine/helpers.js';
 
-// Bridge the legacy wizard implementation (BulkEditOverlay.combineIntoGroupCard)
-// to the bulk-combine public entry point without a circular import.
-setOpenWizardHandler(BulkEditOverlay.combineIntoGroupCard);
+// New wizard active: openCombineWizard delegates to WizardController.open
+// via bulk-combine/index.js when no legacy handler is registered.
