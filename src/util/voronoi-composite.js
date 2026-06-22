@@ -16,6 +16,22 @@ const CROP_STRATEGIES = new Set([
     'top',
     'face',
 ]);
+const GRID_ALIGNS = new Set([
+    'center',
+    'start',
+    'end',
+    'space-between',
+    'space-around',
+    'space-evenly',
+]);
+const GRID_VALIGNS = new Set(['center', 'start', 'end']);
+const GRID_DIRECTIONS = new Set([
+    'row',
+    'column',
+    'row-reverse',
+    'column-reverse',
+]);
+const CELL_FITS = new Set(['cover', 'contain']);
 const SEED_CANDIDATES = 10;
 const BORDER_COLOR = { r: 20, g: 20, b: 20, a: 255 };
 const BORDER_RADIUS = 1;
@@ -173,7 +189,7 @@ export async function generateVoronoiComposite(
  * Generate a grid-based composite from character avatar images.
  * @param {string[]} avatarPaths Absolute paths to character avatar PNGs.
  * @param {string} outputPath Where to write the composite PNG.
- * @param {{width?: number, height?: number, cellAspect?: number|string, gap?: number, maxCols?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>}} options
+ * @param {{width?: number, height?: number, cellAspect?: number|string, gap?: number, maxCols?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>, gridAlign?: string, gridVAlign?: string, gridDirection?: string, cellFit?: string}} options
  * @returns {Promise<{path: string, cells: Array<{type: string, x: number, y: number, w: number, h: number}>}>}
  */
 export async function generateGridComposite(
@@ -209,10 +225,26 @@ export async function generateGridComposite(
     const offsets = normalizeOffsets(options.offsets, avatarPaths.length);
     const cellAspect = normalizeCellAspect(options.cellAspect);
     const gap = normalizeGap(options.gap);
-    const maxCols = typeof options.maxCols === 'number' && Number.isFinite(options.maxCols) && options.maxCols > 0
+    const maxCols = typeof options.maxCols === 'number' &&
+        Number.isFinite(options.maxCols) &&
+        options.maxCols > 0
         ? Math.round(options.maxCols)
         : 0;
-    const grid = calculateGrid(avatarPaths.length, width / height / cellAspect, maxCols);
+    const gridAlign = GRID_ALIGNS.has(options.gridAlign)
+        ? options.gridAlign
+        : 'center';
+    const gridVAlign = GRID_VALIGNS.has(options.gridVAlign)
+        ? options.gridVAlign
+        : 'center';
+    const gridDirection = GRID_DIRECTIONS.has(options.gridDirection)
+        ? options.gridDirection
+        : 'row';
+    const cellFit = CELL_FITS.has(options.cellFit) ? options.cellFit : 'cover';
+    const grid = calculateGrid(
+        avatarPaths.length,
+        width / height / cellAspect,
+        maxCols,
+    );
     const availableWidth = width - gap * (grid.cols - 1);
     const availableHeight = height - gap * (grid.rows - 1);
     const slotWidth = availableWidth / grid.cols;
@@ -228,10 +260,38 @@ export async function generateGridComposite(
         cellHeight = Math.max(1, Math.floor(cellWidth / cellAspect));
     }
 
+    let actualGap = gap;
+    let startX;
     const totalGridWidth = cellWidth * grid.cols + gap * (grid.cols - 1);
     const totalGridHeight = cellHeight * grid.rows + gap * (grid.rows - 1);
-    const startX = Math.floor((width - totalGridWidth) / 2);
-    const startY = Math.floor((height - totalGridHeight) / 2);
+
+    if (gridAlign === 'space-between' && grid.cols > 1) {
+        actualGap = (width - cellWidth * grid.cols) / (grid.cols - 1);
+        startX = 0;
+    } else if (gridAlign === 'space-around' && grid.cols > 0) {
+        actualGap = (width - cellWidth * grid.cols) / grid.cols;
+        startX = actualGap / 2;
+    } else if (gridAlign === 'space-evenly' && grid.cols > 0) {
+        actualGap = (width - cellWidth * grid.cols) / (grid.cols + 1);
+        startX = actualGap;
+    } else if (gridAlign === 'start') {
+        startX = 0;
+    } else if (gridAlign === 'end') {
+        startX = width - totalGridWidth;
+    } else {
+        startX = Math.floor((width - totalGridWidth) / 2);
+    }
+
+    let startY;
+    if (gridVAlign === 'start') {
+        startY = 0;
+    } else if (gridVAlign === 'end') {
+        startY = height - totalGridHeight;
+    } else {
+        startY = Math.floor((height - totalGridHeight) / 2);
+    }
+
+    const gridCropOptions = { ...cropOptions, cellFit };
     /** @type {Array<{ input: Buffer, left: number, top: number, blend: 'over' }>} */
     const composites = [];
     /** @type {Array<{type: string, x: number, y: number, w: number, h: number}>} */
@@ -240,15 +300,29 @@ export async function generateGridComposite(
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
     for (let i = 0; i < avatarPaths.length; i++) {
-        const col = i % grid.cols;
-        const row = Math.floor(i / grid.cols);
-        const x = startX + col * (cellWidth + gap);
-        const y = startY + row * (cellHeight + gap);
+        let col;
+        let row;
+        if (gridDirection === 'column') {
+            col = Math.floor(i / grid.rows);
+            row = i % grid.rows;
+        } else if (gridDirection === 'row-reverse') {
+            col = grid.cols - 1 - (i % grid.cols);
+            row = Math.floor(i / grid.cols);
+        } else if (gridDirection === 'column-reverse') {
+            col = Math.floor(i / grid.rows);
+            row = grid.rows - 1 - (i % grid.rows);
+        } else {
+            col = i % grid.cols;
+            row = Math.floor(i / grid.cols);
+        }
+
+        const x = Math.round(startX + col * (cellWidth + actualGap));
+        const y = Math.round(startY + row * (cellHeight + gap));
         const imageBuffer = await readAvatarBuffer(
             avatarPaths[i],
             cellWidth,
             cellHeight,
-            cropOptions,
+            gridCropOptions,
         );
         const offsetImageBuffer = await applyAvatarOffset(
             imageBuffer,
@@ -293,9 +367,9 @@ async function readAvatarBuffer(avatarPath, width, height, cropOptions = {}) {
 }
 
 async function createAvatarBuffer(avatarPath, width, height, cropOptions = {}) {
-    const { cropStrategy, cropPadding } = normalizeCropOptions(cropOptions);
+    const { cropStrategy, cropPadding, cellFit } = normalizeCropOptions(cropOptions);
 
-    if (cropStrategy === 'face') {
+    if (cropStrategy === 'face' && cellFit !== 'contain') {
         return createHeuristicFaceCropBuffer(
             avatarPath,
             width,
@@ -306,8 +380,9 @@ async function createAvatarBuffer(avatarPath, width, height, cropOptions = {}) {
 
     return sharp(avatarPath)
         .resize(width, height, {
-            fit: 'cover',
+            fit: cellFit === 'contain' ? 'contain' : 'cover',
             position: getSharpCropPosition(cropStrategy),
+            background: { r: 0, g: 0, b: 0, alpha: 1 },
         })
         .png()
         .toBuffer();
@@ -325,7 +400,9 @@ function normalizeCropOptions(options = {}) {
             ? options.cropPadding
             : DEFAULT_CROP_PADDING;
 
-    return { cropStrategy, cropPadding };
+    const cellFit = CELL_FITS.has(options.cellFit) ? options.cellFit : 'cover';
+
+    return { cropStrategy, cropPadding, cellFit };
 }
 
 function normalizeOffsets(offsets, count) {

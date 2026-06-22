@@ -21,6 +21,22 @@ import { throwIfNotOk } from '../services/JobClient.js';
 
 const VALID_LAYOUTS = ['voronoi', 'grid-portrait', 'grid-square'];
 const VALID_CROP_FOCUS = ['attention', 'entropy', 'center', 'top', 'face'];
+const VALID_GRID_ALIGN = [
+    'center',
+    'start',
+    'end',
+    'space-between',
+    'space-around',
+    'space-evenly',
+];
+const VALID_GRID_VALIGN = ['center', 'start', 'end'];
+const VALID_GRID_DIRECTION = [
+    'row',
+    'column',
+    'row-reverse',
+    'column-reverse',
+];
+const VALID_CELL_FIT = ['cover', 'contain'];
 const OFFSET_MIN = -100;
 const OFFSET_MAX = 100;
 const SCALE_MIN = 50;
@@ -192,17 +208,31 @@ export class AvatarEditor {
         const layout = VALID_LAYOUTS.includes(config.layout)
             ? config.layout
             : 'voronoi';
-        const ratio = ['9:16', '1:1', '16:9', '4:3'].includes(config.aspectRatio)
-            ? config.aspectRatio
-            : '9:16';
+        const ratio = parseAspectRatio(config.aspectRatio) ?? '9:16';
         const gap = clampNumber(config.gap, 0, 10, 2);
         const maxCols = clampNumber(config.maxCols, 0, 20, 0);
+        const gridAlign = VALID_GRID_ALIGN.includes(config.gridAlign)
+            ? config.gridAlign
+            : 'center';
+        const gridVAlign = VALID_GRID_VALIGN.includes(config.gridVAlign)
+            ? config.gridVAlign
+            : 'center';
+        const gridDirection = VALID_GRID_DIRECTION.includes(config.gridDirection)
+            ? config.gridDirection
+            : 'row';
+        const cellFit = VALID_CELL_FIT.includes(config.cellFit)
+            ? config.cellFit
+            : 'cover';
 
         this.$stage.find('#bcw_layout').val(layout);
         this.$stage.find('#bcw_gap').val(String(gap));
         this.$stage.find('#bcw_gap_value').text(String(gap));
         this.$stage.find('#bcw_max_cols').val(String(maxCols));
         this.$stage.find('#bcw_max_cols_value').text(String(maxCols));
+        this.$stage.find('#bcw_grid_align').val(gridAlign);
+        this.$stage.find('#bcw_grid_valign').val(gridVAlign);
+        this.$stage.find('#bcw_grid_direction').val(gridDirection);
+        this.$stage.find('#bcw_cell_fit').val(cellFit);
 
         // Grid controls visibility.
         this.$stage.find('#bcw_grid_controls').prop('hidden', layout === 'voronoi');
@@ -212,8 +242,9 @@ export class AvatarEditor {
         const $activePill = this.$stage.find(`.bcw-ratio-pill[data-ratio="${ratio}"]`);
         if ($activePill.length > 0) {
             $activePill.addClass('active');
+            this.$stage.find('#bcw_ratio_custom').val('');
         } else {
-            this.$stage.find('#bcw_ratio_custom').val(config.aspectRatio);
+            this.$stage.find('#bcw_ratio_custom').val(ratio);
         }
 
         this.#applyAspectRatio(ratio);
@@ -237,6 +268,7 @@ export class AvatarEditor {
             this.$stage.find('.bcw-ratio-pill').removeClass('active');
             $(event.currentTarget).addClass('active');
             this.$stage.find('#bcw_ratio_custom').val('');
+            this.wizardState.update({ aspectRatio: ratio, customRatio: null });
             this.#applyAspectRatio(ratio);
         });
 
@@ -246,6 +278,7 @@ export class AvatarEditor {
             const parsed = parseAspectRatio(raw);
             if (parsed) {
                 this.$stage.find('.bcw-ratio-pill').removeClass('active');
+                this.wizardState.update({ aspectRatio: parsed, customRatio: parsed });
                 this.#applyAspectRatio(parsed);
             }
         });
@@ -254,6 +287,7 @@ export class AvatarEditor {
         this.$stage.find('#bcw_gap').on('input', async () => {
             const gap = clampNumber(this.$stage.find('#bcw_gap').val(), 0, 10, 2);
             this.$stage.find('#bcw_gap_value').text(String(gap));
+            this.wizardState.update({ gap });
             await this.regenerate();
         });
 
@@ -266,6 +300,39 @@ export class AvatarEditor {
                 0,
             );
             this.$stage.find('#bcw_max_cols_value').text(String(maxCols));
+            this.wizardState.update({ maxCols });
+            await this.regenerate();
+        });
+
+        this.$stage.find('#bcw_grid_align').on('change', async () => {
+            const val = String(this.$stage.find('#bcw_grid_align').val() ?? 'center');
+            const gridAlign = VALID_GRID_ALIGN.includes(val) ? val : 'center';
+            this.$stage.find('#bcw_grid_align').val(gridAlign);
+            this.wizardState.update({ gridAlign });
+            await this.regenerate();
+        });
+
+        this.$stage.find('#bcw_grid_valign').on('change', async () => {
+            const val = String(this.$stage.find('#bcw_grid_valign').val() ?? 'center');
+            const gridVAlign = VALID_GRID_VALIGN.includes(val) ? val : 'center';
+            this.$stage.find('#bcw_grid_valign').val(gridVAlign);
+            this.wizardState.update({ gridVAlign });
+            await this.regenerate();
+        });
+
+        this.$stage.find('#bcw_grid_direction').on('change', async () => {
+            const val = String(this.$stage.find('#bcw_grid_direction').val() ?? 'row');
+            const gridDirection = VALID_GRID_DIRECTION.includes(val) ? val : 'row';
+            this.$stage.find('#bcw_grid_direction').val(gridDirection);
+            this.wizardState.update({ gridDirection });
+            await this.regenerate();
+        });
+
+        this.$stage.find('#bcw_cell_fit').on('change', async () => {
+            const val = String(this.$stage.find('#bcw_cell_fit').val() ?? 'cover');
+            const cellFit = VALID_CELL_FIT.includes(val) ? val : 'cover';
+            this.$stage.find('#bcw_cell_fit').val(cellFit);
+            this.wizardState.update({ cellFit });
             await this.regenerate();
         });
 
@@ -296,6 +363,7 @@ export class AvatarEditor {
      */
     async setLayout(layout) {
         const valid = VALID_LAYOUTS.includes(layout) ? layout : 'voronoi';
+        this.wizardState.update({ layout: valid });
         this.$stage.find('#bcw_grid_controls').prop('hidden', valid === 'voronoi');
         await this.regenerate();
     }
@@ -369,6 +437,10 @@ export class AvatarEditor {
                         layout,
                         gap: config.gap,
                         maxCols: config.maxCols ?? 0,
+                        gridAlign: config.gridAlign ?? 'center',
+                        gridVAlign: config.gridVAlign ?? 'center',
+                        gridDirection: config.gridDirection ?? 'row',
+                        cellFit: config.cellFit ?? 'cover',
                         seed: this.wizardState.state.voronoiSeed,
                     }),
                 },
@@ -979,7 +1051,8 @@ export class AvatarEditor {
     /**
      * Read all avatar-editor state into a config patch.
      *
-     * @returns {{layout: string, gap: number, maxCols: number, aspectRatio: string, customRatio: string|null, cropStrategy: string, cropPadding: number, avatarOffsets: Array<{x: number, y: number, scale: number}>, avatarUrl: string|null}} Config patch.
+     * @returns {object} Config patch containing layout, grid controls,
+     * aspect ratio, crop options, offsets, and current avatar URL.
      */
     collectConfig() {
         const config = this.wizardState.config;
@@ -1003,10 +1076,33 @@ export class AvatarEditor {
             aspectRatio = config.aspectRatio || '9:16';
         }
 
+        const gridAlignValue = String(
+            this.$stage.find('#bcw_grid_align').val() ?? config.gridAlign ?? 'center',
+        );
+        const gridVAlignValue = String(
+            this.$stage.find('#bcw_grid_valign').val() ?? config.gridVAlign ?? 'center',
+        );
+        const gridDirectionValue = String(
+            this.$stage.find('#bcw_grid_direction').val() ?? config.gridDirection ?? 'row',
+        );
+        const cellFitValue = String(
+            this.$stage.find('#bcw_cell_fit').val() ?? config.cellFit ?? 'cover',
+        );
+
         return {
             layout,
             gap: clampNumber(config.gap, 0, 10, 2),
             maxCols: clampNumber(config.maxCols, 0, 20, 0),
+            gridAlign: VALID_GRID_ALIGN.includes(gridAlignValue)
+                ? gridAlignValue
+                : 'center',
+            gridVAlign: VALID_GRID_VALIGN.includes(gridVAlignValue)
+                ? gridVAlignValue
+                : 'center',
+            gridDirection: VALID_GRID_DIRECTION.includes(gridDirectionValue)
+                ? gridDirectionValue
+                : 'row',
+            cellFit: VALID_CELL_FIT.includes(cellFitValue) ? cellFitValue : 'cover',
             aspectRatio,
             customRatio,
             cropStrategy: config.cropStrategy ?? 'attention',
