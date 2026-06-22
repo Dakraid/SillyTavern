@@ -26,6 +26,7 @@ import {
     unshallowCharacter,
     getCharacters,
 } from '../../script.js';
+import { callGenericPopup, POPUP_TYPE, POPUP_RESULT } from '../popup.js';
 import {
     validateGeneratedGroupCardDescription,
     parseGreetingsFromGeneratedOutput,
@@ -199,6 +200,67 @@ function resolveSourceCharacterIds(meta, characterList) {
 }
 
 /**
+ * Stage definitions for the re-run picker.
+ */
+const RERUN_STAGES = [
+    { id: 1, label: 'Characters & Setup', icon: 'fa-users' },
+    { id: 2, label: 'Generation Results', icon: 'fa-bolt' },
+    { id: 3, label: 'Polish', icon: 'fa-wand-magic-sparkles' },
+    { id: 4, label: 'Review', icon: 'fa-clipboard-check' },
+    { id: 5, label: 'Avatar Studio', icon: 'fa-image' },
+];
+
+/**
+ * Show a popup asking the user which stage to start at when re-running
+ * a wizard-generated card. Returns the stage number (1–5) or 1 if the
+ * user dismisses the popup.
+ *
+ * @returns {Promise<number>} Selected stage.
+ */
+async function askRerunStartStage() {
+    let selectedStage = 1;
+
+    const buttons = RERUN_STAGES.map((s) =>
+        `<div class="menu_button" data-stage="${s.id}" style="display:flex;align-items:center;gap:0.5em;justify-content:center;">
+            <i class="fa-solid ${s.icon}"></i> ${s.label}
+        </div>`,
+    ).join('');
+
+    const html = `<div style="display:flex;flex-direction:column;gap:0.4em;">
+        <p style="text-align:center;margin-bottom:0.5em;" data-i18n="Select which step to start at. Unmodified steps will use the stored configuration.">
+            Select which step to start at. Unmodified steps will use the stored configuration.
+        </p>
+        <div class="bcw-rerun-stage-buttons" style="display:flex;flex-direction:column;gap:0.4em;">
+            ${buttons}
+        </div>
+    </div>`;
+
+    await callGenericPopup(
+        html,
+        POPUP_TYPE.CONFIRM,
+        '',
+        {
+            okButton: false,
+            cancelButton: 'Cancel',
+            wide: true,
+            onOpen: (popup) => {
+                const $dlg = $(popup.dlg);
+                $dlg.find('.menu_button[data-stage]').on('click', async function () {
+                    selectedStage = clampStage(Number($(this).attr('data-stage')) || 1);
+                    await popup.completeAffirmative();
+                });
+            },
+        },
+    );
+
+    return selectedStage;
+}
+
+function clampStage(n) {
+    return Math.min(5, Math.max(1, Math.round(n) || 1));
+}
+
+/**
  * Open the combine wizard for the given characters.
  *
  * Delegates to the registered wizard opener (set by BulkEditOverlay during
@@ -285,10 +347,14 @@ export async function runRegenWizardForCard(characterId) {
         }
     }
 
+    // Ask the user which stage to start at.
+    const startStage = await askRerunStartStage();
+
     await WizardController.open(sourceCharacterIds, {
         rerunAvatar: character.avatar,
         rerunMeta: meta,
         groupName: getCoreCharacterField(character, 'name'),
+        startStage,
     });
 }
 

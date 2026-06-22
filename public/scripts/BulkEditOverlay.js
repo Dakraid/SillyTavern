@@ -5439,6 +5439,9 @@ Respond with this exact JSON structure:
         const quickRegenButton = document.getElementById(
             'group_card_wizard_quick_regen_button',
         );
+        const avatarEditButton = document.getElementById(
+            'group_card_edit_avatar_button',
+        );
         if (!wrapper || !editButton) {
             return;
         }
@@ -5460,6 +5463,20 @@ Respond with this exact JSON structure:
             quickRegenButton.onclick = hasMetadata
                 ? async () => {
                     await quickRegenGroupCard(characterId);
+                }
+                : null;
+        }
+
+        // Permanent avatar_controls button — visible whenever the
+        // character has wizard metadata, regardless of bulk-edit mode.
+        if (avatarEditButton) {
+            avatarEditButton.style.display = hasMetadata ? '' : 'none';
+            avatarEditButton.dataset.characterId = hasMetadata
+                ? String(characterId)
+                : '';
+            avatarEditButton.onclick = hasMetadata
+                ? async () => {
+                    await runRegenWizardForCard(characterId);
                 }
                 : null;
         }

@@ -459,6 +459,7 @@ const toShallow = (character) => {
             extensions: {
                 fav: _.get(character, 'data.extensions.fav', false),
                 world: _.get(character, 'data.extensions.world', ''),
+                group_card_wizard: _.get(character, 'data.extensions.group_card_wizard', null),
             },
         },
     };

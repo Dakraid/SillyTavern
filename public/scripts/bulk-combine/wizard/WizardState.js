@@ -324,6 +324,11 @@ export class WizardState {
             state.config.groupName = String(rerunConfig.groupName);
         }
 
+        // Re-run: optionally start at a specific stage.
+        if (rerunConfig && Number.isFinite(Number(rerunConfig.startStage))) {
+            state.stage = clampStage(Number(rerunConfig.startStage));
+        }
+
         this._state = state;
         this.notify();
     }
