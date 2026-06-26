@@ -1289,6 +1289,8 @@ export class GroupCardJobManager extends JobManager {
                     cellAspect: layout,
                     gap: config.gap ?? 2,
                     maxCols: config.maxCols ?? 0,
+                    minCols: config.minCols ?? 0,
+                    colsMaxBound: config.colsMaxBound ?? 0,
                     gridAlign: config.gridAlign ?? 'center',
                     gridVAlign: config.gridVAlign ?? 'center',
                     gridDirection: config.gridDirection ?? 'row',

@@ -231,6 +231,16 @@ export async function generateGridComposite(
         options.maxCols > 0
         ? Math.round(options.maxCols)
         : 0;
+    const minCols = typeof options.minCols === 'number' &&
+        Number.isFinite(options.minCols) &&
+        options.minCols > 0
+        ? Math.round(options.minCols)
+        : 0;
+    const colsMaxBound = typeof options.colsMaxBound === 'number' &&
+        Number.isFinite(options.colsMaxBound) &&
+        options.colsMaxBound > 0
+        ? Math.round(options.colsMaxBound)
+        : 0;
     const gridAlign = GRID_ALIGNS.has(options.gridAlign)
         ? options.gridAlign
         : 'center';
@@ -245,6 +255,8 @@ export async function generateGridComposite(
         avatarPaths.length,
         width / height / cellAspect,
         maxCols,
+        minCols,
+        colsMaxBound,
     );
     const availableWidth = width - gap * (grid.cols - 1);
     const availableHeight = height - gap * (grid.rows - 1);
@@ -584,13 +596,16 @@ function normalizeScale(value, fallback) {
     return Number.isFinite(number) ? clamp(number, 0.1, 3) : fallback;
 }
 
-function calculateGrid(count, canvasAspect, maxCols = 0) {
+function calculateGrid(count, canvasAspect, maxCols = 0, minCols = 0, colsMaxBound = 0) {
     let bestCols = 1;
     let bestRows = count;
     let bestDiff = Infinity;
-    const colLimit = maxCols > 0 ? Math.min(count, maxCols) : count;
+    const lowerBound = maxCols > 0 ? 1 : Math.max(1, minCols);
+    const colLimit = maxCols > 0
+        ? Math.min(count, maxCols)
+        : Math.min(count, colsMaxBound > 0 ? colsMaxBound : count);
 
-    for (let cols = 1; cols <= colLimit; cols++) {
+    for (let cols = lowerBound; cols <= colLimit; cols++) {
         const rows = Math.ceil(count / cols);
         const gridAspect = cols / rows;
         const diff = Math.abs(gridAspect - canvasAspect);

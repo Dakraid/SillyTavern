@@ -2437,6 +2437,16 @@ router.post('/generate-voronoi-composite', async function (request, response) {
             request.body.maxCols > 0
             ? Math.min(20, Math.max(1, Math.round(request.body.maxCols)))
             : 0;
+        const minCols = typeof request.body.minCols === 'number' &&
+            Number.isFinite(request.body.minCols) &&
+            request.body.minCols >= 0
+            ? Math.min(20, Math.round(request.body.minCols))
+            : 0;
+        const colsMaxBound = typeof request.body.colsMaxBound === 'number' &&
+            Number.isFinite(request.body.colsMaxBound) &&
+            request.body.colsMaxBound >= 0
+            ? Math.min(20, Math.round(request.body.colsMaxBound))
+            : 0;
         const gridAlign = VALID_GRID_ALIGNS.includes(request.body.gridAlign)
             ? request.body.gridAlign
             : 'center';
@@ -2460,6 +2470,8 @@ router.post('/generate-voronoi-composite', async function (request, response) {
                 cellAspect: layout,
                 gap,
                 maxCols,
+                minCols,
+                colsMaxBound,
                 gridAlign,
                 gridVAlign,
                 gridDirection,

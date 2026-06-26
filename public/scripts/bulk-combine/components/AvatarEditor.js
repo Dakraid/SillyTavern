@@ -229,6 +229,15 @@ export class AvatarEditor {
         this.$stage.find('#bcw_gap_value').text(String(gap));
         this.$stage.find('#bcw_max_cols').val(String(maxCols));
         this.$stage.find('#bcw_max_cols_value').text(String(maxCols));
+        const minCols = clampNumber(config.minCols, 0, 20, 0);
+        const colsMaxBound = clampNumber(config.colsMaxBound, 0, 20, 0);
+        this.$stage.find('#bcw_min_cols').val(String(minCols));
+        this.$stage.find('#bcw_min_cols_value').text(String(minCols));
+        this.$stage.find('#bcw_cols_max_bound').val(String(colsMaxBound));
+        this.$stage.find('#bcw_cols_max_bound_value').text(String(colsMaxBound));
+        // Disable min/max when exact mode (maxCols != 0)
+        const isExact = maxCols !== 0;
+        this.$stage.find('#bcw_min_cols, #bcw_cols_max_bound').prop('disabled', isExact);
         this.$stage.find('#bcw_grid_align').val(gridAlign);
         this.$stage.find('#bcw_grid_valign').val(gridVAlign);
         this.$stage.find('#bcw_grid_direction').val(gridDirection);
@@ -307,6 +316,23 @@ export class AvatarEditor {
             );
             this.$stage.find('#bcw_max_cols_value').text(String(maxCols));
             this.wizardState.update({ maxCols });
+            // Toggle min/max disabled state
+            const isExact = maxCols !== 0;
+            this.$stage.find('#bcw_min_cols, #bcw_cols_max_bound').prop('disabled', isExact);
+            await this.regenerate();
+        });
+
+        this.$stage.find('#bcw_min_cols').on('input', async () => {
+            const v = clampNumber(this.$stage.find('#bcw_min_cols').val(), 0, 20, 0);
+            this.$stage.find('#bcw_min_cols_value').text(String(v));
+            this.wizardState.update({ minCols: v });
+            await this.regenerate();
+        });
+
+        this.$stage.find('#bcw_cols_max_bound').on('input', async () => {
+            const v = clampNumber(this.$stage.find('#bcw_cols_max_bound').val(), 0, 20, 0);
+            this.$stage.find('#bcw_cols_max_bound_value').text(String(v));
+            this.wizardState.update({ colsMaxBound: v });
             await this.regenerate();
         });
 
@@ -449,6 +475,8 @@ export class AvatarEditor {
                         layout,
                         gap: config.gap,
                         maxCols: config.maxCols ?? 0,
+                        minCols: config.minCols ?? 0,
+                        colsMaxBound: config.colsMaxBound ?? 0,
                         gridAlign: config.gridAlign ?? 'center',
                         gridVAlign: config.gridVAlign ?? 'center',
                         gridDirection: config.gridDirection ?? 'row',
@@ -1116,6 +1144,8 @@ export class AvatarEditor {
             layout,
             gap: clampNumber(config.gap, 0, 10, 2),
             maxCols: clampNumber(config.maxCols, 0, 20, 0),
+            minCols: clampNumber(config.minCols, 0, 20, 0),
+            colsMaxBound: clampNumber(config.colsMaxBound, 0, 20, 0),
             gridAlign: VALID_GRID_ALIGN.includes(gridAlignValue)
                 ? gridAlignValue
                 : 'center',
