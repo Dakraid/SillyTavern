@@ -1,0 +1,113 @@
+<!--
+    Stage 5 template — Avatar Studio.
+    HTML fragment rendered into #bcw_stage_5 by Stage5Avatar.
+
+    Two-column layout:
+      - Left column: live composite avatar preview + regenerate button.
+      - Right column (~140px controls sidebar): layout picker, aspect ratio
+        (preset pills + custom), grid-only controls (cell gap, max per row),
+        divider, and per-cell controls populated dynamically.
+
+    Grid-only controls are hidden when the Voronoi layout is active.
+    See DESIGN doc (Stage 5) for layout and interaction details.
+-->
+<div class="bcw-avatar-studio" id="bcw_avatar_studio">
+
+    <!-- Left column: live preview -->
+    <div class="bcw-avatar-preview">
+        <div class="bcw-avatar-canvas" id="bcw_avatar_canvas" role="img" aria-label="Composite avatar preview"></div>
+        <div id="bcw_avatar_regenerate" class="menu_button">
+            <i class="fa-solid fa-rotate"></i>
+            <span data-i18n="Regenerate">Regenerate</span>
+        </div>
+    </div>
+
+    <!-- Right column: controls sidebar -->
+    <div class="bcw-avatar-controls">
+
+        <!-- Layout picker -->
+        <label for="bcw_layout" class="text_label">
+            <span data-i18n="Layout">Layout</span>
+            <select id="bcw_layout" class="text_pole">
+                <option value="voronoi" data-i18n="Voronoi (organic)">Voronoi (organic)</option>
+                <option value="grid-portrait" data-i18n="Grid (portrait)">Grid (portrait)</option>
+                <option value="grid-square" data-i18n="Grid (square)">Grid (square)</option>
+            </select>
+        </label>
+
+        <!-- Aspect ratio: preset pills + custom input -->
+        <div class="bcw-ratio-group">
+            <span class="bcw-label" data-i18n="Aspect Ratio">Aspect Ratio</span>
+            <div class="bcw-ratio-presets" id="bcw_ratio_presets">
+                <button class="bcw-ratio-pill active" data-ratio="9:16" type="button">9:16</button>
+                <button class="bcw-ratio-pill" data-ratio="1:1" type="button">1:1</button>
+                <button class="bcw-ratio-pill" data-ratio="16:9" type="button">16:9</button>
+                <button class="bcw-ratio-pill" data-ratio="4:3" type="button">4:3</button>
+            </div>
+            <input
+                id="bcw_ratio_custom"
+                class="text_pole"
+                type="text"
+                placeholder="Custom (e.g. 3:2)"
+                data-i18n="[placeholder]Custom (e.g. 3:2)"
+            />
+        </div>
+
+        <!-- Grid-only controls (hidden for Voronoi) -->
+        <div class="bcw-grid-controls" id="bcw_grid_controls" hidden>
+            <label for="bcw_gap" class="text_label">
+                <span data-i18n="Cell gap">Cell gap</span>
+                <span class="bcw-slider-value"><span id="bcw_gap_value">2</span>px</span>
+                <input id="bcw_gap" type="range" min="0" max="10" value="2" />
+            </label>
+            <label for="bcw_max_cols" class="text_label">
+                <span data-i18n="Max per row">Max per row</span>
+                <span class="bcw-slider-value"><span id="bcw_max_cols_value">0</span> (<span data-i18n="0 = auto">0 = auto</span>)</span>
+                <input id="bcw_max_cols" type="range" min="0" max="20" value="0" />
+            </label>
+            <label for="bcw_grid_align" class="text_label">
+                <span data-i18n="Align">Align</span>
+                <select id="bcw_grid_align" class="text_pole">
+                    <option value="center" data-i18n="Center">Center</option>
+                    <option value="start" data-i18n="Start">Start</option>
+                    <option value="end" data-i18n="End">End</option>
+                    <option value="space-between" data-i18n="Space Between">Space Between</option>
+                    <option value="space-around" data-i18n="Space Around">Space Around</option>
+                    <option value="space-evenly" data-i18n="Space Evenly">Space Evenly</option>
+                </select>
+            </label>
+            <label for="bcw_grid_valign" class="text_label">
+                <span data-i18n="Vertical Align">Vertical Align</span>
+                <select id="bcw_grid_valign" class="text_pole">
+                    <option value="center" data-i18n="Center">Center</option>
+                    <option value="start" data-i18n="Top">Top</option>
+                    <option value="end" data-i18n="Bottom">Bottom</option>
+                </select>
+            </label>
+            <label for="bcw_grid_direction" class="text_label">
+                <span data-i18n="Direction">Direction</span>
+                <select id="bcw_grid_direction" class="text_pole">
+                    <option value="row" data-i18n="Row">Row (left to right)</option>
+                    <option value="column" data-i18n="Column">Column (top to bottom)</option>
+                    <option value="row-reverse" data-i18n="Row Reverse">Row Reverse</option>
+                    <option value="column-reverse" data-i18n="Column Reverse">Column Reverse</option>
+                </select>
+            </label>
+            <label for="bcw_cell_fit" class="text_label">
+                <span data-i18n="Cell Fit">Cell Fit</span>
+                <select id="bcw_cell_fit" class="text_pole">
+                    <option value="cover" data-i18n="Cover">Cover (crop)</option>
+                    <option value="contain" data-i18n="Contain">Contain (fit)</option>
+                </select>
+            </label>
+        </div>
+
+        <hr />
+
+        <!-- Per-cell controls (populated dynamically) -->
+        <div class="bcw-label" data-i18n="Per-Cell Controls">Per-Cell Controls</div>
+        <div id="bcw_cell_controls"></div>
+
+    </div>
+
+</div>

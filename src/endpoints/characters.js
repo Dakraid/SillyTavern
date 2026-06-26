@@ -459,6 +459,7 @@ const toShallow = (character) => {
             extensions: {
                 fav: _.get(character, 'data.extensions.fav', false),
                 world: _.get(character, 'data.extensions.world', ''),
+                group_card_wizard: _.get(character, 'data.extensions.group_card_wizard', null),
             },
         },
     };
@@ -2355,6 +2356,23 @@ router.get('/group-card-backup/:avatar', async function (request, response) {
     }
 });
 
+const VALID_GRID_ALIGNS = [
+    'center',
+    'start',
+    'end',
+    'space-between',
+    'space-around',
+    'space-evenly',
+];
+const VALID_GRID_VALIGNS = ['center', 'start', 'end'];
+const VALID_GRID_DIRECTIONS = [
+    'row',
+    'column',
+    'row-reverse',
+    'column-reverse',
+];
+const VALID_CELL_FITS = ['cover', 'contain'];
+
 router.post('/generate-voronoi-composite', async function (request, response) {
     try {
         if (!request.body || !Array.isArray(request.body.avatars)) {
@@ -2413,9 +2431,25 @@ router.post('/generate-voronoi-composite', async function (request, response) {
                 : undefined;
         const layout = normalizeVoronoiLayout(request.body.layout);
         const gap = normalizeVoronoiGap(request.body.gap);
-        const maxCols = typeof request.body.maxCols === 'number' && Number.isFinite(request.body.maxCols) && request.body.maxCols > 0
+        const maxCols = typeof request.body.maxCols === 'number' &&
+            Number.isFinite(request.body.maxCols) &&
+            request.body.maxCols > 0
             ? Math.min(20, Math.max(1, Math.round(request.body.maxCols)))
             : 0;
+        const gridAlign = VALID_GRID_ALIGNS.includes(request.body.gridAlign)
+            ? request.body.gridAlign
+            : 'center';
+        const gridVAlign = VALID_GRID_VALIGNS.includes(request.body.gridVAlign)
+            ? request.body.gridVAlign
+            : 'center';
+        const gridDirection = VALID_GRID_DIRECTIONS.includes(
+            request.body.gridDirection,
+        )
+            ? request.body.gridDirection
+            : 'row';
+        const cellFit = VALID_CELL_FITS.includes(request.body.cellFit)
+            ? request.body.cellFit
+            : 'cover';
         const result =
             layout === 'grid-portrait' || layout === 'grid-square'
                 ? await generateGridComposite(avatarPaths, outputPath, {
@@ -2425,6 +2459,10 @@ router.post('/generate-voronoi-composite', async function (request, response) {
                     cellAspect: layout,
                     gap,
                     maxCols,
+                    gridAlign,
+                    gridVAlign,
+                    gridDirection,
+                    cellFit,
                 })
                 : await generateVoronoiComposite(avatarPaths, outputPath, {
                     cropStrategy,

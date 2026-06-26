@@ -1,0 +1,43 @@
+<!--
+    Stage 4 template — Final Review.
+    HTML fragment rendered into #bcw_stage_4 by Stage4Review.
+
+    Sections:
+      1. Editable group card name.
+      2. Editable description (large textarea).
+      3. Editable first message textarea.
+      4. Alternate greetings editor (add/remove/reorder list, populated
+         dynamically into #bcw_greetings_list).
+    See DESIGN doc (Stage 4) for layout details.
+-->
+<div class="bcw-stage4">
+
+    <!-- 1. Name -->
+    <label for="bcw_review_name" class="text_label">
+        <span data-i18n="Name">Name</span>
+        <input id="bcw_review_name" class="text_pole" type="text" autocomplete="off" />
+    </label>
+
+    <!-- 2. Description (large) -->
+    <label for="bcw_review_description" class="text_label">
+        <span data-i18n="Description">Description</span>
+        <textarea id="bcw_review_description" class="text_pole" rows="10"></textarea>
+    </label>
+
+    <!-- 3. First message -->
+    <label for="bcw_review_first_mes" class="text_label">
+        <span data-i18n="First Message">First Message</span>
+        <textarea id="bcw_review_first_mes" class="text_pole" rows="6"></textarea>
+    </label>
+
+    <!-- 4. Alternate greetings editor -->
+    <div class="bcw-greetings-editor">
+        <span class="bcw-label" data-i18n="Alternate Greetings">Alternate Greetings</span>
+        <div id="bcw_greetings_list"></div>
+        <div id="bcw_add_greeting" class="menu_button">
+            <i class="fa-solid fa-plus"></i>
+            <span data-i18n="Add greeting">Add greeting</span>
+        </div>
+    </div>
+
+</div>

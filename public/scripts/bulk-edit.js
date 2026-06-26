@@ -92,6 +92,17 @@ async function onDeleteButtonClick() {
 }
 
 /**
+ * Combines the selected characters into a group card via the combine wizard.
+ */
+async function onCombineButtonClick() {
+    console.log('Combine button clicked');
+
+    // Delegate to the context menu handler, which validates the selection
+    // (requires at least two valid characters) and opens the combine wizard.
+    await characterGroupOverlay.handleContextMenuCombineGroupCard();
+}
+
+/**
  * Enables bulk selection by adding a checkbox next to each character.
  */
 function enableBulkSelect() {
@@ -148,6 +159,7 @@ export function initBulkEdit() {
     $('#bulkEditButton').on('click', onEditButtonClick);
     $('#bulkSelectAllButton').on('click', onSelectAllButtonClick);
     $('#bulkDeleteButton').on('click', onDeleteButtonClick);
+    $('#bulkCombineButton').on('click', onCombineButtonClick);
 
     const characterContextMenu = new CharacterContextMenu(characterGroupOverlay);
     eventSource.on(
