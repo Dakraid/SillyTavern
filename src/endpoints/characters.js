@@ -47,6 +47,7 @@ import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import {
     generateGridComposite,
+    generateMosaicComposite,
     generateVoronoiComposite,
 } from '../util/voronoi-composite.js';
 import { groupCardJobManager } from '../util/group-card-job.js';
@@ -2450,26 +2451,35 @@ router.post('/generate-voronoi-composite', async function (request, response) {
         const cellFit = VALID_CELL_FITS.includes(request.body.cellFit)
             ? request.body.cellFit
             : 'cover';
-        const result =
-            layout === 'grid-portrait' || layout === 'grid-square'
-                ? await generateGridComposite(avatarPaths, outputPath, {
-                    cropStrategy,
-                    cropPadding,
-                    offsets,
-                    cellAspect: layout,
-                    gap,
-                    maxCols,
-                    gridAlign,
-                    gridVAlign,
-                    gridDirection,
-                    cellFit,
-                })
-                : await generateVoronoiComposite(avatarPaths, outputPath, {
-                    cropStrategy,
-                    cropPadding,
-                    offsets,
-                    seed,
-                });
+        let result;
+        if (layout === 'grid-portrait' || layout === 'grid-square') {
+            result = await generateGridComposite(avatarPaths, outputPath, {
+                cropStrategy,
+                cropPadding,
+                offsets,
+                cellAspect: layout,
+                gap,
+                maxCols,
+                gridAlign,
+                gridVAlign,
+                gridDirection,
+                cellFit,
+            });
+        } else if (layout === 'mosaic') {
+            result = await generateMosaicComposite(avatarPaths, outputPath, {
+                cropStrategy,
+                cropPadding,
+                offsets,
+                gap,
+            });
+        } else {
+            result = await generateVoronoiComposite(avatarPaths, outputPath, {
+                cropStrategy,
+                cropPadding,
+                offsets,
+                seed,
+            });
+        }
 
         const imageBuffer = fs.readFileSync(result.path);
         fs.unlinkSync(result.path); // clean up temp file immediately
@@ -2500,7 +2510,7 @@ function normalizeVoronoiCropPadding(value) {
 }
 
 function normalizeVoronoiLayout(value) {
-    return ['voronoi', 'grid-portrait', 'grid-square'].includes(value)
+    return ['voronoi', 'grid-portrait', 'grid-square', 'mosaic'].includes(value)
         ? value
         : 'voronoi';
 }

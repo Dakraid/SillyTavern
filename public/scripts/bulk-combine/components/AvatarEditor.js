@@ -19,7 +19,7 @@ import {
 import { getValidSelectedCharacters, getCoreCharacterField } from '../helpers.js';
 import { throwIfNotOk } from '../services/JobClient.js';
 
-const VALID_LAYOUTS = ['voronoi', 'grid-portrait', 'grid-square'];
+const VALID_LAYOUTS = ['voronoi', 'grid-portrait', 'grid-square', 'mosaic'];
 const VALID_CROP_FOCUS = ['attention', 'entropy', 'center', 'top', 'face'];
 const VALID_GRID_ALIGN = [
     'center',
@@ -235,7 +235,13 @@ export class AvatarEditor {
         this.$stage.find('#bcw_cell_fit').val(cellFit);
 
         // Grid controls visibility.
+        const isMosaic = layout === 'mosaic';
         this.$stage.find('#bcw_grid_controls').prop('hidden', layout === 'voronoi');
+        this.$stage.find('#bcw_max_cols').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_align').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_valign').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_direction').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_cell_fit').closest('label').prop('hidden', isMosaic);
 
         // Aspect ratio pills.
         this.$stage.find('.bcw-ratio-pill').removeClass('active');
@@ -364,7 +370,13 @@ export class AvatarEditor {
     async setLayout(layout) {
         const valid = VALID_LAYOUTS.includes(layout) ? layout : 'voronoi';
         this.wizardState.update({ layout: valid });
+        const isMosaic = valid === 'mosaic';
         this.$stage.find('#bcw_grid_controls').prop('hidden', valid === 'voronoi');
+        this.$stage.find('#bcw_max_cols').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_align').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_valign').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_direction').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_cell_fit').closest('label').prop('hidden', isMosaic);
         await this.regenerate();
     }
 
@@ -632,11 +644,22 @@ export class AvatarEditor {
                 'avatar',
                 character?.avatar ?? '',
             );
-            cellImg.style.cssText =
-                `position:absolute;width:${previewWidth}px;` +
-                `height:${previewHeight}px;` +
-                `left:${-bounds.x * scaleX}px;top:${-bounds.y * scaleY}px;` +
-                'pointer-events:none;';
+            if (cell.type === 'rect') {
+                // Grid/Mosaic: size image to cell display dimensions.
+                const cellDisplayW = bounds.w * scaleX;
+                const cellDisplayH = bounds.h * scaleY;
+                cellImg.style.cssText =
+                    `position:absolute;width:${cellDisplayW}px;` +
+                    `height:${cellDisplayH}px;` +
+                    'left:0;top:0;object-fit:cover;pointer-events:none;';
+            } else {
+                // Voronoi: avatar fills entire canvas, cell clips it.
+                cellImg.style.cssText =
+                    `position:absolute;width:${previewWidth}px;` +
+                    `height:${previewHeight}px;` +
+                    `left:${-bounds.x * scaleX}px;top:${-bounds.y * scaleY}px;` +
+                    'pointer-events:none;';
+            }
             overlayEl.appendChild(cellImg);
             $editor[0].appendChild(overlayEl);
 

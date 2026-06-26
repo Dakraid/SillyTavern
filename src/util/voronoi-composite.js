@@ -1,5 +1,6 @@
 import { Delaunay } from 'd3-delaunay';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
+import { packRectangles } from './maxrects-packer.js';
 import sharp from 'sharp';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -355,6 +356,138 @@ export async function generateGridComposite(
     return { path: outputPath, cells };
 }
 
+/**
+ * Generate a best-fit mosaic composite from character avatar images.
+ * @param {string[]} avatarPaths Absolute paths to character avatar PNGs.
+ * @param {string} outputPath Where to write the composite PNG.
+ * @param {{width?: number, height?: number, gap?: number, cropStrategy?: string, cropPadding?: number, offsets?: Array<{x?: number, y?: number, scale?: number}>, scaleMin?: number, scaleMax?: number}} options
+ * @returns {Promise<{path: string, cells: Array<{type: string, x: number, y: number, w: number, h: number}>}>}
+ */
+export async function generateMosaicComposite(
+    avatarPaths,
+    outputPath,
+    options = {},
+) {
+    if (!Array.isArray(avatarPaths)) {
+        throw new TypeError('avatarPaths must be an array');
+    }
+
+    if (!avatarPaths.length) {
+        throw new Error('At least one avatar path is required');
+    }
+
+    if (!outputPath || typeof outputPath !== 'string') {
+        throw new TypeError('outputPath must be a string');
+    }
+
+    const width =
+        typeof options.width === 'number' &&
+        Number.isFinite(options.width) &&
+        options.width > 0
+            ? Math.round(options.width)
+            : DEFAULT_WIDTH;
+    const height =
+        typeof options.height === 'number' &&
+        Number.isFinite(options.height) &&
+        options.height > 0
+            ? Math.round(options.height)
+            : DEFAULT_HEIGHT;
+    const cropOptions = normalizeCropOptions(options);
+    const offsets = normalizeOffsets(options.offsets, avatarPaths.length);
+    const gap = normalizeGap(options.gap);
+    const scaleMin = normalizeScale(options.scaleMin, 0.8);
+    const scaleMax = Math.max(scaleMin, normalizeScale(options.scaleMax, 1.2));
+
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+    if (avatarPaths.length === 1) {
+        const imageBuffer = await readAvatarBuffer(
+            avatarPaths[0],
+            width,
+            height,
+            cropOptions,
+        );
+        const offsetImageBuffer = await applyAvatarOffset(
+            imageBuffer,
+            width,
+            height,
+            offsets[0],
+        );
+        await sharp(offsetImageBuffer).png().toFile(outputPath);
+        return {
+            path: outputPath,
+            cells: [{ type: 'rect', x: 0, y: 0, w: width, h: height }],
+        };
+    }
+
+    const nativeDims = await Promise.all(
+        avatarPaths.map(async (avatarPath) => {
+            try {
+                const metadata = await sharp(avatarPath).metadata();
+                return { w: metadata.width || 100, h: metadata.height || 100 };
+            } catch {
+                return { w: 100, h: 100 };
+            }
+        }),
+    );
+    const placements = packRectangles(nativeDims, width, height, gap, {
+        min: scaleMin,
+        max: scaleMax,
+    });
+
+    if (!placements) {
+        throw new Error('Cannot fit avatars into canvas');
+    }
+
+    /** @type {Array<{ input: Buffer, left: number, top: number, blend: 'over' }>} */
+    const composites = [];
+    /** @type {Array<{type: string, x: number, y: number, w: number, h: number}>} */
+    const cells = [];
+
+    for (const placement of placements) {
+        const imageBuffer = await readAvatarBuffer(
+            avatarPaths[placement.index],
+            placement.w,
+            placement.h,
+            cropOptions,
+        );
+        const offsetImageBuffer = await applyAvatarOffset(
+            imageBuffer,
+            placement.w,
+            placement.h,
+            offsets[placement.index],
+        );
+
+        composites.push({
+            input: offsetImageBuffer,
+            left: placement.x,
+            top: placement.y,
+            blend: 'over',
+        });
+        cells.push({
+            type: 'rect',
+            x: placement.x,
+            y: placement.y,
+            w: placement.w,
+            h: placement.h,
+        });
+    }
+
+    await sharp({
+        create: {
+            width,
+            height,
+            channels: 4,
+            background: { r: 0, g: 0, b: 0, alpha: 1 },
+        },
+    })
+        .composite(composites)
+        .png()
+        .toFile(outputPath);
+
+    return { path: outputPath, cells };
+}
+
 async function readAvatarBuffer(avatarPath, width, height, cropOptions = {}) {
     try {
         return await createAvatarBuffer(avatarPath, width, height, cropOptions);
@@ -443,6 +576,12 @@ function normalizeGap(gap) {
     const value = typeof gap === 'number' ? gap : Number(gap);
 
     return Number.isFinite(value) ? clamp(Math.round(value), 0, 10) : 2;
+}
+
+function normalizeScale(value, fallback) {
+    const number = typeof value === 'number' ? value : Number(value);
+
+    return Number.isFinite(number) ? clamp(number, 0.1, 3) : fallback;
 }
 
 function calculateGrid(count, canvasAspect, maxCols = 0) {
