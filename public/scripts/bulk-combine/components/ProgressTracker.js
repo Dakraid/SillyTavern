@@ -81,6 +81,9 @@ export class ProgressTracker {
             .find('.bcw-progress-tokens')
             .empty()
             .prop('hidden', true);
+
+        // Clear any stale queue-info line.
+        this._$container.find('.bcw-progress-queue').remove();
     }
 
     /**
@@ -135,6 +138,40 @@ export class ProgressTracker {
     }
 
     /**
+     * Show or clear a secondary queue-info line beneath the progress stats.
+     *
+     * When `pendingCount` is greater than zero, a "Queued: N (names)" line is
+     * rendered (or updated). When zero, the line is removed entirely.
+     *
+     * @param {number} pendingCount Number of items waiting in the queue.
+     * @param {string[]} [names] Optional character names for the queued items.
+     * @returns {void}
+     */
+    setQueueInfo(pendingCount, names) {
+        let $queue = this._$container.find('.bcw-progress-queue');
+        const count = Number(pendingCount) || 0;
+
+        if (count <= 0) {
+            $queue.remove();
+            return;
+        }
+
+        if ($queue.length === 0) {
+            $queue = $('<div></div>').addClass('bcw-progress-queue');
+            this._$container.find('.bcw-progress-stats').after($queue);
+        }
+
+        const nameList = Array.isArray(names)
+            ? names.map((n) => String(n ?? '')).filter(Boolean)
+            : [];
+        const label =
+            nameList.length > 0
+                ? `Queued: ${count} (${nameList.join(', ')})`
+                : `Queued: ${count}`;
+        $queue.text(label);
+    }
+
+    /**
      * Append a line to the token-preview log, keeping only the most recent
      * {@link MAX_TOKEN_LINES} lines. The log is revealed on the first append.
      *
@@ -168,6 +205,7 @@ export class ProgressTracker {
      * @returns {void}
      */
     hide() {
+        this._$container.find('.bcw-progress-queue').remove();
         this._$container.prop('hidden', true);
     }
 

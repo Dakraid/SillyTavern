@@ -152,7 +152,27 @@ function handleAutoFix(ctx, index) {
 }
 
 /**
+ * Update the ProgressTracker's queue-info line from the current queue state.
+ *
+ * @param {object} ctx Stage context.
+ * @returns {void}
+ */
+function updateQueueDisplay(ctx) {
+    const pending = ctx.regenQueue.pending.length;
+    const names = ctx.regenQueue.pending
+        .map((i) =>
+            getCoreCharacterField(ctx.sourceCharacters[i] ?? {}, 'name'),
+        )
+        .filter(Boolean);
+    ctx.progressTracker?.setQueueInfo(pending, names);
+}
+
+/**
  * Regenerate a single character's output using client-side generation.
+ *
+ * Concurrent calls are queued sequentially: only one regen runs at a time.
+ * Additional requests are pushed to `ctx.regenQueue.pending` and drained in
+ * the `finally` block of the active regen.
  *
  * @param {object} ctx Stage context.
  * @param {import('./WizardState.js').WizardState} wizardState Wizard state.
@@ -164,6 +184,24 @@ async function regenerateCharacter(ctx, wizardState, index) {
     if (!character) {
         return;
     }
+
+    // Queue this request if another regen is already in progress.
+    if (ctx.regenQueue.active !== null) {
+        if (
+            index !== ctx.regenQueue.active &&
+            !ctx.regenQueue.pending.includes(index)
+        ) {
+            ctx.regenQueue.pending.push(index);
+            const $card = ctx.cards[index];
+            if ($card) {
+                updateResultCardStatus($card, RESULT_STATUS.QUEUED);
+            }
+            updateQueueDisplay(ctx);
+        }
+        return;
+    }
+
+    ctx.regenQueue.active = index;
 
     const $card = ctx.cards[index];
     const name = getCoreCharacterField(character, 'name');
@@ -177,6 +215,7 @@ async function regenerateCharacter(ctx, wizardState, index) {
     ctx.progressTracker?.show({ indeterminate: true, total: 1 });
     ctx.progressTracker?.setStatus(`Regenerating: ${name}…`);
     setNextDisabled(ctx.$content, true);
+    updateQueueDisplay(ctx);
 
     try {
         const generatedXml = await runClientGeneration(
@@ -229,8 +268,18 @@ async function regenerateCharacter(ctx, wizardState, index) {
             'Combine into Group Card',
         );
     } finally {
-        ctx.progressTracker?.hide();
-        setNextDisabled(ctx.$content, false);
+        ctx.regenQueue.active = null;
+        updateQueueDisplay(ctx);
+
+        // Drain the queue: pick up the next pending card without hiding the
+        // tracker (the next call re-uses it). Fire-and-forget.
+        if (ctx.regenQueue.pending.length > 0) {
+            const nextIndex = ctx.regenQueue.pending.shift();
+            regenerateCharacter(ctx, wizardState, nextIndex);
+        } else {
+            ctx.progressTracker?.hide();
+            setNextDisabled(ctx.$content, false);
+        }
     }
 }
 
@@ -638,6 +687,7 @@ export const Stage2Results = {
             jobId: '',
             generationStarted: false,
             cancelled: false,
+            regenQueue: { pending: [], active: null },
         };
 
         // Create result cards (one per source character).

@@ -149,6 +149,7 @@ export class AvatarEditor {
         this.cells = [];
         this.selectedCellIndex = -1;
         this.regenerating = false;
+        this.pendingRegen = false;
         this.abortController = null;
         this.dragState = null;
         this.pinchState = null;
@@ -432,6 +433,10 @@ export class AvatarEditor {
      */
     async regenerate() {
         if (this.regenerating) {
+            // Coalesce overlapping requests: keep only the latest pending
+            // call. Each retry reads fresh config from wizardState.
+            this.pendingRegen = true;
+            this.#showLoading(true, 'Queued…');
             return;
         }
 
@@ -501,7 +506,14 @@ export class AvatarEditor {
             );
         } finally {
             this.regenerating = false;
-            this.#showLoading(false);
+            if (this.pendingRegen) {
+                this.pendingRegen = false;
+                // Fire-and-forget — the call synchronously re-shows loading
+                // before its first await, so there is no visible gap.
+                this.regenerate();
+            } else {
+                this.#showLoading(false);
+            }
         }
     }
 
@@ -523,9 +535,10 @@ export class AvatarEditor {
      * Show or hide the loading spinner overlay on the preview.
      *
      * @param {boolean} show Whether to show the spinner.
+     * @param {string} [text] Optional status text (defaults to "Generating…").
      * @returns {void}
      */
-    #showLoading(show) {
+    #showLoading(show, text) {
         const $canvas = this.$stage.find('#bcw_avatar_canvas');
         $canvas.find('.bcw-avatar-loading').remove();
         if (show) {
@@ -536,6 +549,8 @@ export class AvatarEditor {
                         position: 'absolute',
                         inset: '0',
                         display: 'flex',
+                        'flex-direction': 'column',
+                        gap: '0.5em',
                         'align-items': 'center',
                         'justify-content': 'center',
                         'background-color': 'rgba(0,0,0,0.4)',
@@ -546,6 +561,11 @@ export class AvatarEditor {
                         $('<i></i>')
                             .addClass('fa-solid fa-spinner fa-spin fa-2x')
                             .css({ color: 'var(--SmartThemeQuoteColor)' }),
+                    )
+                    .append(
+                        $('<div></div>')
+                            .addClass('bcw-avatar-loading-text')
+                            .text(text || 'Generating…'),
                     ),
             );
         }
