@@ -1043,3 +1043,49 @@
 		flex: 1 1 auto;
 	}
 }
+
+/* --- Stage 3: post-processing preview (side-by-side) --- */
+
+.bcw-preview-container {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 1em;
+	margin-top: 1em;
+}
+
+.bcw-preview-section {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	min-width: 0;
+}
+
+.bcw-preview-label {
+	font-weight: 600;
+	opacity: 0.8;
+}
+
+.bcw-preview-area {
+	max-height: 400px;
+	overflow-y: auto;
+	overflow-wrap: break-word;
+	white-space: pre-wrap;
+	padding: 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--SmartThemeQuoteColor) 10%);
+	font-family: monospace;
+	font-size: 0.85em;
+	line-height: 1.4;
+}
+
+.bcw-preview-area .fa-spinner {
+	display: inline-block;
+	margin: 0.5em 0;
+}
+
+@media (max-width: 768px) {
+	.bcw-preview-container {
+		grid-template-columns: 1fr;
+	}
+}

@@ -432,16 +432,8 @@ export async function generateMosaicComposite(
         };
     }
 
-    const nativeDims = await Promise.all(
-        avatarPaths.map(async (avatarPath) => {
-            try {
-                const metadata = await sharp(avatarPath).metadata();
-                return { w: metadata.width || 100, h: metadata.height || 100 };
-            } catch {
-                return { w: 100, h: 100 };
-            }
-        }),
-    );
+    const REFERENCE_SIZE = 256;
+    const nativeDims = avatarPaths.map(() => ({ w: REFERENCE_SIZE, h: REFERENCE_SIZE }));
     const placements = packRectangles(nativeDims, width, height, gap, {
         min: scaleMin,
         max: scaleMax,
@@ -598,6 +590,11 @@ function normalizeScale(value, fallback) {
 
 function calculateGrid(count, canvasAspect, maxCols = 0, minCols = 0, colsMaxBound = 0) {
     let bestCols = 1;
+    // Exact mode: maxCols > 0 means user wants exactly that many columns
+    if (maxCols > 0) {
+        const exactCols = Math.min(count, maxCols);
+        return { cols: exactCols, rows: Math.ceil(count / exactCols) };
+    }
     let bestRows = count;
     let bestDiff = Infinity;
     const lowerBound = maxCols > 0 ? 1 : Math.max(1, minCols);
