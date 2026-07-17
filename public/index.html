@@ -6778,13 +6778,12 @@
                                                 <div
                                                     class="toggle-description justifyLeft marginBot5"
                                                     data-source="openai,custom,xai,aimlapi,openrouter,pollinations,perplexity,cometapi,electronhub,azure_openai,chutes"
-                                                    data-i18n="OpenAI-style options: low, medium, high. Minimum and maximum are aliased to low and high. Auto does not send an effort level."
+                                                    data-i18n="OpenAI-compatible effort levels vary by model. Minimum and maximum may use model-specific aliases. Auto does not send an effort level."
                                                 >
-                                                    OpenAI-style options: low,
-                                                    medium, high. Minimum and
-                                                    maximum are aliased to low
-                                                    and high. Auto does not send
-                                                    an effort level.
+                                                    OpenAI-compatible effort levels
+                                                    vary by model. Minimum and maximum
+                                                    may use model-specific aliases.
+                                                    Auto does not send an effort level.
                                                 </div>
                                                 <strong
                                                     class="toggle-description justifyLeft marginBot5"
@@ -6800,15 +6799,14 @@
                                                 <div
                                                     class="toggle-description justifyLeft marginBot5"
                                                     data-source="claude"
-                                                    data-i18n="Allocates a portion of the response length for thinking (min: 1024 tokens, low: 10%, medium: 25%, high: 50%, max: 95%), but minimum 1024 tokens. Auto does not request thinking."
+                                                    data-i18n="Selects an effort level on adaptive-thinking models. On older Claude models, it allocates a portion of the response length to thinking. Auto does not request thinking."
                                                 >
-                                                    Allocates a portion of the
-                                                    response length for thinking
-                                                    (min: 1024 tokens, low: 10%,
-                                                    medium: 25%, high: 50%, max:
-                                                    95%), but minimum 1024
-                                                    tokens. Auto does not
-                                                    request thinking.
+                                                    Selects an effort level on
+                                                    adaptive-thinking models. On older
+                                                    Claude models, it allocates a
+                                                    portion of the response length to
+                                                    thinking. Auto does not request
+                                                    thinking.
                                                 </div>
                                                 <div
                                                     class="toggle-description justifyLeft marginBot5"
@@ -6891,10 +6889,9 @@
                                                     class="toggle-description justifyLeft marginBot5"
                                                     data-source="claude"
                                                 >
-                                                    On Opus 4.6 / Sonnet 4.6, a
-                                                    non-automatic Reasoning
-                                                    Effort takes precedence over
-                                                    Verbosity.
+                                                    On adaptive-thinking Claude models,
+                                                    a non-automatic Reasoning Effort
+                                                    takes precedence over Verbosity.
                                                 </strong>
                                             </div>
                                         </div>
@@ -9067,6 +9064,12 @@
                                         OpenAI Model
                                     </h4>
                                     <select id="model_openai_select">
+                                        <optgroup label="GPT-5.6">
+                                            <option value="gpt-5.6">gpt-5.6</option>
+                                            <option value="gpt-5.6-sol">gpt-5.6-sol</option>
+                                            <option value="gpt-5.6-terra">gpt-5.6-terra</option>
+                                            <option value="gpt-5.6-luna">gpt-5.6-luna</option>
+                                        </optgroup>
                                         <optgroup label="GPT-5.5">
                                             <option value="gpt-5.5">
                                                 gpt-5.5
@@ -9387,6 +9390,8 @@
                                     </h4>
                                     <select id="model_claude_select">
                                         <optgroup label="Versions">
+                                            <option value="claude-fable-5">claude-fable-5</option>
+                                            <option value="claude-opus-4-8">claude-opus-4-8</option>
                                             <option value="claude-opus-4-7">
                                                 claude-opus-4-7
                                             </option>
@@ -9875,14 +9880,14 @@
                                                 gemini-3.1-pro-preview
                                             </option>
                                             <option
-                                                value="gemini-3.1-flash-lite-preview"
+                                                value="gemini-3.1-flash-lite"
                                             >
-                                                gemini-3.1-flash-lite-preview
+                                                gemini-3.1-flash-lite
                                             </option>
                                             <option
-                                                value="gemini-3.1-flash-image-preview"
+                                                value="gemini-3.1-flash-image"
                                             >
-                                                gemini-3.1-flash-image-preview
+                                                gemini-3.1-flash-image
                                             </option>
                                         </optgroup>
                                         <optgroup label="Gemini 3.0">
@@ -9892,9 +9897,9 @@
                                                 gemini-3-pro-preview
                                             </option>
                                             <option
-                                                value="gemini-3-pro-image-preview"
+                                                value="gemini-3-pro-image"
                                             >
-                                                gemini-3-pro-image-preview
+                                                gemini-3-pro-image
                                             </option>
                                             <option
                                                 value="gemini-3-flash-preview"
@@ -10392,14 +10397,14 @@
                                                 gemini-3.1-pro-preview
                                             </option>
                                             <option
-                                                value="gemini-3.1-flash-lite-preview"
+                                                value="gemini-3.1-flash-lite"
                                             >
-                                                gemini-3.1-flash-lite-preview
+                                                gemini-3.1-flash-lite
                                             </option>
                                             <option
-                                                value="gemini-3.1-flash-image-preview"
+                                                value="gemini-3.1-flash-image"
                                             >
-                                                gemini-3.1-flash-image-preview
+                                                gemini-3.1-flash-image
                                             </option>
                                         </optgroup>
                                         <optgroup label="Gemini 3.0">
@@ -10409,9 +10414,9 @@
                                                 gemini-3-pro-preview
                                             </option>
                                             <option
-                                                value="gemini-3-pro-image-preview"
+                                                value="gemini-3-pro-image"
                                             >
-                                                gemini-3-pro-image-preview
+                                                gemini-3-pro-image
                                             </option>
                                             <option
                                                 value="gemini-3-flash-preview"
