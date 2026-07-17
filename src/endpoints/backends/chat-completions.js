@@ -263,29 +263,35 @@ async function sendClaudeRequest(request, response) {
             useTools,
             getPromptNames(request),
         );
+        // Unanchored to also match prefixed ids passed through proxies, e.g. 'anthropic/claude-fable-5'
+        const isFableModel = /claude-fable/.test(request.body.model);
         const useThinking =
-			/^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(
-			    request.body.model,
-			);
+            /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(
+                request.body.model,
+            ) || isFableModel;
         const useWebSearch =
-			/^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(
-			    request.body.model,
-			) && Boolean(request.body.enable_web_search);
+            (/^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(
+                request.body.model,
+            ) || isFableModel) && Boolean(request.body.enable_web_search);
         const isLimitedSampling =
-			/^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(
-			    request.body.model,
-			);
-        const useVerbosity = /^claude-(opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(
-            request.body.model,
-        );
-        const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7)/.test(
-            request.body.model,
-        );
+            /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(
+                request.body.model,
+            );
+        const useVerbosity =
+            /^claude-(opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(
+                request.body.model,
+            ) || isFableModel;
+        const noPrefillModel =
+            /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(
+                request.body.model,
+            ) || isFableModel;
         const isAdaptiveModel =
-			/^claude-(opus-4-7)/.test(request.body.model) ||
-			(enableAdaptiveThinking &&
-				/^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model));
-        const noSamplingModel = /^claude-(opus-4-7)/.test(request.body.model);
+            /^claude-(opus-4-7|opus-4-8)/.test(request.body.model) ||
+            isFableModel ||
+            (enableAdaptiveThinking &&
+                /^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model));
+        const noSamplingModel =
+            /^claude-(opus-4-7|opus-4-8)/.test(request.body.model) || isFableModel;
         let fixThinkingPrefill = false;
         // Add custom stop sequences
         const stopSequences = [];
@@ -395,6 +401,7 @@ async function sendClaudeRequest(request, response) {
         }
 
         const reasoningEffort = request.body.reasoning_effort;
+        const includeReasoning = Boolean(request.body.include_reasoning);
         const budgetTokens = calculateClaudeBudgetTokens(
             requestBody.max_tokens,
             reasoningEffort,
@@ -406,7 +413,6 @@ async function sendClaudeRequest(request, response) {
         if (useThinking && typeof budgetTokens === 'string') {
             fixThinkingPrefill = true;
             requestBody.thinking = { type: 'adaptive' };
-            const includeReasoning = Boolean(request.body.include_reasoning);
             if (noSamplingModel && includeReasoning) {
                 requestBody.thinking.display = 'summarized';
             }
@@ -414,6 +420,10 @@ async function sendClaudeRequest(request, response) {
             requestBody.output_config.effort = budgetTokens;
             // top_k is not allowed in adaptive mode
             delete requestBody.top_k;
+        } else if (useThinking && isFableModel && reasoningEffort === 'auto' && includeReasoning) {
+            // Fable auto thinking is already enabled, but readable summaries require an explicit display request.
+            fixThinkingPrefill = true;
+            requestBody.thinking = { type: 'adaptive', display: 'summarized' };
         } else if (useThinking && Number.isInteger(budgetTokens)) {
             // Traditional thinking: returns a numeric budget
             fixThinkingPrefill = true;
@@ -598,8 +608,8 @@ async function sendMakerSuiteRequest(request, response) {
             'gemini-2.0-flash-preview-image-generation',
             'gemini-2.5-flash-image-preview',
             'gemini-2.5-flash-image',
-            'gemini-3-pro-image-preview',
-            'gemini-3.1-flash-image-preview',
+            'gemini-3-pro-image',
+            'gemini-3.1-flash-image',
         ];
 
         const isThinkingConfigModel = (m) =>
@@ -2832,6 +2842,11 @@ router.post('/generate', async function (request, response) {
                     exclude: !includeReasoning,
                 },
             };
+
+            if (request.body.logprobs > 0) {
+                bodyParams['top_logprobs'] = request.body.logprobs;
+                bodyParams['logprobs'] = true;
+            }
 
             if (request.body.min_p !== undefined) {
                 bodyParams['min_p'] = request.body.min_p;

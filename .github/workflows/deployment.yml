@@ -11,13 +11,20 @@ on:
             - customized
             - testing
 
+permissions:
+    contents: read
+
+concurrency:
+    group: deployment-${{ github.ref }}
+    cancel-in-progress: true
+
 jobs:
     docker:
         runs-on: ubuntu-latest
 
         steps:
             - name: Checkout the repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
 
             - name: Set up QEMU
               uses: docker/setup-qemu-action@v4
@@ -32,13 +39,13 @@ jobs:
                   password: ${{ secrets.DOCKER_PASSWORD }}
 
             - name: Extract metadata (tags, labels) for the image
-              uses: docker/metadata-action@v5.5.1
+              uses: docker/metadata-action@v6
               id: metadata
               with:
                   images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
             - name: Build and push
-              uses: docker/build-push-action@v5.3.0
+              uses: docker/build-push-action@v7
               with:
                   context: .
                   platforms: linux/amd64
@@ -46,3 +53,5 @@ jobs:
                   push: true
                   tags: ${{ steps.metadata.outputs.tags }}
                   labels: ${{ steps.metadata.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max

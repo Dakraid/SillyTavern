@@ -166,6 +166,7 @@ const max_200k = 200 * 1000;
 const max_256k = 256 * 1000;
 const max_400k = 400 * 1000;
 const max_1mil = 1000 * 1000;
+const max_1050k = 1050 * 1000;
 const max_2mil = 2000 * 1000;
 const unlocked_max = max_2mil;
 const oai_max_temp = 2.0;
@@ -3783,7 +3784,7 @@ function getReasoningEffort(settings = null, model = null) {
                         chat_completion_sources.AZURE_OPENAI,
                     ].includes(settings.chat_completion_source)
                 ) {
-                    if (/^gpt-5\.(4|5)/.test(model)) {
+                    if (/^gpt-5\.(4|5|6)/.test(model)) {
                         return 'none';
                     }
                     if (/^gpt-5/.test(model)) {
@@ -3793,6 +3794,11 @@ function getReasoningEffort(settings = null, model = null) {
 
                 return reasoning_effort_types.low;
             case reasoning_effort_types.max:
+                if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)
+                    && /^gpt-5\.6/.test(model)) {
+                    // GPT-5.6 reserves "max" effort for the Responses API.
+                    return 'xhigh';
+                }
                 return reasoning_effort_types.high;
             default:
                 return settings.reasoning_effort;
@@ -3937,6 +3943,7 @@ export async function createGenerationParameters(
     const logprobsSupportedSources = [
         chat_completion_sources.OPENAI,
         chat_completion_sources.AZURE_OPENAI,
+        chat_completion_sources.OPENROUTER,
         chat_completion_sources.CUSTOM,
         chat_completion_sources.DEEPSEEK,
         chat_completion_sources.XAI,
@@ -4369,6 +4376,22 @@ export async function createGenerationParameters(
         }
     }
 
+    // Claude Fable models removed sampling parameters and reject them with HTTP 400,
+    // including via OpenAI-compatible proxies. Unanchored to also match prefixed ids
+    // like 'anthropic/claude-fable-5'.
+    if (/claude-fable/.test(model)) {
+        delete generate_data.temperature;
+        delete generate_data.top_p;
+        delete generate_data.top_k;
+        delete generate_data.frequency_penalty;
+        delete generate_data.presence_penalty;
+        // Keep reasoning_effort for the native Claude source, where the backend maps it to
+        // adaptive thinking; proxies may translate it into a thinking budget that Fable rejects.
+        if (settings.chat_completion_source !== chat_completion_sources.CLAUDE) {
+            delete generate_data.reasoning_effort;
+        }
+    }
+
     if (jsonSchema) {
         generate_data.json_schema = jsonSchema;
     }
@@ -4725,6 +4748,7 @@ function parseChatCompletionLogprobs(data) {
                 : parseOpenAITextLogprobs(data.choices[0]?.logprobs);
         case chat_completion_sources.OPENAI:
         case chat_completion_sources.AZURE_OPENAI:
+        case chat_completion_sources.OPENROUTER:
         case chat_completion_sources.DEEPSEEK:
         case chat_completion_sources.XAI:
         case chat_completion_sources.CUSTOM:
@@ -5805,6 +5829,42 @@ function migrateChatCompletionSettings(settings) {
             newValue: 'jamba-large',
         },
         {
+            oldKey: 'google_model',
+            oldValue: 'gemini-3.1-flash-lite-preview',
+            newKey: 'google_model',
+            newValue: 'gemini-3.1-flash-lite',
+        },
+        {
+            oldKey: 'vertexai_model',
+            oldValue: 'gemini-3.1-flash-lite-preview',
+            newKey: 'vertexai_model',
+            newValue: 'gemini-3.1-flash-lite',
+        },
+        {
+            oldKey: 'google_model',
+            oldValue: 'gemini-3.1-flash-image-preview',
+            newKey: 'google_model',
+            newValue: 'gemini-3.1-flash-image',
+        },
+        {
+            oldKey: 'vertexai_model',
+            oldValue: 'gemini-3.1-flash-image-preview',
+            newKey: 'vertexai_model',
+            newValue: 'gemini-3.1-flash-image',
+        },
+        {
+            oldKey: 'google_model',
+            oldValue: 'gemini-3-pro-image-preview',
+            newKey: 'google_model',
+            newValue: 'gemini-3-pro-image',
+        },
+        {
+            oldKey: 'vertexai_model',
+            oldValue: 'gemini-3-pro-image-preview',
+            newKey: 'vertexai_model',
+            newValue: 'gemini-3-pro-image',
+        },
+        {
             oldKey: 'image_inlining',
             oldValue: false,
             newKey: 'media_inlining',
@@ -6793,6 +6853,7 @@ function getMaxContextOpenAI(value) {
 
     /** @type {[RegExp, number][]} */
     const contextMap = [
+        [/^gpt-5\.6/, max_1050k],
         [/^gpt-5\.[45]/, max_1mil],
         [/^gpt-5/, max_400k],
         [/gpt-4\.1/, max_1mil],
@@ -6846,6 +6907,7 @@ function getGeminiMaxContext(model, isUnlocked) {
     /** @type {[RegExp, number][]} */
     const contextMap = [
         [/gemini-2\.5-flash-image/, max_32k],
+        [/gemini-3\.1-flash-image/, max_128k],
         [/gemini-3-pro-image/, max_64k],
         [/gemini-(?:3[.\d]*|2\.(?:5|0))-(pro|flash)/, max_1mil],
         [/(gemini-exp|learnlm-2\.0-flash|gemini-robotics)/, max_1mil],
@@ -7489,7 +7551,7 @@ async function onModelChange() {
         if (oai_settings.max_context_unlocked) {
             $('#openai_max_context').attr('max', unlocked_max);
         } else if (
-            /^claude-(sonnet-4-5|sonnet-4-6|opus-4-6|opus-4-7)/.test(value)
+            /^claude-(sonnet-4-5|sonnet-4-6|opus-4-6|opus-4-7|opus-4-8|fable)/.test(value)
         ) {
             $('#openai_max_context').attr('max', max_1mil);
         } else if (/^claude-(3|opus|haiku|sonnet)/.test(value)) {
@@ -8509,6 +8571,7 @@ export function isImageInliningSupported() {
         'o4-mini',
         // Claude
         'claude-3',
+        'claude-fable',
         'claude-opus-4',
         'claude-sonnet-4',
         'claude-haiku-4',
