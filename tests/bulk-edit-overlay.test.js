@@ -717,6 +717,44 @@ Trailing text
         ]);
     });
 
+    test('embeds rerun metadata and greeting fields in the created card', async () => {
+        global.fetch.mockResolvedValueOnce(
+            createResponse({ text: '{"avatar":"group.png"}' }),
+        );
+        const wizardMeta = {
+            version: 1,
+            sourceCharacterNames: ['Alice', 'Bob'],
+            sourceCharacterAvatars: ['alice.png', 'bob.png'],
+            config: { prompt: 'Transform' },
+            createdAt: '2026-08-02T00:00:00.000Z',
+            updatedAt: '2026-08-02T00:00:00.000Z',
+            runCount: 1,
+        };
+
+        await expect(
+            mod.createGeneratedGroupCard(
+                'Group',
+                '<character>Group</character>',
+                [{ name: 'Alice' }, { name: 'Bob' }],
+                false,
+                undefined,
+                false,
+                '<character>Group</character>',
+                wizardMeta,
+                false,
+                false,
+                'Welcome.',
+                ['Hello.', 'Greetings.'],
+            ),
+        ).resolves.toEqual({ avatar: 'group.png', world: '' });
+
+        const createBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(createBody.first_mes).toBe('Welcome.');
+        expect(createBody.alternate_greetings).toEqual(['Hello.', 'Greetings.']);
+        expect(createBody.creator_notes).toContain('[group_card_wizard]');
+        expect(createBody.extensions.group_card_wizard).toEqual(wizardMeta);
+    });
+
     test('normalizes selected optional fields with always-included fields', () => {
         expect(mod.ALWAYS_INCLUDED_CHARACTER_FIELDS).toEqual([
             'name',
