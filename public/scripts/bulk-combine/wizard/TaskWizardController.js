@@ -32,6 +32,7 @@ import {
 } from './TaskWizardState.js';
 import { createWorkflowRail } from '../components/WorkflowRail.js';
 import { createPlaceholderPage } from './pages/placeholderPage.js';
+import { createWizardPageOverrides } from './pages/index.js';
 import { buildTaskWizardShell } from './TaskWizardShell.js';
 
 /**
@@ -88,6 +89,9 @@ export class TaskWizardController {
 
     /** @type {TaskWizardState|null} */
     #state = null;
+
+    /** @type {object|null} Bound actions facade handed to page modules. */
+    #actions = null;
 
     /** @type {object|null} Rail component instance. */
     #rail = null;
@@ -171,6 +175,7 @@ export class TaskWizardController {
 
         this.#state = new TaskWizardState({ client: this.#client });
         await this.#state.init(taskOrId);
+        this.#actions = this.#buildActions();
 
         this.#shell = buildTaskWizardShell();
         this.#bindHeader();
@@ -232,7 +237,42 @@ export class TaskWizardController {
         }
 
         this.#state = null;
+        this.#actions = null;
         this.#shell = null;
+    }
+
+    /**
+     * Builds the actions facade passed to page modules as the third
+     * `render` argument. Page modules execute ONLY through this facade —
+     * they never hold the client or state directly. Execution methods are
+     * fire-and-forget (progress arrives via the task event stream); UI
+     * mutations go through `update` (optimistic PATCH).
+     *
+     * @returns {object} Actions facade.
+     */
+    #buildActions() {
+        return Object.freeze({
+            /** Optimistic PATCH with conflict recovery. */
+            update: (patch) => this.#state.update(patch),
+            /** Re-fetch the authoritative snapshot + notify. */
+            refresh: () => this.#state.refresh(),
+            /** Ungated page move (Continue buttons); rail clicks stay gated. */
+            goToPage: (index) => this.#state.setPage(index),
+            /** Rail-gated navigation used by page shortcuts. */
+            navigate: (pageKey) => this.#navigate(pageKey),
+            /** Fire-and-forget pass start (202). */
+            runPass: (passKey, options) => this.#client.runPass(this.#state.taskId, passKey, options),
+            /** Fire-and-forget pass resume (202). */
+            resumePass: (passKey) => this.#client.resumePass(this.#state.taskId, passKey),
+            /** Cancel running work for the task. */
+            cancel: () => this.#client.cancelTask(this.#state.taskId),
+            /** Fire-and-forget post-process run (202). */
+            runPostProcess: () => this.#client.runPostProcess(this.#state.taskId),
+            /** Fire-and-forget prompt-assist proposal (202). */
+            runPromptAssist: (promptKey, options) => this.#client.runPromptAssist(this.#state.taskId, promptKey, options),
+            /** Assembled review payload. */
+            getReview: () => this.#client.getReview(this.#state.taskId),
+        });
     }
 
     /**
@@ -306,7 +346,7 @@ export class TaskWizardController {
         }
 
         this.#shell.canvas.setAttribute('aria-label', pageState.title);
-        const heading = module.render(this.#shell.canvas, snapshot) ?? null;
+        const heading = module.render(this.#shell.canvas, snapshot, this.#actions) ?? null;
         this.#activePageKey = pageState.key;
         this.#activePageModule = module;
 
@@ -372,8 +412,8 @@ export class TaskWizardController {
  * @param {import('../services/TaskClient.js').TaskClient} [options.client] Task client.
  * @returns {Promise<TaskWizardController>} The controller (after the popup closes).
  */
-export async function openTaskWizard(taskOrId, { client } = {}) {
-    const controller = new TaskWizardController({ client });
+export async function openTaskWizard(taskOrId, { client, pages } = {}) {
+    const controller = new TaskWizardController({ client, pages: pages ?? createWizardPageOverrides() });
     await controller.open(taskOrId);
     return controller;
 }

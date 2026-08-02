@@ -524,6 +524,19 @@ export class TaskWizardState {
     }
 
     /**
+     * Re-fetches the authoritative snapshot and notifies subscribers.
+     * Used by page modules after fire-and-forget actions that mutate the
+     * task without an SSE round-trip worth waiting for.
+     *
+     * @returns {Promise<object|null>} The refreshed task snapshot.
+     */
+    async refresh() {
+        await this.#syncNow();
+        this.#notify();
+        return this.#task;
+    }
+
+    /**
      * Applies a server snapshot, preserving `derivedStaleness` when the
      * incoming payload omits it (PATCH/409 responses do; GET includes it).
      *
