@@ -1,5 +1,5 @@
 import { runWithConcurrency, throwIfAborted, withRetries } from '../job-manager.js';
-import { hashInputs } from './task-state.js';
+import { computePassInputHash, hashInputs } from './task-state.js';
 import {
     CORE_FIELDS,
     buildCombinedPrompt,
@@ -346,13 +346,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             const completed = await repo.checkpoint(taskId, draft => {
                 draft.passes[passKey].status = status;
                 if (status === 'succeeded') {
-                    draft.passes[passKey].inputRevision = hashInputs({
-                        sources: task.sources,
-                        prompts: passKey === 'transform2'
-                            ? [task.prompts.main.text, task.prompts.secondPass.text]
-                            : [text],
-                        settings: task.settings,
-                    });
+                    draft.passes[passKey].inputRevision = computePassInputHash(task, passKey);
                 }
                 draft.activePass = null;
                 draft.execution = { status: 'idle', pass: null };

@@ -8,6 +8,7 @@ import { executeChatCompletion } from './backends/chat-completions.js';
 import { countOpenAIMessageTokens } from './tokenizers.js';
 import { createTaskEventBus } from '../util/bulk-combine/task-events.js';
 import { createTaskRunner } from '../util/bulk-combine/task-runner.js';
+import { deriveStaleness } from '../util/bulk-combine/task-state.js';
 import {
     BulkCombineTaskRepository,
     InvalidSidecarFilenameError,
@@ -118,7 +119,8 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
 
     taskRouter.get('/tasks/:id', route(async (request, response) => {
         const repo = await getRepo(request);
-        return response.send(await repo.getTask(request.params.id));
+        const task = await repo.getTask(request.params.id);
+        return response.send({ ...task, derivedStaleness: deriveStaleness(task) });
     }));
 
     taskRouter.patch('/tasks/:id', route(async (request, response) => {

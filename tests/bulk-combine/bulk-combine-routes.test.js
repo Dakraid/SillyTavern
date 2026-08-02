@@ -107,7 +107,14 @@ describe('/api/bulk-combine task routes', () => {
         expect(listResponse.body).toEqual([expect.objectContaining({ id, name: 'Route task' })]);
 
         const getResponse = await invoke('get', '/tasks/:id', { params: { id } });
-        expect(getResponse.body).toEqual(createResponse.body);
+        expect(getResponse.body).toEqual({
+            ...createResponse.body,
+            derivedStaleness: {
+                transform1: { stale: false, reason: 'not_run' },
+                transform2: { stale: false, reason: 'disabled' },
+                summary: { stale: false, reason: 'not_run' },
+            },
+        });
 
         const patchResponse = await invoke('patch', '/tasks/:id', {
             params: { id },

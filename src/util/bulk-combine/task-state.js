@@ -323,3 +323,108 @@ export function hashInputs(value) {
     const canonicalJson = JSON.stringify(canonicalize(value, new Set()));
     return createHash('sha256').update(canonicalJson).digest('hex');
 }
+
+/**
+ * Returns only settings that affect generated pass inputs. Concurrency is
+ * intentionally excluded because it changes scheduling, not generation.
+ * @param {object} settings Task generation settings
+ * @returns {object} Stable generation-affecting settings subset
+ */
+export function relevantSettings(settings = {}) {
+    return {
+        mode: settings.mode,
+        totalContextTokens: settings.totalContextTokens,
+        outputTokens: settings.outputTokens,
+        destination: settings.destination,
+        connectionProfile: settings.connectionProfile,
+        preset: settings.preset,
+        completion: settings.completion,
+    };
+}
+
+function hasSucceededOutput(pass) {
+    return Object.values(pass?.items || {}).some(item => item?.status === 'succeeded');
+}
+
+function sourcesWithSucceededOutputs(task, pass) {
+    return task.sources
+        .filter(source => pass.items[source.key]?.status === 'succeeded')
+        .map(source => ({
+            ...source,
+            fields: {
+                ...source.fields,
+                description: pass.items[source.key].output,
+            },
+        }));
+}
+
+function passStaleness(pass, currentRevision, upstreamStale = false) {
+    if (!hasSucceededOutput(pass) || !pass.inputRevision) {
+        return { stale: false, reason: 'not_run' };
+    }
+    if (upstreamStale) return { stale: true, reason: 'upstream_stale' };
+    return pass.inputRevision === currentRevision
+        ? { stale: false, reason: 'current' }
+        : { stale: true, reason: 'input_changed' };
+}
+
+/**
+ * Derives pass staleness without changing the persisted task or its outputs.
+ * @param {object} task Bulk Combine task
+ * @returns {object} Derived staleness for each generated pass
+ */
+// Shared input-hash contract used by BOTH the runner (to record inputRevision on
+// success) and deriveStaleness (to detect drift). They MUST agree field-for-field
+// or staleness will be wrong. Mirrors the runner's per-pass input/prompt derivation.
+function passInputPrompts(task, passKey) {
+    if (passKey === 'transform2') return [task.prompts.main.text, task.prompts.secondPass.text];
+    if (passKey === 'summary') return [task.prompts.summary.text];
+    return [task.prompts.main.text];
+}
+function passInputSources(task, passKey) {
+    if (passKey === 'transform1') return task.sources;
+    if (passKey === 'transform2') {
+        return task.settings.secondPassEnabled
+            ? sourcesWithSucceededOutputs(task, task.passes.transform1)
+            : [];
+    }
+    const useTransform2 = task.settings.secondPassEnabled && hasSucceededOutput(task.passes.transform2);
+    return sourcesWithSucceededOutputs(task, useTransform2 ? task.passes.transform2 : task.passes.transform1);
+}
+
+/**
+ * Computes the canonical input hash a pass was / will be run against.
+ * @param {object} task Bulk Combine task
+ * @param {string} passKey 'transform1' | 'transform2' | 'summary'
+ * @returns {string} sha256 hex of the pass's canonical inputs
+ */
+export function computePassInputHash(task, passKey) {
+    return hashInputs({
+        sources: passInputSources(task, passKey),
+        prompts: passInputPrompts(task, passKey),
+        settings: relevantSettings(task.settings),
+    });
+}
+
+/**
+ * Derives pass staleness without changing the persisted task or its outputs.
+ * @param {object} task Bulk Combine task
+ * @returns {object} Derived staleness for each generated pass
+ */
+export function deriveStaleness(task) {
+    const transform1 = passStaleness(task.passes.transform1, computePassInputHash(task, 'transform1'));
+
+    let transform2 = { stale: false, reason: 'disabled' };
+    if (task.settings.secondPassEnabled) {
+        transform2 = passStaleness(task.passes.transform2, computePassInputHash(task, 'transform2'), transform1.stale);
+    }
+
+    const useTransform2 = task.settings.secondPassEnabled && hasSucceededOutput(task.passes.transform2);
+    const summary = passStaleness(
+        task.passes.summary,
+        computePassInputHash(task, 'summary'),
+        useTransform2 ? transform2.stale : transform1.stale,
+    );
+
+    return { transform1, transform2, summary };
+}
