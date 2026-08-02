@@ -290,4 +290,19 @@ describe('BulkCombineTaskRepository', () => {
         expect(results.map(result => result.revision)).toEqual([2, 3, 4, 5, 6]);
         await expect(repo.getTask(task.id)).resolves.toMatchObject({ revision: 6, review: { count: 5 } });
     });
+
+    test('checkpoints without an expected revision and serializes mutations', async () => {
+        const task = await repo.createTask({ name: 'Checkpoints' });
+        const checkpoints = Array.from({ length: 3 }, () => repo.checkpoint(task.id, draft => {
+            draft.review.count = (draft.review.count || 0) + 1;
+        }));
+
+        const results = await Promise.all(checkpoints);
+
+        expect(results.map(result => result.revision)).toEqual([2, 3, 4]);
+        await expect(repo.getTask(task.id)).resolves.toMatchObject({
+            revision: 4,
+            review: { count: 3 },
+        });
+    });
 });

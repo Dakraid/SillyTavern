@@ -210,6 +210,10 @@ export class BulkCombineTaskRepository {
         return this.#mutate(id, mutator, expectedRevision);
     }
 
+    async checkpoint(id, mutator) {
+        return this.#mutate(id, mutator);
+    }
+
     async deleteTask(id) {
         validateTaskId(id);
         return withTaskLock(id, async () => {
