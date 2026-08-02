@@ -50,6 +50,7 @@ import { router as minimaxRouter } from './endpoints/minimax.js';
 import { router as dataMaidRouter } from './endpoints/data-maid.js';
 import { router as backupsRouter } from './endpoints/backups.js';
 import { router as imageMetadataRouter } from './endpoints/image-metadata.js';
+import { recoverAllUsers, router as bulkCombineRouter } from './endpoints/bulk-combine.js';
 import { router as volcengineRouter } from './endpoints/volcengine.js';
 
 /**
@@ -185,6 +186,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/data-maid', dataMaidRouter);
     app.use('/api/backups', backupsRouter);
     app.use('/api/image-metadata', imageMetadataRouter);
+    app.use('/api/bulk-combine', bulkCombineRouter);
 }
 
 /**
@@ -400,6 +402,8 @@ export class ServerStartup {
      * @returns {Promise<ServerStartupResult>} A promise that resolves with an object containing the results of the server startup
      */
     async start() {
+        await recoverAllUsers().catch(error => console.error('Bulk Combine startup recovery failed:', error));
+
         let useIPv6 = (this.cliArgs.enableIPv6 === true);
         let useIPv4 = (this.cliArgs.enableIPv4 === true);
 
