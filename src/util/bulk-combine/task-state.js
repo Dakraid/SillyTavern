@@ -96,6 +96,7 @@ export function createEmptyTask({ name, id, createdAt } = {}) {
         settings: defaultSettings(),
         prompts: defaultPrompts(),
         passes: defaultPasses(),
+        completion: {},
         lorebook: {},
         post: {},
         review: {},
@@ -217,6 +218,7 @@ export function normalizeTask(input) {
         settings: normalizeSettings(source.settings),
         prompts: Object.fromEntries(PROMPT_KEYS.map(key => [key, normalizePrompt(source.prompts?.[key])])),
         passes: Object.fromEntries(PASS_KEYS.map(key => [key, normalizePass(source.passes?.[key])])),
+        completion: isRecord(source.completion) ? clone(source.completion, {}) : {},
         lorebook: isRecord(source.lorebook) ? clone(source.lorebook, {}) : {},
         post: isRecord(source.post) ? clone(source.post, {}) : {},
         review: isRecord(source.review) ? clone(source.review, {}) : {},
@@ -291,6 +293,7 @@ export function isValidTask(input) {
         && isSettings(input.settings)
         && PROMPT_KEYS.every(key => isPrompt(input.prompts?.[key]))
         && PASS_KEYS.every(key => isPass(input.passes?.[key]))
+        && isRecord(input.completion)
         && ['lorebook', 'post', 'review', 'avatar', 'artifacts'].every(key => isRecord(input[key]));
 }
 

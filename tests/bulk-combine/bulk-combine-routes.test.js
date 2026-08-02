@@ -2,13 +2,29 @@ import { afterAll, beforeAll, beforeEach, describe, expect, jest, test } from '@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+
+import { BulkCombineTaskRepository } from '../../src/util/bulk-combine/task-repository.js';
+import { createTaskEventBus } from '../../src/util/bulk-combine/task-events.js';
 
 jest.unstable_mockModule('../../src/users.js', () => ({
     getAllUserHandles: jest.fn(async () => []),
     getUserDirectories: jest.fn(() => ({ root: '' })),
 }));
 
+jest.unstable_mockModule('../../src/endpoints/backends/chat-completions.js', () => ({
+    executeChatCompletion: jest.fn(),
+}));
+
+jest.unstable_mockModule('../../src/endpoints/tokenizers.js', () => ({
+    countOpenAIMessageTokens: jest.fn(),
+}));
+
+let createBulkCombineRouter;
+let sanitizeCompletionSettings;
 let router;
+let eventBus;
+let fakeRunner;
 const tempRoots = [];
 let userRoot;
 
@@ -21,6 +37,7 @@ function makeResponse() {
     return {
         statusCode: 200,
         body: undefined,
+        headers: {},
         status(code) {
             this.statusCode = code;
             return this;
@@ -37,27 +54,42 @@ function makeResponse() {
             this.statusCode = code;
             return this;
         },
+        setHeader(name, value) {
+            this.headers[name] = value;
+        },
+        write: jest.fn(),
     };
 }
 
-async function invoke(method, routePath, { body = {}, params = {} } = {}) {
-    const request = {
+async function invoke(method, routePath, {
+    body = {},
+    params = {},
+    request = {},
+    response = makeResponse(),
+} = {}) {
+    Object.assign(request, {
         body,
         params,
         user: { directories: { root: userRoot } },
-    };
-    const response = makeResponse();
+    });
     await getHandler(method, routePath)(request, response);
     return response;
 }
 
 beforeAll(async () => {
-    ({ router } = await import('../../src/endpoints/bulk-combine.js'));
+    ({ createBulkCombineRouter, sanitizeCompletionSettings } = await import('../../src/endpoints/bulk-combine.js'));
 });
 
 beforeEach(async () => {
     userRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'st-bulk-combine-routes-'));
     tempRoots.push(userRoot);
+    eventBus = createTaskEventBus();
+    fakeRunner = {
+        runPass: jest.fn(async () => null),
+        resume: jest.fn(async () => null),
+        cancel: jest.fn(async () => false),
+    };
+    router = createBulkCombineRouter({ runner: fakeRunner, eventBus });
 });
 
 afterAll(async () => {
@@ -168,5 +200,146 @@ describe('/api/bulk-combine task routes', () => {
         });
         expect(badPatch.statusCode).toBe(400);
         expect(badPatch.body).toEqual({ error: 'invalid_request' });
+    });
+
+    test('sanitizes completion settings without removing execution fields', () => {
+        expect(sanitizeCompletionSettings({
+            api_key: 'remove',
+            proxy_password: 'remove',
+            apiKey: 'remove',
+            token: 'remove',
+            secret_id: 'secret-reference',
+            chat_completion_source: 'openai',
+            model: 'test-model',
+            custom_url: 'https://example.com/v1',
+            reverse_proxy: 'https://proxy.example.com',
+            temperature: 0.4,
+            max_tokens: 512,
+            max_completion_tokens: 500,
+            top_p: 0.9,
+            stop: ['END'],
+        })).toEqual({
+            secret_id: 'secret-reference',
+            chat_completion_source: 'openai',
+            model: 'test-model',
+            custom_url: 'https://example.com/v1',
+            reverse_proxy: 'https://proxy.example.com',
+            temperature: 0.4,
+            max_tokens: 512,
+            max_completion_tokens: 500,
+            top_p: 0.9,
+            stop: ['END'],
+        });
+        expect(sanitizeCompletionSettings(null)).toEqual({});
+    });
+
+    test('starts a pass in the background and stores sanitized completion settings', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Runnable' } })).body;
+        fakeRunner.runPass.mockReturnValueOnce(new Promise(() => {}));
+        const response = await invoke('post', '/tasks/:id/passes/:pass/run', {
+            params: { id: created.id, pass: 'transform1' },
+            body: {
+                scope: 'all',
+                itemKeys: ['character-a'],
+                completionSettings: {
+                    chat_completion_source: 'openai',
+                    secret_id: 'secret-reference',
+                    api_key: 'plaintext-secret',
+                    proxy_password: 'plaintext-proxy-secret',
+                    model: 'test-model',
+                    temperature: 0.5,
+                },
+            },
+        });
+
+        expect(response.statusCode).toBe(202);
+        expect(response.body).toMatchObject({
+            id: created.id,
+            completion: {
+                chat_completion_source: 'openai',
+                secret_id: 'secret-reference',
+                model: 'test-model',
+                temperature: 0.5,
+            },
+        });
+        expect(response.body.completion).not.toHaveProperty('api_key');
+        expect(response.body.completion).not.toHaveProperty('proxy_password');
+        expect(fakeRunner.runPass).toHaveBeenCalledWith({
+            taskId: created.id,
+            passKey: 'transform1',
+            repo: expect.any(BulkCombineTaskRepository),
+            userDirectories: { root: userRoot },
+            scope: 'all',
+            itemKeys: ['character-a'],
+        });
+
+        const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
+        const stored = await repo.getTask(created.id);
+        expect(stored.completion).toEqual(response.body.completion);
+    });
+
+    test('rejects invalid passes and missing tasks before scheduling work', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Validation' } })).body;
+        const invalidPass = await invoke('post', '/tasks/:id/passes/:pass/run', {
+            params: { id: created.id, pass: 'unknown' },
+        });
+        const missingTask = await invoke('post', '/tasks/:id/passes/:pass/run', {
+            params: { id: '00000000-0000-4000-8000-000000000099', pass: 'transform1' },
+        });
+
+        expect(invalidPass.statusCode).toBe(400);
+        expect(missingTask.statusCode).toBe(404);
+        expect(fakeRunner.runPass).not.toHaveBeenCalled();
+    });
+
+    test('resumes in the background and returns the current task', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Resume' } })).body;
+
+        const response = await invoke('post', '/tasks/:id/passes/:pass/resume', {
+            params: { id: created.id, pass: 'transform1' },
+        });
+
+        expect(response.statusCode).toBe(202);
+        expect(response.body).toMatchObject({ id: created.id });
+        expect(fakeRunner.resume).toHaveBeenCalledWith({
+            taskId: created.id,
+            repo: expect.any(BulkCombineTaskRepository),
+            userDirectories: { root: userRoot },
+        });
+    });
+
+    test('reports whether cancellation found an active pass', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Cancel' } })).body;
+        fakeRunner.cancel.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+        const cancelled = await invoke('post', '/tasks/:id/cancel', { params: { id: created.id } });
+        const inactive = await invoke('post', '/tasks/:id/cancel', { params: { id: created.id } });
+
+        expect(cancelled.body).toEqual({ cancelled: true });
+        expect(inactive.body).toEqual({ cancelled: false });
+    });
+
+    test('subscribes to task events and unsubscribes when the request closes', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Events' } })).body;
+        const request = new EventEmitter();
+        const response = makeResponse();
+
+        await invoke('get', '/tasks/:id/events', {
+            params: { id: created.id },
+            request,
+            response,
+        });
+        eventBus.emit(created.id, { type: 'progress', completed: 1 });
+
+        expect(response.headers).toEqual({
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+        });
+        expect(response.write).toHaveBeenCalledWith('data: {"type":"progress","completed":1}\n\n');
+
+        request.emit('close');
+        eventBus.emit(created.id, { type: 'progress', completed: 2 });
+        expect(response.write).toHaveBeenCalledTimes(1);
     });
 });

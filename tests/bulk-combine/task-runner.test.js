@@ -104,6 +104,33 @@ describe('bulk combine task runner', () => {
         expect(events.every(event => event.taskId === task.id && event.passKey === 'transform1')).toBe(true);
     });
 
+    test('uses the sanitized completion snapshot for execution and token preflight', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.completion = {
+                chat_completion_source: 'openai',
+                model: 'snapshot-model',
+                temperature: 0.25,
+            };
+        });
+        const executeCompletion = jest.fn(async () => completion('<character><name>Result</name></character>'));
+        const countTokens = jest.fn(async () => 1);
+        const runner = createTaskRunner({ executeCompletion, countTokens });
+
+        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+
+        expect(countTokens).toHaveBeenCalledWith(expect.any(String), 'snapshot-model');
+        expect(executeCompletion).toHaveBeenCalledWith(expect.objectContaining({
+            body: expect.objectContaining({
+                chat_completion_source: 'openai',
+                model: 'snapshot-model',
+                temperature: 0.25,
+                messages: [expect.objectContaining({ role: 'user' })],
+                stream: false,
+            }),
+        }));
+    });
+
     test('respects the configured individual concurrency', async () => {
         const task = await createTask({ count: 5, concurrency: 2 });
         let inFlight = 0;

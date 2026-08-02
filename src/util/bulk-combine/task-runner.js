@@ -176,7 +176,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 prompts: [...prompts].map(([key, prompt]) => ({ key, text: prompt })),
                 outputTokens: task.settings.outputTokens,
                 contextTokens: task.settings.totalContextTokens,
-                model: modelFromSettings(task.settings),
+                model: modelFromSettings(task.settings) || (task.completion && task.completion.model) || null,
             }, countTokens);
             const preflightItems = new Map(preflight.items.map(item => [item.key, item]));
             const blockedKeys = new Set();
@@ -228,9 +228,9 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                     executableKeys.forEach(key => sendEvent(taskId, passKey, 'item_started', { itemKey: key }));
                     const content = await withRetries(async () => {
                         attempts++;
-                        // Step 7c wraps this injected executor and merges profile, preset, model, and sampler fields.
+                        // This run-time completion snapshot is the frontend's sanitized config-resolution seam; the executor resolves secret_id.
                         return completionContent(await executeCompletion({
-                            body: { messages: [{ role: 'user', content: prompts.get(COMBINED_KEY) }], stream: false },
+                            body: { ...(task.completion || {}), messages: [{ role: 'user', content: prompts.get(COMBINED_KEY) }], stream: false },
                             userDirectories,
                             signal,
                         }));
@@ -290,9 +290,9 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         sendEvent(taskId, passKey, 'item_started', { itemKey: key });
                         const content = await withRetries(async () => {
                             attempts++;
-                            // Step 7c wraps this injected executor and merges profile, preset, model, and sampler fields.
+                            // This run-time completion snapshot is the frontend's sanitized config-resolution seam; the executor resolves secret_id.
                             return completionContent(await executeCompletion({
-                                body: { messages: [{ role: 'user', content: prompts.get(key) }], stream: false },
+                                body: { ...(task.completion || {}), messages: [{ role: 'user', content: prompts.get(key) }], stream: false },
                                 userDirectories,
                                 signal,
                             }));

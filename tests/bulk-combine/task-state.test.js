@@ -31,6 +31,7 @@ describe('Bulk Combine task state', () => {
             archivedAt: null,
             sources: [],
             activePass: null,
+            completion: {},
             lorebook: {},
             post: {},
             review: {},
@@ -84,6 +85,7 @@ describe('Bulk Combine task state', () => {
         expect(normalized.settings).toMatchObject({ mode: 'individual', concurrency: 1, connectionProfile: null });
         expect(normalized.prompts.main.text).toBe('');
         expect(normalized.passes.transform1).toEqual({ status: 'pending', inputRevision: null, items: {} });
+        expect(normalized.completion).toEqual({});
         expect(normalized.archivedAt).toBeNull();
         expect(normalized).not.toHaveProperty('garbage');
         expect(normalizeTask(normalized)).toEqual(normalized);
@@ -93,6 +95,13 @@ describe('Bulk Combine task state', () => {
         expect(isValidTask(null)).toBe(false);
         expect(isValidTask({})).toBe(false);
         expect(isValidTask({ ...createEmptyTask({ name: 'Valid' }), revision: 0 })).toBe(false);
+        expect(isValidTask({ ...createEmptyTask({ name: 'Valid' }), completion: null })).toBe(false);
+    });
+
+    test('preserves a completion settings snapshot during normalization', () => {
+        const completion = { chat_completion_source: 'openai', model: 'test-model', temperature: 0.5 };
+
+        expect(normalizeTask({ completion }).completion).toEqual(completion);
     });
 
     test('hashes canonical object keys deterministically', () => {
