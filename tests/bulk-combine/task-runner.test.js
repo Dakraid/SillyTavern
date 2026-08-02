@@ -40,7 +40,22 @@ async function createTask({ count = 3, mode = 'individual', concurrency = 1 } = 
         task.prompts.main.text = 'Transform the character';
         task.prompts.secondPass.text = 'Improve the transformed description';
         task.prompts.summary.text = 'Summarize the character';
+        task.prompts.post.text = 'Polish the merged characters';
     }, { expectedRevision: created.revision });
+}
+
+async function preparePostTask(options = {}) {
+    const task = await createTask(options);
+    return repo.checkpoint(task.id, draft => {
+        draft.settings.postProcessingEnabled = true;
+        draft.settings.postProcessingMode = 'append';
+        for (const source of draft.sources) {
+            draft.passes.transform1.items[source.key] = {
+                status: 'succeeded',
+                output: `<character><name>${source.name}</name></character>`,
+            };
+        }
+    });
 }
 
 function keyFromPrompt(prompt) {
@@ -353,5 +368,127 @@ describe('bulk combine task runner', () => {
         expect(prompts[1]).toContain('Transform two output');
         expect(stored.passes.summary.items.a.output).toBe('Summary text');
         expect(summary.items).toEqual({ a: 'succeeded', b: 'skipped' });
+    });
+
+    test('runs one post-process completion and checkpoints the applied mode output', async () => {
+        const task = await preparePostTask({ count: 1 });
+        const postOutput = '<character><name>Post</name></character>';
+        const events = [];
+        const executeCompletion = jest.fn(async () => completion(postOutput));
+        const runner = createTaskRunner({
+            executeCompletion,
+            countTokens: async () => 1,
+            emit: (_taskId, event) => events.push(event),
+        });
+
+        const result = await runner.runPostProcess({ taskId: task.id, repo, userDirectories: { root: 'user' } });
+        const stored = await repo.getTask(task.id);
+        const base = '<character><name>Character 1</name></character>';
+
+        expect(result).toEqual({ status: 'succeeded', output: `${base}\n\n${postOutput}` });
+        expect(executeCompletion).toHaveBeenCalledTimes(1);
+        expect(executeCompletion).toHaveBeenCalledWith(expect.objectContaining({
+            body: expect.objectContaining({
+                messages: [{
+                    role: 'user',
+                    content: `Polish the merged characters\n\nMerged character definitions:\n${base}`,
+                }],
+                stream: false,
+            }),
+            userDirectories: { root: 'user' },
+            signal: expect.any(AbortSignal),
+        }));
+        expect(stored.post).toMatchObject({
+            status: 'succeeded',
+            mode: 'append',
+            input: base,
+            output: `${base}\n\n${postOutput}`,
+            error: null,
+            ranAt: expect.any(String),
+        });
+        expect(events.at(-1).type).toBe('post_process_completed');
+    });
+
+    test('checkpoints a failed replace when XML corpus counts differ', async () => {
+        const task = await preparePostTask({ count: 2 });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.postProcessingMode = 'replace';
+        });
+        const executeCompletion = jest.fn(async () => completion('<character><name>Only one</name></character>'));
+        const events = [];
+        const runner = createTaskRunner({
+            executeCompletion,
+            countTokens: async () => 1,
+            emit: (_taskId, event) => events.push(event),
+        });
+
+        await expect(runner.runPostProcess({ taskId: task.id, repo, userDirectories: {} })).rejects.toThrow(
+            'Post-processing returned 1 root XML corpus block(s), expected 2.',
+        );
+        const stored = await repo.getTask(task.id);
+
+        expect(stored.post).toMatchObject({
+            status: 'failed',
+            error: 'Error: Post-processing returned 1 root XML corpus block(s), expected 2.',
+            output: '',
+        });
+        expect(events.at(-1).type).toBe('post_process_failed');
+    });
+
+    test('skips post processing when disabled or when the merged description is empty', async () => {
+        const disabled = await createTask({ count: 1 });
+        const empty = await createTask({ count: 0 });
+        await repo.checkpoint(empty.id, draft => {
+            draft.settings.postProcessingEnabled = true;
+        });
+        const executeCompletion = jest.fn();
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        await expect(runner.runPostProcess({ taskId: disabled.id, repo, userDirectories: {} }))
+            .resolves.toEqual({ status: 'skipped' });
+        await expect(runner.runPostProcess({ taskId: empty.id, repo, userDirectories: {} }))
+            .resolves.toEqual({ status: 'skipped' });
+
+        expect(executeCompletion).not.toHaveBeenCalled();
+        expect((await repo.getTask(empty.id)).post.status).toBe('skipped');
+    });
+
+    test('shares the active guard between passes and post processing', async () => {
+        const task = await preparePostTask({ count: 1 });
+        let release;
+        const waiting = new Promise(resolve => {
+            release = resolve;
+        });
+        const executeCompletion = jest.fn(async () => {
+            await waiting;
+            return completion('<character><name>done</name></character>');
+        });
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+        const running = runner.runPostProcess({ taskId: task.id, repo, userDirectories: {} });
+
+        await expect(runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} }))
+            .rejects.toBeInstanceOf(TaskAlreadyRunningError);
+        release();
+        await running;
+    });
+
+    test('aborts post processing through the shared cancellation controller and clears the guard', async () => {
+        const task = await preparePostTask({ count: 1 });
+        let started;
+        const completionStarted = new Promise(resolve => {
+            started = resolve;
+        });
+        const executeCompletion = jest.fn(({ signal }) => new Promise((resolve, reject) => {
+            started();
+            signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+        const running = runner.runPostProcess({ taskId: task.id, repo, userDirectories: {} });
+
+        await completionStarted;
+        await expect(runner.cancel(task.id)).resolves.toBe(true);
+        await expect(running).rejects.toThrow('Job cancelled.');
+        expect((await repo.getTask(task.id)).post).toMatchObject({ status: 'failed', output: '' });
+        await expect(runner.cancel(task.id)).resolves.toBe(false);
     });
 });

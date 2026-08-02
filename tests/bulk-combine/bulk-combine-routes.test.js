@@ -86,6 +86,7 @@ beforeEach(async () => {
     eventBus = createTaskEventBus();
     fakeRunner = {
         runPass: jest.fn(async () => null),
+        runPostProcess: jest.fn(async () => null),
         resume: jest.fn(async () => null),
         cancel: jest.fn(async () => false),
     };
@@ -297,6 +298,59 @@ describe('/api/bulk-combine task routes', () => {
         expect(invalidPass.statusCode).toBe(400);
         expect(missingTask.statusCode).toBe(404);
         expect(fakeRunner.runPass).not.toHaveBeenCalled();
+    });
+
+    test('starts post processing in the background after validating the task', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Post process' } })).body;
+
+        const response = await invoke('post', '/tasks/:id/post-process/run', {
+            params: { id: created.id },
+        });
+        const missing = await invoke('post', '/tasks/:id/post-process/run', {
+            params: { id: '00000000-0000-4000-8000-000000000099' },
+        });
+
+        expect(response.statusCode).toBe(202);
+        expect(response.body).toMatchObject({ id: created.id });
+        expect(fakeRunner.runPostProcess).toHaveBeenCalledWith({
+            taskId: created.id,
+            repo: expect.any(BulkCombineTaskRepository),
+            userDirectories: { root: userRoot },
+        });
+        expect(missing.statusCode).toBe(404);
+        expect(fakeRunner.runPostProcess).toHaveBeenCalledTimes(1);
+    });
+
+    test('returns the derived review assembly without storing duplicate artifacts', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Review' } })).body;
+        const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
+        await repo.checkpoint(created.id, draft => {
+            draft.sources = [{ key: 'a', name: 'Alice', fields: { name: 'Alice' } }];
+            draft.passes.transform1.items.a = {
+                status: 'succeeded',
+                output: '<character><name>Alice</name></character>',
+            };
+        });
+
+        const response = await invoke('get', '/tasks/:id/review', { params: { id: created.id } });
+
+        expect(response.body).toEqual({
+            fullSourcePass: 'transform1',
+            cardBlocks: [{
+                key: 'a',
+                name: 'Alice',
+                xml: '<character><name>Alice</name></character>',
+            }],
+            lorebookData: { entries: {} },
+            mergedDescription: '<character><name>Alice</name></character>',
+            post: {
+                enabled: false,
+                mode: 'replace',
+                input: '<character><name>Alice</name></character>',
+                output: '',
+            },
+            destination: 'card',
+        });
     });
 
     test('resumes in the background and returns the current task', async () => {

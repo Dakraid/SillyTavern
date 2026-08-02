@@ -1,9 +1,11 @@
 import { runWithConcurrency, throwIfAborted, withRetries } from '../job-manager.js';
+import { applyPostProcess, buildMergedCardDescription } from './artifact-assembler.js';
 import { computePassInputHash, hashInputs } from './task-state.js';
 import {
     CORE_FIELDS,
     buildCombinedPrompt,
     buildIndividualPrompt,
+    buildPostProcessPrompt,
     parseCombinedResponse,
     preflightTokens,
 } from './prompt-builders.js';
@@ -359,6 +361,76 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         }
     }
 
+    async function runPostProcess({ taskId, repo, userDirectories }) {
+        if (active.has(taskId)) throw new TaskAlreadyRunningError(taskId);
+
+        active.add(taskId);
+        const controller = new AbortController();
+        controllers.set(taskId, controller);
+        const { signal } = controller;
+
+        try {
+            const task = await repo.getTask(taskId);
+            if (!task.settings.postProcessingEnabled) return { status: 'skipped' };
+
+            const input = buildMergedCardDescription(task);
+            const mode = task.settings.postProcessingMode;
+            if (!input) {
+                await repo.checkpoint(taskId, draft => {
+                    draft.post = { status: 'skipped', mode, input, output: '', error: null };
+                });
+                return { status: 'skipped' };
+            }
+
+            try {
+                const content = await withRetries(async () => {
+                    throwIfAborted(signal);
+                    return completionContent(await executeCompletion({
+                        body: {
+                            ...(task.completion || {}),
+                            messages: [{
+                                role: 'user',
+                                content: buildPostProcessPrompt(task.prompts.post.text, input),
+                            }],
+                            stream: false,
+                        },
+                        userDirectories,
+                        signal,
+                    }));
+                }, signal, 3);
+                const result = applyPostProcess(input, content, mode);
+                const ranAt = new Date().toISOString();
+                await repo.checkpoint(taskId, draft => {
+                    draft.post = {
+                        status: 'succeeded',
+                        mode,
+                        input,
+                        output: result.description,
+                        error: null,
+                        ranAt,
+                    };
+                });
+                sendEvent(taskId, 'post', 'post_process_completed');
+                return { status: 'succeeded', output: result.description };
+            } catch (error) {
+                await repo.checkpoint(taskId, draft => {
+                    draft.post = {
+                        status: 'failed',
+                        mode,
+                        input,
+                        output: '',
+                        error: String(error),
+                    };
+                });
+                sendEvent(taskId, 'post', 'post_process_failed', { error: String(error) });
+                throw error;
+            }
+        } finally {
+            active.delete(taskId);
+            controllers.delete(taskId);
+        }
+    }
+
     async function resume({ taskId, repo, userDirectories }) {
         const task = await repo.getTask(taskId);
         // Persisted live-running items are intentionally excluded to avoid silently billing uncertain work twice.
@@ -375,5 +447,5 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         return true;
     }
 
-    return { runPass, resume, cancel };
+    return { runPass, runPostProcess, resume, cancel };
 }

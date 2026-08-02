@@ -6,6 +6,7 @@ import express from 'express';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { executeChatCompletion } from './backends/chat-completions.js';
 import { countOpenAIMessageTokens } from './tokenizers.js';
+import { assembleReviewPayload } from '../util/bulk-combine/artifact-assembler.js';
 import { createTaskEventBus } from '../util/bulk-combine/task-events.js';
 import { createTaskRunner } from '../util/bulk-combine/task-runner.js';
 import { deriveStaleness } from '../util/bulk-combine/task-state.js';
@@ -123,6 +124,11 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
         return response.send({ ...task, derivedStaleness: deriveStaleness(task) });
     }));
 
+    taskRouter.get('/tasks/:id/review', route(async (request, response) => {
+        const repo = await getRepo(request);
+        return response.send(assembleReviewPayload(await repo.getTask(request.params.id)));
+    }));
+
     taskRouter.patch('/tasks/:id', route(async (request, response) => {
         const expectedRevision = request.body?.expectedRevision;
         const patch = request.body?.patch;
@@ -191,6 +197,17 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
             repo,
             userDirectories: request.user.directories,
         }).catch(error => console.error('Bulk Combine pass failed:', error));
+        return response.status(202).send(task);
+    }));
+
+    taskRouter.post('/tasks/:id/post-process/run', route(async (request, response) => {
+        const repo = await getRepo(request);
+        const task = await repo.getTask(request.params.id);
+        taskRunner.runPostProcess({
+            taskId: request.params.id,
+            repo,
+            userDirectories: request.user.directories,
+        }).catch(error => console.error('Bulk Combine post-processing failed:', error));
         return response.status(202).send(task);
     }));
 
