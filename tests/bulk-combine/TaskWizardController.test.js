@@ -32,6 +32,12 @@ jest.unstable_mockModule('../../public/scripts/popup.js', () => ({
     POPUP_TYPE: { DISPLAY: 4 },
     POPUP_RESULT: { CANCELLED: 0 },
 }));
+// Concrete pages pull in browser-only module chains (utils.js → svg-inject
+// touches window at import). Controller tests exercise placeholder pages
+// only, so the page-overrides registry is mocked to empty.
+jest.unstable_mockModule('../../public/scripts/bulk-combine/wizard/pages/index.js', () => ({
+    createWizardPageOverrides: () => ({}),
+}));
 
 // ---------------------------------------------------------------------------
 // Minimal fake DOM
