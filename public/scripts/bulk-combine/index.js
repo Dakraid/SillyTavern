@@ -26,7 +26,7 @@ import {
     unshallowCharacter,
     getCharacters,
 } from '../../script.js';
-import { callGenericPopup, POPUP_TYPE, POPUP_RESULT } from '../popup.js';
+import { callGenericPopup, POPUP_TYPE } from '../popup.js';
 import {
     validateGeneratedGroupCardDescription,
     parseGreetingsFromGeneratedOutput,
@@ -37,7 +37,9 @@ import {
     GROUP_CARD_WIZARD_METADATA_KEY,
     getGroupCardWizardMetadata,
     isGroupCardWizardCharacter,
+    getCharacterName,
     getCoreCharacterField,
+    getCoreCharacterPayload,
     buildGroupCardCombineQuietPrompt,
     buildLorebookData,
     buildDynamicLorebookData,
@@ -47,6 +49,8 @@ import {
     sendJsonRequest,
     throwIfNotOk,
 } from './services/JobClient.js';
+import { createTaskClient } from './services/TaskClient.js';
+import { openTaskWizard } from './wizard/TaskWizardController.js';
 
 // Re-export helpers --------------------------------------------------
 
@@ -122,6 +126,10 @@ export {
 
 // Re-export the wizard controller for console/manual testing access.
 export { WizardController };
+
+// Re-export the guided task wizard controller for console/manual testing.
+export { TaskWizardController } from './wizard/TaskWizardController.js';
+export { TaskWizardState, computePageStates, TASK_WIZARD_PAGES } from './wizard/TaskWizardState.js';
 
 // --------------------------------------------------------------------
 
@@ -261,10 +269,96 @@ function clampStage(n) {
 }
 
 /**
+ * Builds a display name for a new durable task.
+ *
+ * @param {number[]} validIds Valid selected character ids.
+ * @param {object} [rerunConfig] Optional re-run configuration.
+ * @returns {string} Task name.
+ */
+function resolveTaskName(validIds, rerunConfig) {
+    if (rerunConfig?.groupName != null) {
+        return String(rerunConfig.groupName);
+    }
+    const names = validIds
+        .map((id) => getCharacterName(characters[id]))
+        .filter(Boolean);
+    return names.length > 0 ? names.join(' + ') : 'Untitled task';
+}
+
+/**
+ * Maps legacy re-run config (`rerunConfig.rerunMeta.config`) onto durable
+ * task `settings`/`prompts` patches. Only carried-over fields are set; all
+ * other task defaults stay untouched.
+ *
+ * @param {object} [rerunConfig] Optional re-run configuration.
+ * @returns {{settings: object, prompts: object}} Settings/prompts patch fragments.
+ */
+function seedTaskConfigFromRerun(rerunConfig) {
+    const config = rerunConfig?.rerunMeta?.config ?? rerunConfig?.config ?? {};
+    const settings = {};
+    const prompts = {};
+
+    if (typeof config.prompt === 'string' && config.prompt.trim()) {
+        prompts.main = { text: config.prompt };
+    }
+    if (config.createLorebook || config.dynamicLorebook) {
+        settings.destination = 'lorebook';
+    }
+    if (config.postMergeEnabled) {
+        settings.postProcessingEnabled = true;
+        if (typeof config.postMergePrompt === 'string' && config.postMergePrompt.trim()) {
+            prompts.post = { text: config.postMergePrompt };
+        }
+    }
+    if (config.minify) {
+        settings.xmlEnabled = true;
+        settings.xmlMinify = true;
+    }
+    return { settings, prompts };
+}
+
+/**
+ * Creates a durable server task seeded from the selected characters and the
+ * optional re-run config: immutable source snapshots (core card fields) plus
+ * carried-over settings/prompts.
+ *
+ * @param {number[]} selectedCharacterIds Selected character ids.
+ * @param {object} [rerunConfig] Optional re-run configuration.
+ * @returns {Promise<{task: object, client: import('./services/TaskClient.js').TaskClient}>} The created+seeded task and the client used.
+ */
+async function createTaskForSelection(selectedCharacterIds, rerunConfig) {
+    const client = createTaskClient();
+    const validIds = (selectedCharacterIds ?? []).filter((id) => characters[id]);
+
+    const task = await client.createTask({ name: resolveTaskName(validIds, rerunConfig) });
+    const sources = validIds.map((id) => {
+        const character = characters[id];
+        return {
+            key: String(character.avatar ?? `character-${id}`),
+            name: getCharacterName(character),
+            avatar: String(character.avatar ?? ''),
+            fields: getCoreCharacterPayload(character),
+        };
+    });
+    const { settings, prompts } = seedTaskConfigFromRerun(rerunConfig);
+
+    const seeded = await client.patchTask(task.id, { sources, settings, prompts });
+    return { task: seeded, client };
+}
+
+/**
  * Open the combine wizard for the given characters.
  *
- * Delegates to the registered wizard opener (set by BulkEditOverlay during
- * init) or to {@link WizardController.open} when no handler is registered.
+ * INTERIM BRIDGE (Step 11b): every call now creates a NEW durable server
+ * task (seeded with immutable source snapshots + re-run config) via
+ * {@link createTaskForSelection}. While the legacy handler is registered
+ * (normal operation today) the created task is a history seed only and the
+ * legacy wizard still opens; task creation is best-effort there so a
+ * task-API failure never breaks the legacy flow. When NO legacy handler is
+ * registered, the new 8-page guided task wizard
+ * ({@link openTaskWizard}) opens for the created task instead — e.g. from
+ * the browser console. Once the guided workflow fully replaces the legacy
+ * wizard, the delegation branch is removed and tasks open directly.
  *
  * @param {number[]} selectedCharacterIds Character IDs selected in the bulk
  *     overlay. Must contain at least two entries.
@@ -274,10 +368,25 @@ function clampStage(n) {
  */
 export async function openCombineWizard(selectedCharacterIds, rerunConfig) {
     if (_openWizardHandler) {
+        try {
+            await createTaskForSelection(selectedCharacterIds, rerunConfig);
+        } catch (error) {
+            console.warn('Bulk Combine: durable task creation failed; continuing with the legacy wizard only.', error);
+        }
         return _openWizardHandler(selectedCharacterIds, rerunConfig);
     }
 
-    return WizardController.open(selectedCharacterIds, rerunConfig);
+    const validIds = (selectedCharacterIds ?? []).filter((id) => characters[id]);
+    if (validIds.length < 2) {
+        globalThis.toastr?.warning?.(
+            'Select at least two valid characters.',
+            'Combine into Group Card',
+        );
+        return;
+    }
+
+    const { task, client } = await createTaskForSelection(validIds, rerunConfig);
+    await openTaskWizard(task, { client });
 }
 
 /**
