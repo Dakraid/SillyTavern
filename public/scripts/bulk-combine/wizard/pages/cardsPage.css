@@ -1,0 +1,282 @@
+/* ==========================================================================
+   Guided task wizard — Cards page (Step 11c)
+
+   Styles for `wizard/pages/cardsPage.js`. Kept in a dedicated file so the
+   page lands without touching `styles.css`; the orchestrator adds the
+   `@import` line to `public/style.css` when wiring the page registry.
+
+   Classes: .bc-task-*  |  SmartTheme variables only; no fixed theme colors.
+   ========================================================================== */
+
+/* --- Source card list --- */
+
+.bc-task-cards-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6em;
+}
+
+.bc-task-cards-empty {
+	margin: 0;
+	opacity: 0.65;
+	font-style: italic;
+}
+
+.bc-task-card {
+	display: grid;
+	grid-template-columns: 3.5em minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.75em;
+	padding: 0.6em 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 92%, var(--SmartThemeQuoteColor) 8%);
+}
+
+.bc-task-card-avatar {
+	width: 3.5em;
+	height: 3.5em;
+	object-fit: cover;
+	border-radius: 8px;
+	border: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bc-task-card-body {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25em;
+}
+
+.bc-task-card-name-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	flex-wrap: wrap;
+}
+
+.bc-task-card-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 700;
+}
+
+/* Immutable snapshot badge (pill, matches the .bc-task-status family). */
+
+.bc-task-snapshot-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3em;
+	padding: 0.15em 0.55em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 999px;
+	font-size: 0.75em;
+	font-weight: 700;
+	opacity: 0.85;
+	white-space: nowrap;
+}
+
+.bc-task-card-fields {
+	font-size: 0.82em;
+	opacity: 0.7;
+	overflow-wrap: break-word;
+}
+
+/* --- Per-card controls (move up/down, refresh, remove) --- */
+
+.bc-task-card-controls {
+	display: flex;
+	align-items: center;
+	gap: 0.35em;
+}
+
+.bc-task-card-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.9em;
+	height: 1.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-card-button:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+}
+
+.bc-task-card-button:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-card-button:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+/* --- Add-character picker --- */
+
+.bc-task-add {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	padding-top: 0.75em;
+	border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bc-task-add-title {
+	margin: 0;
+	font-size: 1.05em;
+}
+
+.bc-task-add-note {
+	margin: 0;
+	font-size: 0.85em;
+	opacity: 0.65;
+}
+
+.bc-task-add-search {
+	max-width: 24em;
+}
+
+.bc-task-picker-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+	max-height: 16em;
+	overflow-y: auto;
+}
+
+.bc-task-picker-row {
+	display: grid;
+	grid-template-columns: 2em minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.6em;
+	padding: 0.3em 0.4em;
+	border-radius: 8px;
+}
+
+.bc-task-picker-row:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--SmartThemeQuoteColor) 10%);
+}
+
+.bc-task-picker-avatar {
+	width: 2em;
+	height: 2em;
+	object-fit: cover;
+	border-radius: 6px;
+	border: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bc-task-picker-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.bc-task-picker-add {
+	padding: 0.25em 0.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-picker-add:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-picker-add:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-picker-note {
+	margin: 0;
+	font-size: 0.85em;
+	opacity: 0.65;
+	font-style: italic;
+}
+
+/* --- Footer: source count + continue --- */
+
+.bc-task-cards-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75em;
+	flex-wrap: wrap;
+	padding-top: 0.75em;
+	border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bc-task-source-count {
+	font-size: 0.9em;
+	opacity: 0.75;
+}
+
+.bc-task-continue {
+	padding: 0.4em 1.1em;
+	border: 1px solid var(--SmartThemeQuoteColor);
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+	transition: background-color 0.15s ease;
+}
+
+.bc-task-continue:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 75%, var(--SmartThemeQuoteColor) 25%);
+}
+
+.bc-task-continue:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-continue:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* --- Reduced motion --- */
+
+@media (prefers-reduced-motion: reduce) {
+	.bc-task-card-button,
+	.bc-task-picker-add,
+	.bc-task-continue {
+		transition: none;
+	}
+}
+
+/* --- Narrow screens: controls wrap below the card body --- */
+
+@media (max-width: 600px) {
+	.bc-task-card {
+		grid-template-columns: 2.75em minmax(0, 1fr);
+	}
+
+	.bc-task-card-avatar {
+		width: 2.75em;
+		height: 2.75em;
+	}
+
+	.bc-task-card-controls {
+		grid-column: 1 / -1;
+		justify-content: flex-end;
+	}
+}

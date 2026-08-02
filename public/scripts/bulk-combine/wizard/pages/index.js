@@ -17,6 +17,8 @@
 
 // Real page factories are imported and wired here as each page lands.
 
+import { createCardsPage } from './cardsPage.js';
+
 /**
  * Builds the page-module overrides for the guided task wizard.
  *
@@ -24,6 +26,6 @@
  */
 export function createWizardPageOverrides() {
     return {
-        // Wired as pages land (11c: cards, 11d: prompt, 11e: transform pages, ...).
+        cards: createCardsPage(),
     };
 }
