@@ -18,6 +18,7 @@
 // Real page factories are imported and wired here as each page lands.
 
 import { createCardsPage } from './cardsPage.js';
+import { createPromptSettingsPage } from './promptSettingsPage.js';
 
 /**
  * Builds the page-module overrides for the guided task wizard.
@@ -27,5 +28,6 @@ import { createCardsPage } from './cardsPage.js';
 export function createWizardPageOverrides() {
     return {
         cards: createCardsPage(),
+        prompt: createPromptSettingsPage(),
     };
 }

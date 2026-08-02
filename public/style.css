@@ -18,6 +18,7 @@
 @import url(css/streaming-display.css);
 @import url(scripts/bulk-combine/styles.css);
 @import url(scripts/bulk-combine/wizard/pages/cardsPage.css);
+@import url(scripts/bulk-combine/wizard/pages/promptSettingsPage.css);
 
 :root {
 	interpolate-size: allow-keywords;
