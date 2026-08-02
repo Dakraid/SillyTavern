@@ -225,6 +225,118 @@ function setJsonObjectFormat(bodyParams, messages, jsonSchema) {
 }
 
 /**
+ * Gets the cancellation signal for a generation request.
+ * Programmatic callers provide a signal directly; HTTP requests retain socket-close cancellation.
+ * @param {import('express').Request & {signal?: AbortSignal}} request Generation request
+ * @returns {{signal: AbortSignal}} Cancellation controller
+ */
+function getGenerationController(request) {
+    if (request.signal) {
+        return { signal: request.signal };
+    }
+
+    const controller = new AbortController();
+    request.socket.removeAllListeners('close');
+    request.socket.on('close', function () {
+        controller.abort();
+    });
+    return controller;
+}
+
+/**
+ * Extracts text content from provider responses without changing their raw data.
+ * @param {any} data Provider response data
+ * @returns {string} Completion content
+ */
+function getCompletionContent(data) {
+    const content = data?.choices?.[0]?.message?.content
+        ?? data?.choices?.[0]?.text
+        ?? data?.message?.content
+        ?? data?.text;
+
+    if (typeof content === 'string') {
+        return content;
+    }
+
+    if (Array.isArray(content)) {
+        return content
+            .map(part => typeof part === 'string' ? part : part?.text)
+            .filter(part => typeof part === 'string')
+            .join('');
+    }
+
+    return '';
+}
+
+/**
+ * Executes a non-streaming Chat Completion through the same dispatcher as the HTTP route.
+ * @param {object} options Execution options
+ * @param {object} options.body Chat Completion request body
+ * @param {import('../../users.js').UserDirectoryList} options.userDirectories User directories used to resolve credentials
+ * @param {AbortSignal} [options.signal] Cancellation signal
+ * @returns {Promise<{status: number, data: any, content: string}>} Normalized completion result
+ */
+export async function executeChatCompletion({ body, userDirectories, signal }) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new TypeError('Chat Completion body must be an object.');
+    }
+
+    if (body.stream) {
+        throw new TypeError('Programmatic Chat Completion execution is non-streaming.');
+    }
+
+    let status = 200;
+    let data;
+    let headersSent = false;
+    let writableEnded = false;
+    const resultResponse = {
+        get headersSent() {
+            return headersSent;
+        },
+        get writableEnded() {
+            return writableEnded;
+        },
+        status(value) {
+            status = value;
+            return resultResponse;
+        },
+        send(value) {
+            data = value;
+            headersSent = true;
+            writableEnded = true;
+            return value;
+        },
+        sendStatus(value) {
+            status = value;
+            headersSent = true;
+            writableEnded = true;
+            return value;
+        },
+        write(value) {
+            data = value;
+            headersSent = true;
+            return true;
+        },
+        end() {
+            headersSent = true;
+            writableEnded = true;
+        },
+    };
+
+    await dispatchChatCompletion({
+        body: structuredClone(body),
+        user: { directories: userDirectories },
+        signal: signal ?? new AbortController().signal,
+    }, resultResponse);
+
+    if (status >= 200 && status < 300 && data?.error) {
+        status = 502;
+    }
+
+    return { status, data, content: getCompletionContent(data) };
+}
+
+/**
  * Sends a request to Claude API.
  * @param {express.Request} request Express request
  * @param {express.Response} response Express response
@@ -246,11 +358,7 @@ async function sendClaudeRequest(request, response) {
     }
 
     try {
-        const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            controller.abort();
-        });
+        const controller = getGenerationController(request);
         const additionalHeaders = {};
         const betaHeaders = ['output-128k-2025-02-19', 'context-1m-2025-08-07'];
         const useTools =
@@ -796,11 +904,7 @@ async function sendMakerSuiteRequest(request, response) {
     console.debug(`${apiName} request:`, body);
 
     try {
-        const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            controller.abort();
-        });
+        const controller = getGenerationController(request);
 
         const apiVersion = getConfigValue('gemini.apiVersion', 'v1beta');
         const responseType = stream ? 'streamGenerateContent' : 'generateContent';
@@ -963,11 +1067,7 @@ async function sendAI21Request(request, response) {
     }
 
     const bodyParams = {};
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    const controller = getGenerationController(request);
     // Hack to support JSON schema
     if (request.body.json_schema) {
         bodyParams.response_format = {
@@ -1062,11 +1162,7 @@ async function sendMistralAIRequest(request, response) {
             request.body.messages,
             getPromptNames(request),
         );
-        const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            controller.abort();
-        });
+        const controller = getGenerationController(request);
 
         const requestBody = {
             model: request.body.model,
@@ -1152,11 +1248,7 @@ async function sendCohereRequest(request, response) {
         SECRET_KEYS.COHERE,
         request.body.secret_id,
     );
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    const controller = getGenerationController(request);
 
     if (!apiKey) {
         console.warn('Cohere API key is missing.');
@@ -1270,11 +1362,7 @@ async function sendDeepSeekRequest(request, response) {
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    const controller = getGenerationController(request);
 
     try {
         let bodyParams = {};
@@ -1400,11 +1488,7 @@ async function sendXaiRequest(request, response) {
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    const controller = getGenerationController(request);
 
     try {
         let bodyParams = {};
@@ -1516,11 +1600,7 @@ async function sendAimlapiRequest(request, response) {
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    const controller = getGenerationController(request);
 
     try {
         let bodyParams = {};
@@ -1627,11 +1707,7 @@ async function sendElectronHubRequest(request, response) {
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    const controller = getGenerationController(request);
 
     try {
         let bodyParams = {};
@@ -1747,11 +1823,7 @@ async function sendChutesRequest(request, response) {
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    const controller = getGenerationController(request);
 
     try {
         let bodyParams = {};
@@ -1855,11 +1927,7 @@ async function sendMinimaxRequest(request, response) {
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    const controller = getGenerationController(request);
 
     try {
         // MiniMax does not allow consecutive messages with the same role.
@@ -2001,9 +2069,7 @@ async function sendAzureOpenAIRequest(request, response) {
 			request.body.reasoning_effort)
         : undefined;
 
-    const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', () => controller.abort());
+    const controller = getGenerationController(request);
 
     const config = {
         method: 'POST',
@@ -2719,7 +2785,13 @@ router.post('/bias', async function (request, response) {
     }
 });
 
-router.post('/generate', async function (request, response) {
+/**
+ * Dispatches a Chat Completion request to its existing provider implementation.
+ * @param {import('express').Request | {body: object, user: object, signal?: AbortSignal}} request Generation request
+ * @param {import('express').Response | object} response Response sink
+ * @returns {Promise<any>} Provider response
+ */
+export async function dispatchChatCompletion(request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
 
@@ -3310,11 +3382,7 @@ router.post('/generate', async function (request, response) {
 			    ? `${apiUrl}/completions`
 			    : `${apiUrl}/chat/completions`;
 
-        const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            controller.abort();
-        });
+        const controller = getGenerationController(request);
 
         if (
             !isTextCompletion &&
@@ -3418,7 +3486,9 @@ router.post('/generate', async function (request, response) {
             response.end();
         }
     }
-});
+}
+
+router.post('/generate', dispatchChatCompletion);
 
 const multimodalModels = express.Router();
 

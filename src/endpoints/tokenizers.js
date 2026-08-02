@@ -1214,86 +1214,78 @@ router.post('/openai/decode', async function (req, res) {
     }
 });
 
-router.post('/openai/count', async function (req, res) {
+/**
+ * Counts tokens in an OpenAI-style message array using the tokenizer selected for a model.
+ * @param {object[]} messages OpenAI-style messages
+ * @param {unknown} queryModel Requested model name
+ * @returns {Promise<number>} Token count
+ */
+export async function countOpenAIMessageTokens(messages, queryModel) {
     try {
-        if (!req.body) return res.sendStatus(400);
-
         let num_tokens = 0;
-        const queryModel = String(req.query.model || '');
+        queryModel = String(queryModel || '');
         const model = getTokenizerModel(queryModel);
 
         if (model === 'claude') {
             const instance = await claude_tokenizer.get();
             if (!instance) throw new Error('Failed to load the Claude tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return countWebTokenizerTokens(instance, messages);
         }
 
         if (model === 'llama3' || model === 'llama-3') {
             const instance = await llama3_tokenizer.get();
             if (!instance) throw new Error('Failed to load the Llama3 tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return countWebTokenizerTokens(instance, messages);
         }
 
         if (model === 'llama') {
-            num_tokens = await countSentencepieceArrayTokens(spp_llama, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return await countSentencepieceArrayTokens(spp_llama, messages);
         }
 
         if (model === 'mistral') {
-            num_tokens = await countSentencepieceArrayTokens(spp_mistral, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return await countSentencepieceArrayTokens(spp_mistral, messages);
         }
 
         if (model === 'yi') {
-            num_tokens = await countSentencepieceArrayTokens(spp_yi, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return await countSentencepieceArrayTokens(spp_yi, messages);
         }
 
         if (model === 'gemma' || model === 'gemini') {
-            num_tokens = await countSentencepieceArrayTokens(spp_gemma, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return await countSentencepieceArrayTokens(spp_gemma, messages);
         }
 
         if (model === 'jamba') {
-            num_tokens = await countSentencepieceArrayTokens(spp_jamba, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return await countSentencepieceArrayTokens(spp_jamba, messages);
         }
 
         if (model === 'qwen2') {
             const instance = await qwen2Tokenizer.get();
             if (!instance) throw new Error('Failed to load the Qwen2 tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return countWebTokenizerTokens(instance, messages);
         }
 
         if (model === 'command-r') {
             const instance = await commandRTokenizer.get();
             if (!instance) throw new Error('Failed to load the Command-R tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return countWebTokenizerTokens(instance, messages);
         }
 
         if (model === 'command-a') {
             const instance = await commandATokenizer.get();
             if (!instance) throw new Error('Failed to load the Command-A tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return countWebTokenizerTokens(instance, messages);
         }
 
         if (model === 'nemo') {
             const instance = await nemoTokenizer.get();
             if (!instance) throw new Error('Failed to load the Nemo tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return countWebTokenizerTokens(instance, messages);
         }
 
         if (model === 'deepseek') {
             const instance = await deepseekTokenizer.get();
             if (!instance) throw new Error('Failed to load the DeepSeek tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
+            return countWebTokenizerTokens(instance, messages);
         }
 
         const tokensPerName = queryModel.includes('gpt-3.5-turbo-0301') ? -1 : 1;
@@ -1302,7 +1294,7 @@ router.post('/openai/count', async function (req, res) {
 
         const tokenizer = getTiktokenTokenizer(model);
 
-        for (const msg of req.body) {
+        for (const msg of messages) {
             try {
                 num_tokens += tokensPerMessage;
                 for (const [key, value] of Object.entries(msg)) {
@@ -1326,13 +1318,20 @@ router.post('/openai/count', async function (req, res) {
         // not needed for cached tokenizers
         //tokenizer.free();
 
-        res.send({ 'token_count': num_tokens });
+        return num_tokens;
     } catch (error) {
         console.error('An error counting tokens, using fallback estimation method', error);
-        const jsonBody = JSON.stringify(req.body);
-        const num_tokens = guesstimate(jsonBody);
-        res.send({ 'token_count': num_tokens });
+        const jsonBody = JSON.stringify(messages);
+        return guesstimate(jsonBody);
     }
+}
+
+router.post('/openai/count', async function (req, res) {
+    if (!req.body) return res.sendStatus(400);
+
+    const queryModel = String(req.query.model || '');
+    const num_tokens = await countOpenAIMessageTokens(req.body, queryModel);
+    return res.send({ 'token_count': num_tokens });
 });
 
 router.post('/remote/kobold/count', async function (request, response) {
