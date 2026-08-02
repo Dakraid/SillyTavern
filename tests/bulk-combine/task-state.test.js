@@ -54,7 +54,7 @@ describe('Bulk Combine task state', () => {
         });
         expect(task.prompts.main).toEqual({
             text: '',
-            assistant: { request: '', proposal: '', diff: '', applied: false },
+            assistant: { request: '', proposal: '', diff: '', applied: false, error: '' },
         });
         expect(task.passes.transform1).toEqual({ status: 'pending', inputRevision: null, items: {} });
         expect(task.passes.transform2).toEqual({ status: 'pending', inputRevision: null, items: {} });

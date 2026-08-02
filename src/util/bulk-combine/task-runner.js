@@ -1,3 +1,5 @@
+import DiffMatchPatch from 'diff-match-patch';
+
 import { runWithConcurrency, throwIfAborted, withRetries } from '../job-manager.js';
 import { applyPostProcess, buildMergedCardDescription } from './artifact-assembler.js';
 import { computePassInputHash, hashInputs } from './task-state.js';
@@ -11,8 +13,10 @@ import {
 } from './prompt-builders.js';
 
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
+const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
 const RESUMABLE_STATUSES = new Set(['pending', 'failed', 'interrupted', 'queued']);
 const COMBINED_KEY = '__combined__';
+const dmp = new DiffMatchPatch();
 
 function newItem(existing = {}) {
     return {
@@ -38,6 +42,12 @@ function completionContent(result) {
         throw completionError(result);
     }
     return typeof result.content === 'string' ? result.content : String(result.content ?? '');
+}
+
+function stripCodeFences(content) {
+    const trimmed = content.trim();
+    const fenced = trimmed.match(/^```[^\r\n]*\r?\n([\s\S]*?)\r?\n?```$/);
+    return (fenced?.[1] ?? trimmed).trim();
 }
 
 function promptText(task, passKey) {
@@ -361,6 +371,66 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         }
     }
 
+    async function runPromptAssist({ taskId, promptKey, repo, userDirectories }) {
+        if (active.has(taskId)) throw new TaskAlreadyRunningError(taskId);
+        if (!PROMPT_KEYS.includes(promptKey)) throw new TypeError(`Invalid prompt key: ${promptKey}`);
+
+        active.add(taskId);
+        const controller = new AbortController();
+        controllers.set(taskId, controller);
+        const { signal } = controller;
+
+        try {
+            const task = await repo.getTask(taskId);
+            const original = task.prompts[promptKey].text;
+            const request = task.prompts[promptKey].assistant.request;
+            if (!request.trim()) return { status: 'skipped' };
+
+            try {
+                const instruction = `You are helping refine a prompt.\n\nCURRENT PROMPT:\n${original}\n\nREFINEMENT REQUEST:\n${request}\n\nReturn ONLY the revised prompt text, with no commentary or code fences.`;
+                const proposal = stripCodeFences(await withRetries(async () => {
+                    throwIfAborted(signal);
+                    return completionContent(await executeCompletion({
+                        body: {
+                            ...(task.completion || {}),
+                            messages: [{ role: 'user', content: instruction }],
+                            stream: false,
+                        },
+                        userDirectories,
+                        signal,
+                    }));
+                }, signal, 3));
+                const diff = dmp.patch_toText(dmp.patch_make(original, proposal));
+                await repo.checkpoint(taskId, draft => {
+                    draft.prompts[promptKey].assistant = {
+                        request,
+                        proposal,
+                        diff,
+                        applied: false,
+                        error: '',
+                    };
+                });
+                sendEvent(taskId, promptKey, 'prompt_assist_completed');
+                return { status: 'succeeded', proposal };
+            } catch (error) {
+                await repo.checkpoint(taskId, draft => {
+                    draft.prompts[promptKey].assistant = {
+                        request,
+                        proposal: '',
+                        diff: '',
+                        applied: false,
+                        error: String(error),
+                    };
+                });
+                sendEvent(taskId, promptKey, 'prompt_assist_failed', { error: String(error) });
+                throw error;
+            }
+        } finally {
+            active.delete(taskId);
+            controllers.delete(taskId);
+        }
+    }
+
     async function runPostProcess({ taskId, repo, userDirectories }) {
         if (active.has(taskId)) throw new TaskAlreadyRunningError(taskId);
 
@@ -447,5 +517,5 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         return true;
     }
 
-    return { runPass, runPostProcess, resume, cancel };
+    return { runPass, runPromptAssist, runPostProcess, resume, cancel };
 }

@@ -21,6 +21,7 @@ import {
 
 const TASKS_DIRECTORY = 'bulk-combine-tasks';
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
+const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const SANITIZER_ALLOWED_KEYS = new Set([
     'secret_id',
@@ -164,6 +165,36 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
     taskRouter.post('/tasks/:id/unarchive', route(async (request, response) => {
         const repo = await getRepo(request);
         return response.send(await repo.setArchived(request.params.id, false));
+    }));
+
+    // Apply and Dismiss intentionally use the generic PATCH route: only Apply changes prompt.text,
+    // which naturally marks dependent generated output stale through the input-hash contract.
+    taskRouter.post('/tasks/:id/prompts/:promptKey/assist', route(async (request, response) => {
+        const promptKey = request.params.promptKey;
+        if (!PROMPT_KEYS.includes(promptKey)) throw new TaskValidationError('Invalid prompt key');
+        if (typeof request.body?.request !== 'string') throw new TaskValidationError('Prompt assist request must be a string');
+
+        const repo = await getRepo(request);
+        await repo.getTask(request.params.id);
+        const hasCompletionSettings = Object.hasOwn(request.body, 'completionSettings');
+        const completion = hasCompletionSettings
+            ? sanitizeCompletionSettings(request.body.completionSettings)
+            : null;
+        const task = await repo.checkpoint(request.params.id, draft => {
+            draft.prompts[promptKey].assistant = {
+                ...draft.prompts[promptKey].assistant,
+                request: request.body.request,
+                applied: false,
+            };
+            if (hasCompletionSettings) draft.completion = completion;
+        });
+        taskRunner.runPromptAssist({
+            taskId: request.params.id,
+            promptKey,
+            repo,
+            userDirectories: request.user.directories,
+        }).catch(error => console.error('Bulk Combine prompt assistance failed:', error));
+        return response.status(202).send(task);
     }));
 
     taskRouter.post('/tasks/:id/passes/:pass/run', route(async (request, response) => {

@@ -67,6 +67,10 @@ function completion(content) {
     return { status: 200, data: {}, content };
 }
 
+function completionErrorResponse() {
+    return { status: 400, data: { error: { message: 'provider rejected request' } } };
+}
+
 beforeEach(async () => {
     const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'st-bulk-runner-'));
     tempRoots.push(root);
@@ -368,6 +372,152 @@ describe('bulk combine task runner', () => {
         expect(prompts[1]).toContain('Transform two output');
         expect(stored.passes.summary.items.a.output).toBe('Summary text');
         expect(summary.items).toEqual({ a: 'succeeded', b: 'skipped' });
+    });
+
+    test('stores a prompt-assist proposal and patch without changing the prompt', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.prompts.main.assistant.request = 'Make it concise';
+        });
+        const executeCompletion = jest.fn(async () => completion('Transform each character concisely.'));
+        const events = [];
+        const runner = createTaskRunner({
+            executeCompletion,
+            countTokens: async () => 1,
+            emit: (_taskId, event) => events.push(event),
+        });
+
+        const result = await runner.runPromptAssist({
+            taskId: task.id,
+            promptKey: 'main',
+            repo,
+            userDirectories: { root: 'user' },
+        });
+        const stored = await repo.getTask(task.id);
+
+        expect(result).toEqual({ status: 'succeeded', proposal: 'Transform each character concisely.' });
+        expect(stored.prompts.main.text).toBe('Transform the character');
+        expect(stored.prompts.main.assistant).toMatchObject({
+            request: 'Make it concise',
+            proposal: 'Transform each character concisely.',
+            diff: expect.any(String),
+            applied: false,
+            error: '',
+        });
+        expect(stored.prompts.main.assistant.diff).not.toBe('');
+        expect(executeCompletion).toHaveBeenCalledWith(expect.objectContaining({
+            body: {
+                messages: [{
+                    role: 'user',
+                    content: 'You are helping refine a prompt.\n\nCURRENT PROMPT:\nTransform the character\n\nREFINEMENT REQUEST:\nMake it concise\n\nReturn ONLY the revised prompt text, with no commentary or code fences.',
+                }],
+                stream: false,
+            },
+            userDirectories: { root: 'user' },
+            signal: expect.any(AbortSignal),
+        }));
+        expect(events.at(-1).type).toBe('prompt_assist_completed');
+    });
+
+    test('skips prompt assistance with an empty request without calling the LLM', async () => {
+        const task = await createTask({ count: 1 });
+        const executeCompletion = jest.fn();
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        await expect(runner.runPromptAssist({
+            taskId: task.id,
+            promptKey: 'main',
+            repo,
+            userDirectories: {},
+        })).resolves.toEqual({ status: 'skipped' });
+
+        expect(executeCompletion).not.toHaveBeenCalled();
+    });
+
+    test('shares the active guard with prompt assistance and rejects invalid prompt keys', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.prompts.main.assistant.request = 'Rewrite it';
+        });
+        let release;
+        const waiting = new Promise(resolve => {
+            release = resolve;
+        });
+        const executeCompletion = jest.fn(async () => {
+            await waiting;
+            return completion('Rewritten prompt');
+        });
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+        const running = runner.runPromptAssist({
+            taskId: task.id,
+            promptKey: 'main',
+            repo,
+            userDirectories: {},
+        });
+
+        await expect(runner.runPromptAssist({
+            taskId: task.id,
+            promptKey: 'summary',
+            repo,
+            userDirectories: {},
+        })).rejects.toBeInstanceOf(TaskAlreadyRunningError);
+        release();
+        await running;
+        await expect(runner.runPromptAssist({
+            taskId: task.id,
+            promptKey: 'unknown',
+            repo,
+            userDirectories: {},
+        })).rejects.toThrow('Invalid prompt key: unknown');
+    });
+
+    test('checkpoints and emits a prompt-assist failure without changing the prompt', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.prompts.summary.assistant.request = 'Shorten it';
+        });
+        const events = [];
+        const runner = createTaskRunner({
+            executeCompletion: jest.fn(async () => completionErrorResponse()),
+            countTokens: async () => 1,
+            emit: (_taskId, event) => events.push(event),
+        });
+
+        await expect(runner.runPromptAssist({
+            taskId: task.id,
+            promptKey: 'summary',
+            repo,
+            userDirectories: {},
+        })).rejects.toThrow('provider rejected request');
+        const stored = await repo.getTask(task.id);
+
+        expect(stored.prompts.summary.text).toBe('Summarize the character');
+        expect(stored.prompts.summary.assistant).toEqual({
+            request: 'Shorten it',
+            proposal: '',
+            diff: '',
+            applied: false,
+            error: 'Error: provider rejected request',
+        });
+        expect(events.at(-1)).toMatchObject({
+            type: 'prompt_assist_failed',
+            error: 'Error: provider rejected request',
+        });
+    });
+
+    test('strips accidental code fences from a prompt-assist proposal', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.prompts.post.assistant.request = 'Improve it';
+        });
+        const runner = createTaskRunner({
+            executeCompletion: jest.fn(async () => completion('```text\nImproved prompt\n```')),
+            countTokens: async () => 1,
+        });
+
+        await runner.runPromptAssist({ taskId: task.id, promptKey: 'post', repo, userDirectories: {} });
+
+        expect((await repo.getTask(task.id)).prompts.post.assistant.proposal).toBe('Improved prompt');
     });
 
     test('runs one post-process completion and checkpoints the applied mode output', async () => {

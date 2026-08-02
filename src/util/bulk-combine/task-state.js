@@ -25,7 +25,7 @@ function clone(value, fallback) {
 }
 
 function newAssistantProposal() {
-    return { request: '', proposal: '', diff: '', applied: false };
+    return { request: '', proposal: '', diff: '', applied: false, error: '' };
 }
 
 function newPrompt() {
@@ -153,6 +153,7 @@ function normalizePrompt(input) {
         proposal: typeof assistant.proposal === 'string' ? assistant.proposal : '',
         diff: typeof assistant.diff === 'string' ? assistant.diff : '',
         applied: typeof assistant.applied === 'boolean' ? assistant.applied : false,
+        error: typeof assistant.error === 'string' ? assistant.error : '',
     };
     return prompt;
 }
@@ -235,7 +236,7 @@ function isPrompt(value) {
     return isRecord(value)
         && typeof value.text === 'string'
         && isRecord(value.assistant)
-        && ['request', 'proposal', 'diff'].every(key => typeof value.assistant[key] === 'string')
+        && ['request', 'proposal', 'diff', 'error'].every(key => typeof value.assistant[key] === 'string')
         && typeof value.assistant.applied === 'boolean';
 }
 

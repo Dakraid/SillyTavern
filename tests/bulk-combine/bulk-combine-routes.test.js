@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 
 import { BulkCombineTaskRepository } from '../../src/util/bulk-combine/task-repository.js';
 import { createTaskEventBus } from '../../src/util/bulk-combine/task-events.js';
+import { computePassInputHash } from '../../src/util/bulk-combine/task-state.js';
 
 jest.unstable_mockModule('../../src/users.js', () => ({
     getAllUserHandles: jest.fn(async () => []),
@@ -85,6 +86,7 @@ beforeEach(async () => {
     tempRoots.push(userRoot);
     eventBus = createTaskEventBus();
     fakeRunner = {
+        runPromptAssist: jest.fn(async () => null),
         runPass: jest.fn(async () => null),
         runPostProcess: jest.fn(async () => null),
         resume: jest.fn(async () => null),
@@ -239,6 +241,82 @@ describe('/api/bulk-combine task routes', () => {
             stop: ['END'],
         });
         expect(sanitizeCompletionSettings(null)).toEqual({});
+    });
+
+    test('starts prompt assistance, stores its request, and applies the proposal through PATCH', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Prompt assist' } })).body;
+        const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
+        const prepared = await repo.checkpoint(created.id, draft => {
+            draft.sources = [{ key: 'a', name: 'Alice', fields: { name: 'Alice', description: 'Original' } }];
+            draft.prompts.main.text = 'Original prompt';
+            draft.passes.transform1.items.a = { status: 'succeeded', output: 'Existing output' };
+            draft.passes.transform1.inputRevision = computePassInputHash(draft, 'transform1');
+        });
+
+        const assist = await invoke('post', '/tasks/:id/prompts/:promptKey/assist', {
+            params: { id: created.id, promptKey: 'main' },
+            body: {
+                request: 'Make it shorter',
+                completionSettings: {
+                    model: 'test-model',
+                    api_key: 'plaintext-secret',
+                },
+            },
+        });
+
+        expect(assist.statusCode).toBe(202);
+        expect(assist.body).toMatchObject({
+            id: created.id,
+            completion: { model: 'test-model' },
+            prompts: {
+                main: {
+                    text: 'Original prompt',
+                    assistant: { request: 'Make it shorter', applied: false },
+                },
+            },
+        });
+        expect(assist.body.completion).not.toHaveProperty('api_key');
+        expect(fakeRunner.runPromptAssist).toHaveBeenCalledWith({
+            taskId: created.id,
+            promptKey: 'main',
+            repo: expect.any(BulkCombineTaskRepository),
+            userDirectories: { root: userRoot },
+        });
+
+        const applied = await invoke('patch', '/tasks/:id', {
+            params: { id: created.id },
+            body: {
+                expectedRevision: assist.body.revision,
+                patch: {
+                    prompts: {
+                        main: {
+                            text: 'Revised prompt',
+                            assistant: {
+                                request: 'Make it shorter',
+                                proposal: 'Revised prompt',
+                                diff: '@@ -1,15 +1,14 @@\n-Original\n+Revised\n  prompt\n',
+                                applied: true,
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const fetched = await invoke('get', '/tasks/:id', { params: { id: created.id } });
+
+        expect(prepared.passes.transform1.inputRevision).toBeTruthy();
+        expect(applied.body.prompts.main).toMatchObject({
+            text: 'Revised prompt',
+            assistant: { proposal: 'Revised prompt', applied: true },
+        });
+        expect(fetched.body.derivedStaleness.transform1).toEqual({ stale: true, reason: 'input_changed' });
+
+        const invalid = await invoke('post', '/tasks/:id/prompts/:promptKey/assist', {
+            params: { id: created.id, promptKey: 'unknown' },
+            body: { request: 'Rewrite' },
+        });
+        expect(invalid.statusCode).toBe(400);
+        expect(fakeRunner.runPromptAssist).toHaveBeenCalledTimes(1);
     });
 
     test('starts a pass in the background and stores sanitized completion settings', async () => {
