@@ -430,7 +430,7 @@ const calculateDataSize = (data) => {
  * @param {object} character Character object
  * @returns {{shallow: true, [key: string]: any}} Shallow character
  */
-const toShallow = (character) => {
+export const toShallow = (character) => {
     return {
         shallow: true,
         name: character.name,
@@ -453,6 +453,7 @@ const toShallow = (character) => {
                 fav: _.get(character, 'data.extensions.fav', false),
                 world: _.get(character, 'data.extensions.world', ''),
                 group_card_wizard: _.get(character, 'data.extensions.group_card_wizard', null),
+                bulk_combine_task: _.get(character, 'data.extensions.bulk_combine_task', null),
             },
         },
     };

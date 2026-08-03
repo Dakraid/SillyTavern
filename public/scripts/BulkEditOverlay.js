@@ -37,6 +37,7 @@ import {
 } from './bulk-combine/helpers.js';
 
 import { openCombineWizard } from './bulk-combine/index.js';
+import { openTaskWizard } from './bulk-combine/wizard/TaskWizardController.js';
 
 /**
  * Triggers a browser download for a Blob.
@@ -119,6 +120,37 @@ class CharacterContextMenu {
     };
 
     /**
+     * Re-opens the durable Bulk Combine task that created a character.
+     *
+     * @param {number} characterId
+     * @returns {Promise<void>}
+     */
+    static rerunBulkCombine = async (characterId) => {
+        const taskId = CharacterContextMenu.#getCharacter(characterId)?.data?.extensions?.bulk_combine_task;
+        if (!taskId) {
+            return;
+        }
+
+        try {
+            await openTaskWizard(String(taskId));
+        } catch (error) {
+            console.error('Failed to re-open the source Bulk Combine task.', error);
+            const message = String(error?.message ?? error);
+            if (message.includes('task_not_found')) {
+                toastr.error(
+                    t`The source combine task no longer exists.`,
+                    t`Combine into Group Card`,
+                );
+                return;
+            }
+            toastr.error(
+                t`Failed to open the source combine task.`,
+                t`Combine into Group Card`,
+            );
+        }
+    };
+
+    /**
 	 * Favorite a character
 	 * and highlight it.
 	 *
@@ -190,10 +222,17 @@ class CharacterContextMenu {
 	 * @param positionX
 	 * @param positionY
 	 */
-    static show = (positionX, positionY) => {
+    static show = (positionX, positionY, characterId = null) => {
         let contextMenu = document.getElementById(BulkEditOverlay.contextMenuId);
         contextMenu.style.left = `${positionX}px`;
         contextMenu.style.top = `${positionY}px`;
+
+        const rerunButton = document.getElementById('character_context_menu_bulk_combine_rerun');
+        const canRerun = Boolean(
+            CharacterContextMenu.#getCharacter(characterId)?.data?.extensions?.bulk_combine_task,
+        );
+        rerunButton.disabled = !canRerun;
+        rerunButton.closest('li')?.classList.toggle('hidden', !canRerun);
 
         document
             .getElementById(BulkEditOverlay.contextMenuId)
@@ -239,6 +278,10 @@ class CharacterContextMenu {
             {
                 id: 'character_context_menu_persona',
                 callback: characterGroupOverlay.handleContextMenuPersona,
+            },
+            {
+                id: 'character_context_menu_bulk_combine_rerun',
+                callback: characterGroupOverlay.handleContextMenuRerunBulkCombine,
             },
             {
                 id: 'bulk_select_combine_group_card',
@@ -914,7 +957,10 @@ class BulkEditOverlay {
                 } else if (this.state === BulkEditOverlayState.select) {
                     this.#contextMenuOpen = true;
                     const [x, y] = this.#getContextMenuPosition(event);
-                    CharacterContextMenu.show(x, y);
+                    const characterId = this.selectedCharacters.length === 1
+                        ? this.selectedCharacters[0]
+                        : null;
+                    CharacterContextMenu.show(x, y, characterId);
                 }
             }
 
@@ -1192,7 +1238,10 @@ class BulkEditOverlay {
     handleContextMenuShow = (event) => {
         event.preventDefault();
         const [x, y] = this.#getContextMenuPosition(event);
-        CharacterContextMenu.show(x, y);
+        const characterId = this.selectedCharacters.length === 1
+            ? this.selectedCharacters[0]
+            : null;
+        CharacterContextMenu.show(x, y, characterId);
         this.#contextMenuOpen = true;
     };
 
@@ -1308,6 +1357,22 @@ class BulkEditOverlay {
         }
 
         this.browseState();
+    };
+
+    /**
+     * Re-opens the source task for one selected Bulk Combine card.
+     *
+     * @returns {Promise<void>}
+     */
+    handleContextMenuRerunBulkCombine = async () => {
+        const characterId = this.selectedCharacters.length === 1
+            ? this.selectedCharacters[0]
+            : null;
+        try {
+            await CharacterContextMenu.rerunBulkCombine(characterId);
+        } finally {
+            this.browseState();
+        }
     };
 
     /**

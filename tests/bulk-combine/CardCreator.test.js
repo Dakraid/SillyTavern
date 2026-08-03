@@ -1,6 +1,6 @@
-'use strict';
-
 /* eslint-disable playwright/prefer-web-first-assertions -- Jest/jsdom suite; no Playwright matchers. */
+
+'use strict';
 
 /**
  * Unit tests for `public/scripts/bulk-combine/services/CardCreator.js`.
@@ -281,7 +281,10 @@ describe('createGroupCardFromTask', () => {
         expect(callBody(0).description).toBe('Edited description.');
         expect(callBody(0).creator_notes).toBe('Generated group card from: Alice, Bob');
         expect(callBody(0).creator_notes).not.toContain('[group_card_wizard]');
-        expect(callBody(0).extensions).toEqual({ world: '' });
+        expect(callBody(0).extensions).toEqual({
+            world: '',
+            bulk_combine_task: task.id,
+        });
         expect(global.fetch).not.toHaveBeenCalled(); // no avatar data URL
     });
 

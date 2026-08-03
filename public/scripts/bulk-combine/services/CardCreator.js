@@ -212,9 +212,10 @@ async function createLorebookRecord(request, lorebookData) {
  * @param {string} [options.firstMes] First message.
  * @param {Array<string>} [options.alternateGreetings] Alternate greetings.
  * @param {object|null} [options.wizardMeta] Group card wizard metadata.
+ * @param {string|null} [options.taskId] Source durable Bulk Combine task id.
  * @returns {object} Character creation payload.
  */
-function buildGroupCardCharacterData({ groupName, description, sourceNames, createLorebook, firstMes = '', alternateGreetings = [], wizardMeta = null }) {
+function buildGroupCardCharacterData({ groupName, description, sourceNames, createLorebook, firstMes = '', alternateGreetings = [], wizardMeta = null, taskId = null }) {
     return {
         name: groupName,
         ch_name: groupName,
@@ -241,6 +242,7 @@ function buildGroupCardCharacterData({ groupName, description, sourceNames, crea
         extensions: {
             ...(createLorebook ? {} : { world: '' }),
             ...(wizardMeta ? { [GROUP_CARD_WIZARD_METADATA_KEY]: wizardMeta } : {}),
+            ...(taskId ? { bulk_combine_task: taskId } : {}),
         },
     };
 }
@@ -607,6 +609,7 @@ export async function createGroupCardFromTask(task, reviewPayload, avatarDataUrl
         firstMes,
         alternateGreetings: [],
         wizardMeta: null,
+        taskId: task.id,
     });
 
     const avatar = await createOrUpdateGroupCharacter(request, characterData, { createLorebook });
