@@ -51,19 +51,6 @@ export {
     readCreatedCharacterAvatar,
 } from './services/CardCreator.js';
 
-export {
-    getGroupCardCombinePromptPresets,
-    findGroupCardCombinePromptPresetIndex,
-    saveGroupCardCombinePromptPreset,
-    deleteGroupCardCombinePromptPreset,
-    renderGroupCardCombinePromptPresetSelect,
-    getGroupCardPostMergePromptPresets,
-    findGroupCardPostMergePromptPresetIndex,
-    saveGroupCardPostMergePromptPreset,
-    deleteGroupCardPostMergePromptPreset,
-    renderGroupCardPostMergePromptPresetSelect,
-} from './services/PresetManager.js';
-
 export { TaskWizardController } from './wizard/TaskWizardController.js';
 export { TaskWizardState, computePageStates, TASK_WIZARD_PAGES } from './wizard/TaskWizardState.js';
 

@@ -60,7 +60,10 @@
 .bc-task-save-prompt,
 .bc-task-suggest,
 .bc-task-apply-proposal,
-.bc-task-dismiss-proposal {
+.bc-task-dismiss-proposal,
+.bc-task-preset-apply,
+.bc-task-preset-save,
+.bc-task-preset-delete {
 	padding: 0.35em 1em;
 	border: 1px solid var(--SmartThemeBorderColor);
 	border-radius: 8px;
@@ -80,22 +83,51 @@
 .bc-task-save-prompt:hover:not(:disabled),
 .bc-task-suggest:hover:not(:disabled),
 .bc-task-apply-proposal:hover:not(:disabled),
-.bc-task-dismiss-proposal:hover:not(:disabled) {
+.bc-task-dismiss-proposal:hover:not(:disabled),
+.bc-task-preset-apply:hover:not(:disabled),
+.bc-task-preset-save:hover:not(:disabled),
+.bc-task-preset-delete:hover:not(:disabled) {
 	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 80%, var(--SmartThemeQuoteColor) 20%);
 }
 
 .bc-task-save-prompt:focus-visible,
 .bc-task-suggest:focus-visible,
 .bc-task-apply-proposal:focus-visible,
-.bc-task-dismiss-proposal:focus-visible {
+.bc-task-dismiss-proposal:focus-visible,
+.bc-task-preset-apply:focus-visible,
+.bc-task-preset-save:focus-visible,
+.bc-task-preset-delete:focus-visible {
 	outline: 2px solid var(--SmartThemeQuoteColor);
 	outline-offset: 1px;
 }
 
 .bc-task-save-prompt:disabled,
-.bc-task-suggest:disabled {
+.bc-task-suggest:disabled,
+.bc-task-preset-apply:disabled,
+.bc-task-preset-delete:disabled {
 	opacity: 0.5;
 	cursor: not-allowed;
+}
+
+/* --- Prompt preset rows --- */
+
+.bc-task-preset-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.5em;
+}
+
+.bc-task-preset-select {
+	flex: 1 1 12em;
+	min-width: 0;
+	max-width: none;
+}
+
+.bc-task-preset-apply,
+.bc-task-preset-save,
+.bc-task-preset-delete {
+	padding: 0.25em 0.75em;
 }
 
 /* --- Assistant status / error / proposal --- */
@@ -292,6 +324,9 @@
 	.bc-task-suggest,
 	.bc-task-apply-proposal,
 	.bc-task-dismiss-proposal,
+	.bc-task-preset-apply,
+	.bc-task-preset-save,
+	.bc-task-preset-delete,
 	.bc-task-settings-summary {
 		transition: none;
 	}

@@ -13,7 +13,11 @@
  * Apply/Dismiss. Below the workspaces, a grouped settings drawer (native
  * `<details>` sections) edits connection, token windows, processing mode,
  * output/lorebook, and optional passes — every control PATCHes sparsely on
- * `change`.
+ * `change`. Each prompt field (main, second pass, summary, post-processing)
+ * has a preset row (select + Apply/Save/Delete) backed by the new
+ * `bulk_combine_task_prompt_presets` store (`services/promptPresets.js`);
+ * the legacy preset lists are migrated into that store lazily on first
+ * access.
  *
  * Page-module contract: `render(container, snapshot, actions) → Element`
  * (the page heading, used as the focus target). The page is a pure function
@@ -28,7 +32,10 @@
 
 import { extension_settings } from '../../../extensions.js';
 import { openai_setting_names, openai_settings } from '../../../openai.js';
+import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 import { CONNECT_API_MAP } from '../../../slash-commands.js';
+import { escapeHtml } from '../../../utils.js';
+import { deletePromptPreset, findPromptPresetIndex, getPromptPresets, savePromptPreset } from '../../services/promptPresets.js';
 import { resolveApiEntry, resolveCompletionSettings } from '../../services/resolveCompletionSettings.js';
 
 /** @type {string} Field key for the main prompt textarea. */
@@ -42,6 +49,11 @@ const SAVE_TITLE = 'Save the combine prompt to the task.';
 const APPLY_TITLE = 'Replace the combine prompt with the proposal.';
 const DISMISS_TITLE = 'Discard the proposal and the assistant request.';
 const UNRESOLVED_READOUT = 'Unresolved — select a connection profile or a chat completion preset.';
+const TOAST_TITLE = 'Combine into Group Card';
+const PRESET_LOAD_OPTION = '— Load preset —';
+const PRESET_APPLY_TITLE = 'Load the selected preset into the prompt and save it to the task.';
+const PRESET_SAVE_TITLE = 'Save the current prompt text as a named preset.';
+const PRESET_DELETE_TITLE = 'Delete the selected preset.';
 
 /**
  * Reads a record defensively (null/array/non-object → empty object).
@@ -126,6 +138,12 @@ export function createPromptSettingsPage() {
      * @type {Map<string, Element>}
      */
     let fieldRefs = new Map();
+    /**
+     * Selected preset index per prompt field ('' = none) — survives rebuilds.
+     *
+     * @type {Map<string, number|string>}
+     */
+    const selectedPresets = new Map();
 
     /** @returns {object} Current task record (defensive). */
     function taskOf() {
@@ -232,6 +250,148 @@ export function createPromptSettingsPage() {
         });
         fieldRefs.set(fieldKey, textarea);
         return textarea;
+    }
+
+    /**
+     * Shows the overwrite confirmation popup for a preset-name collision
+     * (the legacy confirm-overwrite idiom).
+     *
+     * @param {string} name Preset name.
+     * @returns {Promise<boolean>} True when the user confirms the overwrite.
+     */
+    async function confirmPresetOverwrite(name) {
+        const result = await callGenericPopup(
+            `Overwrite prompt preset "${escapeHtml(name)}"?`,
+            POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: 'Overwrite', cancelButton: 'Cancel' },
+        );
+        return result === POPUP_RESULT.AFFIRMATIVE;
+    }
+
+    /**
+     * Builds the prompt-preset row for one prompt field: a select of the
+     * field's presets plus Apply (loads the preset into the textarea and
+     * commits it through the field's normal prompt patch path), Save
+     * (stores the current textarea text under a popup-asked name,
+     * confirming overwrites), and Delete (removes the selected preset).
+     * Backed by the new `promptPresets` store; the legacy preset lists are
+     * migrated into it lazily on first store access.
+     *
+     * @param {object} options Row options.
+     * @param {string} options.field Prompt field (`main`, `secondPass`, `summary`, `post`).
+     * @param {string} options.label Human field label (lowercase, for accessible names).
+     * @param {Element} options.textarea The field's textarea element.
+     * @param {() => void} [options.onApplied] Extra hook after Apply commits.
+     * @returns {Element} Preset row.
+     */
+    function buildPresetRow({ field, label, textarea, onApplied }) {
+        const fieldKey = `prompt:${field}:text`;
+        const presets = getPromptPresets(field);
+        let selected = selectedPresets.get(field) ?? '';
+        if (selected !== '' && (!Number.isInteger(selected) || selected < 0 || selected >= presets.length)) {
+            selected = '';
+            selectedPresets.set(field, '');
+        }
+
+        const row = document.createElement('div');
+        row.className = 'bc-task-preset-row';
+
+        const select = document.createElement('select');
+        select.className = 'bc-task-select bc-task-preset-select';
+        select.setAttribute('aria-label', `${label} presets`);
+        select.setAttribute('data-field-key', `preset:${field}`);
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = PRESET_LOAD_OPTION;
+        select.append(placeholder);
+        presets.forEach((preset, index) => {
+            const option = document.createElement('option');
+            option.value = String(index);
+            option.textContent = String(preset?.name ?? '');
+            select.append(option);
+        });
+        select.value = selected === '' ? '' : String(selected);
+        fieldRefs.set(`preset:${field}`, select);
+
+        const applyButton = document.createElement('button');
+        applyButton.type = 'button';
+        applyButton.className = 'bc-task-preset-apply';
+        applyButton.textContent = 'Apply';
+        applyButton.title = PRESET_APPLY_TITLE;
+        applyButton.setAttribute('aria-label', `Apply the selected ${label} preset`);
+        applyButton.disabled = select.value === '';
+
+        const saveButton = document.createElement('button');
+        saveButton.type = 'button';
+        saveButton.className = 'bc-task-preset-save';
+        saveButton.textContent = 'Save';
+        saveButton.title = PRESET_SAVE_TITLE;
+        saveButton.setAttribute('aria-label', `Save the ${label} as a preset`);
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'bc-task-preset-delete';
+        deleteButton.textContent = 'Delete';
+        deleteButton.title = PRESET_DELETE_TITLE;
+        deleteButton.setAttribute('aria-label', `Delete the selected ${label} preset`);
+        deleteButton.disabled = select.value === '';
+
+        select.addEventListener('change', () => {
+            const value = String(select.value ?? '');
+            selectedPresets.set(field, value === '' ? '' : Number(value));
+            applyButton.disabled = value === '';
+            deleteButton.disabled = value === '';
+        });
+
+        applyButton.addEventListener('click', () => {
+            const preset = getPromptPresets(field)[Number(select.value)];
+            if (!preset) {
+                return;
+            }
+            const text = String(preset.prompt ?? '');
+            draftValues.delete(fieldKey);
+            textarea.value = text;
+            patchPromptText(field, text);
+            onApplied?.();
+            globalThis.toastr?.success?.(`Loaded prompt preset "${preset.name}".`, TOAST_TITLE);
+        });
+
+        saveButton.addEventListener('click', async () => {
+            const prefill = select.value === '' ? '' : String(getPromptPresets(field)[Number(select.value)]?.name ?? '');
+            const name = await callGenericPopup(
+                `Save the current ${label} text as a prompt preset.`,
+                POPUP_TYPE.INPUT,
+                prefill,
+                { okButton: 'Save', cancelButton: 'Cancel' },
+            );
+            if (!name || !String(name).trim()) {
+                return;
+            }
+            const saved = await savePromptPreset(field, name, String(textarea.value ?? ''), { confirmOverwrite: confirmPresetOverwrite });
+            if (!saved) {
+                return;
+            }
+            selectedPresets.set(field, findPromptPresetIndex(field, saved.name));
+            globalThis.toastr?.success?.(`Saved prompt preset "${saved.name}".`, TOAST_TITLE);
+            renderPage();
+        });
+
+        deleteButton.addEventListener('click', () => {
+            const index = Number(select.value);
+            const preset = getPromptPresets(field)[index];
+            if (!preset) {
+                return;
+            }
+            if (deletePromptPreset(field, index)) {
+                selectedPresets.set(field, '');
+                globalThis.toastr?.success?.(`Deleted prompt preset "${preset.name}".`, TOAST_TITLE);
+                renderPage();
+            }
+        });
+
+        row.append(select, applyButton, saveButton, deleteButton);
+        return row;
     }
 
     /**
@@ -403,6 +563,16 @@ export function createPromptSettingsPage() {
             },
         });
 
+        const presetRow = buildPresetRow({
+            field: 'main',
+            label: 'combine prompt',
+            textarea,
+            onApplied: () => {
+                // Apply committed the prompt — there is no unsaved draft anymore.
+                saveButton.disabled = true;
+            },
+        });
+
         saveButton.addEventListener('click', () => {
             const text = draftValues.has(MAIN_TEXT_FIELD) ? draftValues.get(MAIN_TEXT_FIELD) : main.text;
             draftValues.delete(MAIN_TEXT_FIELD);
@@ -413,7 +583,7 @@ export function createPromptSettingsPage() {
         controls.className = 'bc-task-prompt-actions';
         controls.append(saveButton);
 
-        section.append(title, note, textarea, controls);
+        section.append(title, note, textarea, presetRow, controls);
         return section;
     }
 
@@ -885,7 +1055,8 @@ export function createPromptSettingsPage() {
     }
 
     /**
-     * Wraps a prompt textarea with its label in a hidable row.
+     * Wraps a prompt textarea with its label and a preset row in a hidable
+     * row.
      *
      * @param {object} options Row options.
      * @param {string} options.label Row label.
@@ -904,8 +1075,19 @@ export function createPromptSettingsPage() {
             className: 'bc-task-pass-textarea',
             onCommit: (text) => patchPromptText(promptKey, text),
         });
-        const row = buildField(label, textarea, hintText);
-        row.className = `${row.className} bc-task-pass-row`;
+        const presetRow = buildPresetRow({ field: promptKey, label: label.toLowerCase(), textarea });
+        const row = document.createElement('div');
+        row.className = 'bc-task-field bc-task-pass-row';
+        const labelElement = document.createElement('span');
+        labelElement.className = 'bc-task-field-label';
+        labelElement.textContent = label;
+        row.append(labelElement, textarea, presetRow);
+        if (hintText) {
+            const hint = document.createElement('span');
+            hint.className = 'bc-task-field-hint';
+            hint.textContent = hintText;
+            row.append(hint);
+        }
         row.hidden = !visible;
         return row;
     }
@@ -1104,6 +1286,7 @@ export function createPromptSettingsPage() {
             latestSnapshot = null;
             latestActions = null;
             draftValues.clear();
+            selectedPresets.clear();
             openGroups.clear();
             openGroups.add('connection');
             assistInFlight = false;

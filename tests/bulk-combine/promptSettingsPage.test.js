@@ -9,9 +9,12 @@
  * `extensions.js` (connection profiles), `openai.js` (chat completion
  * presets), and `slash-commands.js` (`CONNECT_API_MAP`) are mocked; the
  * real `resolveCompletionSettings` service runs on top of those mocks. The
- * Node test environment has no DOM, so a minimal fake `document`/element
- * tree backs the page (the implementation uses plain DOM APIs only — no
- * jQuery, no HTML parsing).
+ * prompt-preset feature runs the REAL `promptPresets` service on top of
+ * mocked `script.js` (`saveSettingsDebounced`), `power-user.js`
+ * (`power_user`), `popup.js` (`callGenericPopup`), and `utils.js`
+ * (`escapeHtml`). The Node test environment has no DOM, so a minimal fake
+ * `document`/element tree backs the page (the implementation uses plain
+ * DOM APIs only — no jQuery, no HTML parsing).
  */
 
 import {
@@ -30,6 +33,10 @@ const mockExtensionSettings = { connectionManager: { profiles: [] } };
 const mockPresetNames = {};
 /** @type {object[]} Mutable fixture backing `openai_settings`. */
 const mockPresets = [];
+/** @type {object} Mutable fixture backing the mocked `power_user` export. */
+const mockPowerUser = {};
+/** @type {object} Mock backing the `callGenericPopup` export. */
+const mockCallGenericPopup = jest.fn();
 
 jest.unstable_mockModule('../../public/scripts/extensions.js', () => ({
     extension_settings: mockExtensionSettings,
@@ -49,6 +56,24 @@ jest.unstable_mockModule('../../public/scripts/slash-commands.js', () => ({
         claude: { selected: 'openai', source: 'claude' },
         textgenerationwebui: { selected: 'textgenerationwebui', source: 'textgenerationwebui' },
     },
+}));
+
+jest.unstable_mockModule('../../public/script.js', () => ({
+    saveSettingsDebounced: jest.fn(),
+}));
+
+jest.unstable_mockModule('../../public/scripts/power-user.js', () => ({
+    power_user: mockPowerUser,
+}));
+
+jest.unstable_mockModule('../../public/scripts/popup.js', () => ({
+    callGenericPopup: mockCallGenericPopup,
+    POPUP_TYPE: { TEXT: 1, CONFIRM: 2, INPUT: 3, DISPLAY: 4, CROP: 5 },
+    POPUP_RESULT: { AFFIRMATIVE: 1, NEGATIVE: 0, CANCELLED: null },
+}));
+
+jest.unstable_mockModule('../../public/scripts/utils.js', () => ({
+    escapeHtml: (value) => String(value ?? ''),
 }));
 
 // ---------------------------------------------------------------------------
@@ -358,6 +383,10 @@ function makePreset(overrides = {}) {
 
 let createPromptSettingsPage;
 let container;
+/** @type {object} Popup result enum from the mocked `popup.js`. */
+let POPUP_RESULT;
+/** @type {object} Popup type enum from the mocked `popup.js`. */
+let POPUP_TYPE;
 
 /**
  * Creates a page, renders it, and returns the pieces under test.
@@ -374,6 +403,7 @@ function renderPage(snapshot, actions = makeActions()) {
 
 beforeAll(async () => {
     ({ createPromptSettingsPage } = await import('../../public/scripts/bulk-combine/wizard/pages/promptSettingsPage.js'));
+    ({ POPUP_RESULT, POPUP_TYPE } = await import('../../public/scripts/popup.js'));
 });
 
 beforeEach(() => {
@@ -393,11 +423,18 @@ beforeEach(() => {
     mockPresetNames.Creative = 1;
     mockPresets.splice(0, mockPresets.length);
     mockPresets.push(makePreset(), makePreset({ openai_model: 'gpt-4o' }));
+
+    for (const key of Object.keys(mockPowerUser)) {
+        delete mockPowerUser[key];
+    }
+    mockCallGenericPopup.mockReset();
+    delete global.toastr;
 });
 
 afterEach(() => {
     delete global.document;
     delete global.diff_match_patch;
+    delete global.toastr;
     jest.restoreAllMocks();
 });
 
@@ -776,5 +813,219 @@ describe('promptSettingsPage', () => {
 
         page.dispose();
         expect(() => page.render(container, makeSnapshot(), actions)).not.toThrow();
+    });
+
+    // ------------------------------------------------------------------
+    // Prompt presets (new bulk_combine_task_prompt_presets store)
+    // ------------------------------------------------------------------
+
+    /** @type {string} `power_user` key holding the new preset store. */
+    const STORE_KEY = 'bulk_combine_task_prompt_presets';
+    /** @type {string} `power_user` key flagging the legacy migration as done. */
+    const MIGRATED_KEY = 'bulk_combine_task_prompt_presets_migrated';
+
+    /**
+     * Seeds the new preset store directly (migration already done).
+     *
+     * @param {object} fields Field → preset list map.
+     * @returns {void}
+     */
+    function seedPromptPresets(fields) {
+        mockPowerUser[STORE_KEY] = { main: [], secondPass: [], summary: [], post: [], ...fields };
+        mockPowerUser[MIGRATED_KEY] = true;
+    }
+
+    /**
+     * Finds the preset row containing the select with the given aria-label.
+     *
+     * @param {object} root Root fake element.
+     * @param {string} selectAriaLabel Select `aria-label`.
+     * @returns {object|null} Preset row element, or null.
+     */
+    function findPresetRow(root, selectAriaLabel) {
+        const select = findOne(root, hasAriaLabel(selectAriaLabel));
+        return select?.parentElement ?? null;
+    }
+
+    /** @returns {Promise<void>} Flushes pending microtasks after an async click handler. */
+    async function flushAsync() {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    test('renders a preset row per prompt field; Apply/Delete gate on a selection', () => {
+        const { root } = renderPage(makeSnapshot({
+            settings: { secondPassEnabled: true, postProcessingEnabled: true, destination: 'lorebook' },
+        }));
+
+        for (const ariaLabel of ['combine prompt presets', 'second-pass instructions presets', 'post-processing prompt presets', 'summary prompt presets']) {
+            const select = findOne(root, hasAriaLabel(ariaLabel));
+            expect(select.tagName).toBe('SELECT');
+            expect(select.children.map((option) => option.textContent)).toEqual(['— Load preset —']);
+            const row = select.parentElement;
+            expect(findOne(row, hasClass('bc-task-preset-apply')).disabled).toBe(true);
+            expect(findOne(row, hasClass('bc-task-preset-save')).disabled).toBe(false);
+            expect(findOne(row, hasClass('bc-task-preset-delete')).disabled).toBe(true);
+        }
+
+        // The first store access ran the (no-op) legacy migration lazily.
+        expect(mockPowerUser[MIGRATED_KEY]).toBe(true);
+    });
+
+    test('legacy presets migrate into the row options on first render and the legacy keys are deleted', () => {
+        mockPowerUser.group_card_combine_prompt_presets = [{ name: 'Legacy', prompt: 'L' }];
+        mockPowerUser.group_card_post_merge_prompt_presets = [{ name: 'Legacy Post', prompt: 'LP' }];
+
+        renderPage(makeSnapshot({ settings: { postProcessingEnabled: true } }));
+
+        const mainSelect = findOne(container, hasAriaLabel('combine prompt presets'));
+        expect(mainSelect.children.map((option) => option.textContent)).toEqual(['— Load preset —', 'Legacy']);
+        const postSelect = findOne(container, hasAriaLabel('post-processing prompt presets'));
+        expect(postSelect.children.map((option) => option.textContent)).toEqual(['— Load preset —', 'Legacy Post']);
+        expect(mockPowerUser.group_card_combine_prompt_presets).toBeUndefined();
+        expect(mockPowerUser.group_card_post_merge_prompt_presets).toBeUndefined();
+        expect(mockPowerUser[MIGRATED_KEY]).toBe(true);
+    });
+
+    test('Apply loads the preset into the main prompt and commits through the prompt patch path', () => {
+        global.toastr = { success: jest.fn(), warning: jest.fn() };
+        seedPromptPresets({ main: [{ name: 'Dark', prompt: 'Combine darkly.' }] });
+        const { actions } = renderPage(makeSnapshot());
+
+        // Typing first enables the explicit Save button.
+        const mainArea = findOne(container, hasFieldKey('prompt:main:text'));
+        mainArea.value = 'Unsaved typing.';
+        mainArea.fire('input');
+        expect(findOne(container, hasClass('bc-task-save-prompt')).disabled).toBe(false);
+
+        const row = findPresetRow(container, 'combine prompt presets');
+        const select = findOne(row, hasAriaLabel('combine prompt presets'));
+        select.value = '0';
+        select.fire('change');
+
+        const applyButton = findOne(row, hasClass('bc-task-preset-apply'));
+        expect(applyButton.disabled).toBe(false);
+        applyButton.click();
+
+        expect(findOne(container, hasFieldKey('prompt:main:text')).value).toBe('Combine darkly.');
+        expect(actions.update).toHaveBeenCalledTimes(1);
+        expect(actions.update).toHaveBeenCalledWith({ prompts: { main: { text: 'Combine darkly.' } } });
+        // Apply committed the prompt, so the explicit Save gates off again.
+        expect(findOne(container, hasClass('bc-task-save-prompt')).disabled).toBe(true);
+        expect(global.toastr.success).toHaveBeenCalledWith('Loaded prompt preset "Dark".', 'Combine into Group Card');
+    });
+
+    test('Apply on a pass field patches that prompt field', () => {
+        seedPromptPresets({ secondPass: [{ name: 'Refine', prompt: 'Refine harder.' }] });
+        const { actions } = renderPage(makeSnapshot({ settings: { secondPassEnabled: true } }));
+
+        const row = findPresetRow(container, 'second-pass instructions presets');
+        const select = findOne(row, hasAriaLabel('second-pass instructions presets'));
+        select.value = '0';
+        select.fire('change');
+        findOne(row, hasClass('bc-task-preset-apply')).click();
+
+        expect(actions.update).toHaveBeenCalledTimes(1);
+        expect(actions.update).toHaveBeenCalledWith({ prompts: { secondPass: { text: 'Refine harder.' } } });
+        expect(findOne(container, hasFieldKey('prompt:secondPass:text')).value).toBe('Refine harder.');
+    });
+
+    test('Save stores the current field text as a named preset and refreshes the select', async () => {
+        global.toastr = { success: jest.fn(), warning: jest.fn() };
+        renderPage(makeSnapshot());
+        const row = findPresetRow(container, 'combine prompt presets');
+
+        mockCallGenericPopup.mockResolvedValueOnce('My Preset');
+        findOne(row, hasClass('bc-task-preset-save')).click();
+        await flushAsync();
+
+        expect(mockCallGenericPopup).toHaveBeenCalledTimes(1);
+        expect(mockCallGenericPopup).toHaveBeenCalledWith(
+            expect.stringContaining('Save the current combine prompt'),
+            POPUP_TYPE.INPUT,
+            '',
+            expect.objectContaining({ okButton: 'Save' }),
+        );
+        expect(mockPowerUser[STORE_KEY].main).toEqual([{ name: 'My Preset', prompt: 'Combine these cards into one.' }]);
+        expect(global.toastr.success).toHaveBeenCalledWith('Saved prompt preset "My Preset".', 'Combine into Group Card');
+
+        // The re-rendered select lists and pre-selects the new preset.
+        const rebuilt = findOne(container, hasAriaLabel('combine prompt presets'));
+        expect(rebuilt.children.map((option) => option.textContent)).toEqual(['— Load preset —', 'My Preset']);
+        expect(rebuilt.value).toBe('0');
+    });
+
+    test('Save confirms before overwriting an existing preset', async () => {
+        seedPromptPresets({ main: [{ name: 'Dup', prompt: 'Original.' }] });
+        renderPage(makeSnapshot());
+
+        const select = findOne(container, hasAriaLabel('combine prompt presets'));
+        select.value = '0';
+        select.fire('change');
+        const row = select.parentElement;
+
+        // Cancelled overwrite: the input popup returns the existing name
+        // (pre-filled from the selection), the confirm popup is declined.
+        mockCallGenericPopup.mockResolvedValueOnce('Dup').mockResolvedValueOnce(POPUP_RESULT.NEGATIVE);
+        findOne(row, hasClass('bc-task-preset-save')).click();
+        await flushAsync();
+
+        expect(mockCallGenericPopup).toHaveBeenNthCalledWith(1, expect.any(String), POPUP_TYPE.INPUT, 'Dup', expect.any(Object));
+        expect(mockCallGenericPopup).toHaveBeenNthCalledWith(2, expect.stringContaining('Overwrite prompt preset "Dup"?'), POPUP_TYPE.CONFIRM, '', expect.objectContaining({ okButton: 'Overwrite' }));
+        expect(mockPowerUser[STORE_KEY].main).toEqual([{ name: 'Dup', prompt: 'Original.' }]);
+
+        // Confirmed overwrite (no re-render happened on the cancel, the row
+        // is still live).
+        mockCallGenericPopup.mockReset();
+        mockCallGenericPopup.mockResolvedValueOnce('Dup').mockResolvedValueOnce(POPUP_RESULT.AFFIRMATIVE);
+        findOne(row, hasClass('bc-task-preset-save')).click();
+        await flushAsync();
+
+        expect(mockPowerUser[STORE_KEY].main).toEqual([{ name: 'Dup', prompt: 'Combine these cards into one.' }]);
+    });
+
+    test('a cancelled save popup changes nothing', async () => {
+        renderPage(makeSnapshot());
+
+        mockCallGenericPopup.mockResolvedValueOnce(POPUP_RESULT.CANCELLED);
+        findOne(findPresetRow(container, 'combine prompt presets'), hasClass('bc-task-preset-save')).click();
+        await flushAsync();
+
+        expect(mockCallGenericPopup).toHaveBeenCalledTimes(1);
+        expect(mockPowerUser[STORE_KEY].main).toEqual([]);
+    });
+
+    test('Delete removes the selected preset and refreshes the select', () => {
+        global.toastr = { success: jest.fn() };
+        seedPromptPresets({ main: [{ name: 'A', prompt: 'a' }, { name: 'B', prompt: 'b' }] });
+        renderPage(makeSnapshot());
+
+        const select = findOne(container, hasAriaLabel('combine prompt presets'));
+        select.value = '0';
+        select.fire('change');
+        const row = select.parentElement;
+        findOne(row, hasClass('bc-task-preset-delete')).click();
+
+        expect(mockPowerUser[STORE_KEY].main).toEqual([{ name: 'B', prompt: 'b' }]);
+        expect(global.toastr.success).toHaveBeenCalledWith('Deleted prompt preset "A".', 'Combine into Group Card');
+
+        const rebuilt = findOne(container, hasAriaLabel('combine prompt presets'));
+        expect(rebuilt.children.map((option) => option.textContent)).toEqual(['— Load preset —', 'B']);
+        expect(rebuilt.value).toBe('');
+        expect(findOne(rebuilt.parentElement, hasClass('bc-task-preset-delete')).disabled).toBe(true);
+    });
+
+    test('preset rows follow their pass-row visibility', () => {
+        const page = createPromptSettingsPage();
+        const actions = makeActions();
+
+        page.render(container, makeSnapshot(), actions);
+        const summaryRow = findOne(container, hasFieldKey('prompt:summary:text')).parentElement;
+        expect(summaryRow.hidden).toBe(true);
+        expect(findOne(summaryRow, hasAriaLabel('summary prompt presets'))).not.toBe(null);
+
+        page.render(container, makeSnapshot({ settings: { destination: 'lorebook' } }), actions);
+        const visibleSummaryRow = findOne(container, hasFieldKey('prompt:summary:text')).parentElement;
+        expect(visibleSummaryRow.hidden).toBe(false);
+        expect(findOne(visibleSummaryRow, hasAriaLabel('summary prompt presets'))).not.toBe(null);
     });
 });
