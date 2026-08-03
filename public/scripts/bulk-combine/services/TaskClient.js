@@ -16,7 +16,7 @@
  *
  * SSE auth matches the existing group-card job stream: a plain
  * `new EventSource(url)` against the same-origin endpoint (see
- * `subscribeToJob` in `services/JobClient.js`). EventSource cannot set custom
+ * the retired generation-job client). EventSource cannot set custom
  * headers; the endpoints authenticate via the same-origin session, and CSRF
  * tokens are only required for the mutating fetch requests, which all use
  * `getRequestHeaders()`.
