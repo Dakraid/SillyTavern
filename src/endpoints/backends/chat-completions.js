@@ -231,10 +231,11 @@ function setJsonObjectFormat(bodyParams, messages, jsonSchema) {
  * @returns {{signal: AbortSignal}} Cancellation controller
  */
 function getGenerationController(request) {
-    if (request.signal) {
-        return { signal: request.signal };
+    if (!request.socket) {
+        return { signal: request.signal ?? new AbortController().signal };
     }
 
+    // IncomingMessage.signal can abort when the request body closes, before generation completes.
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {

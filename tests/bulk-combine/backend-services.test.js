@@ -194,6 +194,45 @@ describe('internal Chat Completion execution', () => {
         expect(response.send).toHaveBeenCalledWith(data);
     });
 
+    test('ignores the native request signal for HTTP generation', async () => {
+        const socket = new EventEmitter();
+        const requestController = new AbortController();
+        const data = { choices: [{ message: { content: 'Completed' } }] };
+        fetchMock.mockImplementation(async (_url, options) => {
+            expect(options.signal.aborted).toBe(false);
+            requestController.abort();
+            expect(options.signal.aborted).toBe(false);
+            return {
+                ok: true,
+                json: async () => data,
+            };
+        });
+        const response = {
+            headersSent: false,
+            writableEnded: false,
+            send: jest.fn(),
+            status() {
+                return this;
+            },
+        };
+
+        await dispatchChatCompletion({
+            body: {
+                chat_completion_source: 'custom',
+                custom_url: 'https://example.test/v1',
+                messages: [{ role: 'user', content: 'Combine cards' }],
+                model: 'test-model',
+                stream: false,
+                logprobs: 0,
+            },
+            user: { directories: {} },
+            socket,
+            signal: requestController.signal,
+        }, response);
+
+        expect(response.send).toHaveBeenCalledWith(data);
+    });
+
     test('rejects streaming programmatic requests', async () => {
         await expect(executeChatCompletion({
             body: { stream: true },
