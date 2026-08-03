@@ -22,6 +22,7 @@ import { createPromptSettingsPage } from './promptSettingsPage.js';
 import { createTransformPage } from './transformPage.js';
 import { createPostPage } from './postPage.js';
 import { createReviewPage } from './reviewPage.js';
+import { createAvatarPage } from './avatarPage.js';
 
 /**
  * Builds the page-module overrides for the guided task wizard.
@@ -37,5 +38,6 @@ export function createWizardPageOverrides() {
         summary: createTransformPage({ passKey: 'summary', title: 'Lorebook Summary' }),
         post: createPostPage(),
         review: createReviewPage(),
+        avatar: createAvatarPage(),
     };
 }

@@ -22,7 +22,9 @@
 @import url(scripts/bulk-combine/wizard/pages/transformPage.css);
 @import url(scripts/bulk-combine/wizard/pages/postPage.css);
 @import url(scripts/bulk-combine/wizard/pages/reviewPage.css);
+@import url(scripts/bulk-combine/wizard/pages/avatarPage.css);
 @import url(scripts/bulk-combine/components/TaskHistoryPanel.css);
+@import url(scripts/bulk-combine/components/AvatarCompositor.css);
 
 :root {
 	interpolate-size: allow-keywords;

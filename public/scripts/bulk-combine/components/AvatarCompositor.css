@@ -1,0 +1,57 @@
+/* ==========================================================================
+   Native avatar compositor (Step 11g, Part A)
+
+   Styles for `components/AvatarCompositor.js`. Dedicated file so the
+   component lands without touching `styles.css`; the orchestrator adds the
+   `@import` line to `public/style.css` when wiring the avatar page.
+
+   Classes: .bc-compositor*  |  SmartTheme variables only.
+   ========================================================================== */
+
+.bc-compositor {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4em;
+	min-width: 0;
+}
+
+.bc-compositor-canvas-wrap {
+	position: relative;
+	width: 100%;
+	max-width: 26em;
+	aspect-ratio: 1 / 1;
+	margin-inline: auto;
+}
+
+.bc-compositor-canvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 92%, #000 8%);
+	cursor: grab;
+	touch-action: none; /* required for pointer-event pan/pinch on touch */
+}
+
+.bc-compositor-canvas:active {
+	cursor: grabbing;
+}
+
+.bc-compositor-canvas:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 2px;
+}
+
+.bc-compositor-hint {
+	margin: 0;
+	font-size: 0.8em;
+	opacity: 0.65;
+	text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.bc-compositor-canvas {
+		transition: none;
+	}
+}
