@@ -626,84 +626,6 @@
       the two-column avatar studio.
    ======================================================================== */
 
-/* --- Stepper (stage indicator bar) --- */
-
-.bcw-stepper {
-	display: flex;
-	align-items: center;
-	gap: 0.5em;
-	flex-wrap: wrap;
-}
-
-/* Individual stage node: icon + label, pill-shaped */
-.bcw-stepper-node {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.35em;
-	min-width: 2.25em;
-	min-height: 2.25em;
-	padding: 0.35em 0.7em;
-	border: 1px solid var(--SmartThemeBorderColor);
-	border-radius: 999px;
-	background-color: color-mix(
-		in srgb,
-		var(--SmartThemeBlurTintColor) 88%,
-		var(--SmartThemeBodyColor) 12%
-	);
-	color: var(--SmartThemeBodyColor);
-	font-size: 0.85em;
-	font-weight: 600;
-	opacity: 0.4;
-	cursor: default;
-	transition: opacity 0.2s, transform 0.2s, border-color 0.2s;
-}
-
-.bcw-stepper-node.clickable {
-	cursor: pointer;
-}
-
-.bcw-stepper-node.active {
-	border-color: var(--SmartThemeQuoteColor);
-	box-shadow: 0 0 0 1px var(--SmartThemeQuoteColor) inset;
-	color: var(--SmartThemeQuoteColor);
-	opacity: 1;
-	transform: scale(1.05);
-}
-
-.bcw-stepper-node.completed {
-	border-color: rgba(76, 175, 80, 0.75);
-	color: #7fd37f;
-	opacity: 0.9;
-}
-
-/* Connecting line between nodes: dashed when upcoming, solid when done */
-.bcw-stepper-line {
-	flex: 1 1 auto;
-	min-width: 1.5em;
-	height: 0;
-	border-top: 2px dashed var(--SmartThemeBorderColor);
-}
-
-.bcw-stepper-line.completed {
-	border-top: 2px solid rgba(76, 175, 80, 0.6);
-}
-
-/* --- Stage panel (one visible at a time, 200 ms fade) --- */
-
-.bcw-stage {
-	display: none;
-	animation: bcw-stage-fade 0.2s ease;
-}
-
-.bcw-stage.active {
-	display: block;
-}
-
-@keyframes bcw-stage-fade {
-	from { opacity: 0; }
-	to { opacity: 1; }
-}
-
 /* --- Stage 1: character card strip --- */
 
 .bcw-character-strip {
@@ -1051,11 +973,6 @@
 
 	.bcw-character-strip {
 		scroll-snap-type: none;
-	}
-
-	.bcw-stepper {
-		overflow-x: auto;
-		flex-wrap: nowrap;
 	}
 
 	.bcw-button-primary,

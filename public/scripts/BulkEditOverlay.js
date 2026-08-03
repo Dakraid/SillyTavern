@@ -36,19 +36,6 @@ import {
     getCoreCharacterField,
 } from './bulk-combine/helpers.js';
 
-import { createGeneratedGroupCard } from './bulk-combine/services/CardCreator.js';
-
-import {
-    getGroupCardCombinePromptPresets,
-    findGroupCardCombinePromptPresetIndex,
-    saveGroupCardCombinePromptPreset,
-    deleteGroupCardCombinePromptPreset,
-    getGroupCardPostMergePromptPresets,
-    findGroupCardPostMergePromptPresetIndex,
-    saveGroupCardPostMergePromptPreset,
-    deleteGroupCardPostMergePromptPreset,
-} from './bulk-combine/services/PresetManager.js';
-
 import { openCombineWizard } from './bulk-combine/index.js';
 
 /**
@@ -1500,31 +1487,4 @@ export {
     BulkEditOverlayState,
     CharacterContextMenu,
     BulkEditOverlay,
-    getGroupCardCombinePromptPresets,
-    findGroupCardCombinePromptPresetIndex,
-    saveGroupCardCombinePromptPreset,
-    deleteGroupCardCombinePromptPreset,
-    getGroupCardPostMergePromptPresets,
-    findGroupCardPostMergePromptPresetIndex,
-    saveGroupCardPostMergePromptPreset,
-    deleteGroupCardPostMergePromptPreset,
-    createGeneratedGroupCard,
 };
-
-export {
-    ALWAYS_INCLUDED_CHARACTER_FIELDS,
-    OPTIONAL_CHARACTER_FIELDS,
-    normalizeName,
-    normalizeSelectedFields,
-    validateGroupCardRequest,
-    getCoreCharacterPayload,
-    buildCoreCharacterPromptBlock,
-    buildGroupCardCombineQuietPrompt,
-    buildLorebookEntryContent,
-    buildLorebookEntry,
-    buildLorebookData,
-    buildDynamicLorebookData,
-    buildDynamicSummaryDescription,
-} from './bulk-combine/helpers.js';
-
-export { validateGeneratedGroupCardDescription } from './group-card-xml-parser.js';
