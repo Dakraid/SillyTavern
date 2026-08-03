@@ -1,0 +1,334 @@
+/* ==========================================================================
+   Guided task wizard — Post Processing page (Step 11f)
+
+   Styles for `wizard/pages/postPage.js`. Dedicated file so the page lands
+   without touching `styles.css`; the orchestrator adds the `@import` line
+   to `public/style.css` when wiring the page registry.
+
+   Classes: .bc-task-post-* / .bc-task-assist-*  |  SmartTheme variables only.
+   Shared shell (.bc-task-page/-title/-note) lives in bulk-combine/styles.css;
+   .bc-task-continue lives in cardsPage.css.
+   ========================================================================== */
+
+/* --- Status banner --- */
+
+.bc-task-post-banner {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.6em;
+	padding: 0.6em 0.8em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 92%, var(--SmartThemeQuoteColor) 8%);
+}
+
+.bc-task-post-banner > i {
+	margin-top: 0.15em;
+	opacity: 0.85;
+}
+
+.bc-task-post-banner-body {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25em;
+}
+
+.bc-task-post-banner-text {
+	margin: 0;
+	overflow-wrap: break-word;
+}
+
+.bc-task-post-banner[data-status='succeeded'] {
+	border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 55%, var(--SmartThemeBorderColor));
+}
+
+.bc-task-post-banner[data-status='failed'] {
+	border-color: color-mix(in srgb, #d33 45%, var(--SmartThemeBorderColor));
+}
+
+.bc-task-post-banner[data-status='running'] {
+	border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 40%, var(--SmartThemeBorderColor));
+}
+
+.bc-task-post-banner[data-status='disabled'] {
+	opacity: 0.7;
+}
+
+.bc-task-post-stale {
+	margin: 0;
+	font-size: 0.85em;
+	font-style: italic;
+	opacity: 0.8;
+}
+
+/* --- Prompt workspace --- */
+
+.bc-task-post-workspace {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+}
+
+.bc-task-post-section-title {
+	margin: 0;
+	font-size: 1.05em;
+}
+
+.bc-task-post-note {
+	margin: 0;
+	font-size: 0.85em;
+	opacity: 0.65;
+}
+
+.bc-task-post-label {
+	font-size: 0.9em;
+	opacity: 0.8;
+}
+
+.bc-task-post-prompt {
+	resize: vertical;
+	min-height: 7em;
+}
+
+.bc-task-post-mode-row {
+	display: flex;
+	align-items: center;
+	gap: 0.6em;
+	flex-wrap: wrap;
+}
+
+.bc-task-post-mode {
+	max-width: 16em;
+}
+
+.bc-task-post-mode-note {
+	margin: 0;
+	font-size: 0.82em;
+	opacity: 0.65;
+}
+
+/* --- Prompt assist (input + Suggest + proposal) --- */
+
+.bc-task-assist {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4em;
+	padding-top: 0.5em;
+	border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bc-task-assist-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+}
+
+.bc-task-assist-request {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.bc-task-assist-suggest {
+	padding: 0.3em 0.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-assist-suggest:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-assist-suggest:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-assist-suggest:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.bc-task-assist-proposal {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35em;
+	padding: 0.5em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 94%, var(--SmartThemeQuoteColor) 6%);
+}
+
+.bc-task-assist-proposal-text {
+	margin: 0;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	max-height: 14em;
+	overflow-y: auto;
+}
+
+.bc-task-assist-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.4em;
+	flex-wrap: wrap;
+}
+
+.bc-task-assist-applied {
+	font-size: 0.85em;
+	font-style: italic;
+	opacity: 0.8;
+}
+
+.bc-task-assist-apply,
+.bc-task-assist-dismiss {
+	padding: 0.25em 0.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-assist-apply:hover,
+.bc-task-assist-dismiss:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-assist-apply:focus-visible,
+.bc-task-assist-dismiss:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-assist-error {
+	margin: 0;
+	color: color-mix(in srgb, #d33 75%, currentColor);
+}
+
+.bc-task-assist-status {
+	margin: 0;
+	font-size: 0.85em;
+	opacity: 0.7;
+	font-style: italic;
+}
+
+/* --- Before / after panes --- */
+
+.bc-task-post-beforeafter {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+}
+
+.bc-task-post-panes {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 0.75em;
+}
+
+.bc-task-post-pane-block {
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+}
+
+.bc-task-post-pane-title {
+	font-size: 0.85em;
+	font-weight: 600;
+	opacity: 0.8;
+}
+
+.bc-task-post-pane {
+	margin: 0;
+	padding: 0.5em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 96%, var(--SmartThemeQuoteColor) 4%);
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	max-height: 16em;
+	overflow-y: auto;
+	font-family: var(--monoFont, monospace);
+	font-size: 0.9em;
+}
+
+.bc-task-post-running {
+	margin: 0;
+	opacity: 0.75;
+	font-style: italic;
+}
+
+/* --- Footer: Run / Skip (+ shared .bc-task-continue) --- */
+
+.bc-task-post-footer {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	flex-wrap: wrap;
+	padding-top: 0.75em;
+	border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bc-task-post-run,
+.bc-task-post-skip {
+	padding: 0.4em 1.1em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-post-run {
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-post-run:hover:not(:disabled),
+.bc-task-post-skip:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 80%, var(--SmartThemeQuoteColor) 20%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-post-run:focus-visible,
+.bc-task-post-skip:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-post-run:disabled,
+.bc-task-post-skip:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* --- Reduced motion + narrow screens --- */
+
+@media (prefers-reduced-motion: reduce) {
+	.bc-task-assist-suggest,
+	.bc-task-assist-apply,
+	.bc-task-assist-dismiss,
+	.bc-task-post-run,
+	.bc-task-post-skip {
+		transition: none;
+	}
+}
+
+@media (max-width: 600px) {
+	.bc-task-post-panes {
+		grid-template-columns: 1fr;
+	}
+}

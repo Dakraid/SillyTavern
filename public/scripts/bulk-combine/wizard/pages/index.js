@@ -19,6 +19,8 @@
 
 import { createCardsPage } from './cardsPage.js';
 import { createPromptSettingsPage } from './promptSettingsPage.js';
+import { createPostPage } from './postPage.js';
+import { createReviewPage } from './reviewPage.js';
 
 /**
  * Builds the page-module overrides for the guided task wizard.
@@ -29,5 +31,7 @@ export function createWizardPageOverrides() {
     return {
         cards: createCardsPage(),
         prompt: createPromptSettingsPage(),
+        post: createPostPage(),
+        review: createReviewPage(),
     };
 }
