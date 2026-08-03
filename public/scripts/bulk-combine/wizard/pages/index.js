@@ -19,6 +19,7 @@
 
 import { createCardsPage } from './cardsPage.js';
 import { createPromptSettingsPage } from './promptSettingsPage.js';
+import { createTransformPage } from './transformPage.js';
 import { createPostPage } from './postPage.js';
 import { createReviewPage } from './reviewPage.js';
 
@@ -31,6 +32,9 @@ export function createWizardPageOverrides() {
     return {
         cards: createCardsPage(),
         prompt: createPromptSettingsPage(),
+        transform1: createTransformPage({ passKey: 'transform1', title: 'Transform 1' }),
+        transform2: createTransformPage({ passKey: 'transform2', title: 'Transform 2' }),
+        summary: createTransformPage({ passKey: 'summary', title: 'Lorebook Summary' }),
         post: createPostPage(),
         review: createReviewPage(),
     };

@@ -19,6 +19,7 @@
 @import url(scripts/bulk-combine/styles.css);
 @import url(scripts/bulk-combine/wizard/pages/cardsPage.css);
 @import url(scripts/bulk-combine/wizard/pages/promptSettingsPage.css);
+@import url(scripts/bulk-combine/wizard/pages/transformPage.css);
 @import url(scripts/bulk-combine/wizard/pages/postPage.css);
 @import url(scripts/bulk-combine/wizard/pages/reviewPage.css);
 
