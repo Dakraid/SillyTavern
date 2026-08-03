@@ -68,9 +68,7 @@ export function buildTaskWizardShell() {
     historyButton.id = 'bc_task_history';
     historyButton.className = 'menu_button bc-task-history';
     historyButton.type = 'button';
-    historyButton.disabled = true;
-    historyButton.setAttribute('aria-disabled', 'true');
-    historyButton.title = 'Task History arrives in a later step; the task is already saved on the server.';
+    historyButton.title = 'Open the task history panel to manage saved combine tasks.';
 
     const historyIcon = document.createElement('i');
     historyIcon.className = 'fa-solid fa-clock-rotate-left';

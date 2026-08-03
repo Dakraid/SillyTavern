@@ -33,6 +33,7 @@ import {
 import { createWorkflowRail } from '../components/WorkflowRail.js';
 import { createPlaceholderPage } from './pages/placeholderPage.js';
 import { createWizardPageOverrides } from './pages/index.js';
+import { createTaskHistoryPanel } from '../components/TaskHistoryPanel.js';
 import { buildTaskWizardShell } from './TaskWizardShell.js';
 
 /**
@@ -84,6 +85,9 @@ export class TaskWizardController {
     /** @type {import('../services/TaskClient.js').TaskClient} */
     #client;
 
+    /** @type {(() => void)|null} Orchestrator callback that opens the Task History panel (wired by openTaskWizard). */
+    #onOpenHistory = null;
+
     /** @type {Map<string, {render: Function, dispose?: Function}>} Page registry (key → module). */
     #pages = new Map();
 
@@ -121,9 +125,11 @@ export class TaskWizardController {
      * @param {object} [options] Options.
      * @param {import('../services/TaskClient.js').TaskClient} [options.client] Task client (defaults to a new instance).
      * @param {Object<string, {render: Function, dispose?: Function}>} [options.pages] Page module overrides keyed by page key.
+     * @param {() => void} [options.onOpenHistory] Opens the Task History panel (wired by openTaskWizard; the button is inert without it).
      */
-    constructor({ client, pages } = {}) {
+    constructor({ client, pages, onOpenHistory } = {}) {
         this.#client = client ?? createTaskClient();
+        this.#onOpenHistory = typeof onOpenHistory === 'function' ? onOpenHistory : null;
         for (const page of TASK_WIZARD_PAGES) {
             this.#pages.set(page.key, createPlaceholderPage({ key: page.key, title: page.title }));
         }
@@ -375,8 +381,9 @@ export class TaskWizardController {
     }
 
     /**
-     * Binds the header controls: task-name input (renames via PATCH on
-     * change) and the disabled Task History button (lands in a later step).
+     * Binds the header controls: the task-name input (renames via PATCH on
+     * change) and the Task History button (delegates to the orchestrator's
+     * onOpenHistory callback; inert when none was provided).
      *
      * @returns {void}
      */
@@ -387,6 +394,12 @@ export class TaskWizardController {
             if (name && name !== this.#state?.task?.name) {
                 this.#state.update({ name }).catch((error) => reportError('Failed to rename the task.', error));
             }
+        });
+        this.#shell.historyButton.addEventListener('click', () => {
+            if (this.#closed || !this.#state) {
+                return;
+            }
+            this.#onOpenHistory?.();
         });
     }
 
@@ -407,13 +420,95 @@ export class TaskWizardController {
 /**
  * Convenience entry point: opens the guided task wizard for a task.
  *
+ * Wires the header Task History button: it opens the durable-task panel in a
+ * nested popup, and its Open/New actions close this wizard and reopen it for
+ * the chosen (or a freshly created) task — closing NEVER cancels running
+ * server-side execution, so background work keeps going across the switch.
+ *
  * @param {string|object} taskOrId Task id or freshly created task object.
  * @param {object} [options] Options forwarded to the controller.
  * @param {import('../services/TaskClient.js').TaskClient} [options.client] Task client.
+ * @param {Object<string, {render: Function, dispose?: Function}>} [options.pages] Page module overrides keyed by page key.
  * @returns {Promise<TaskWizardController>} The controller (after the popup closes).
  */
 export async function openTaskWizard(taskOrId, { client, pages } = {}) {
-    const controller = new TaskWizardController({ client, pages: pages ?? createWizardPageOverrides() });
+    const resolvedClient = client ?? createTaskClient();
+    /** @type {TaskWizardController} */
+    let controller;
+    /** @type {object|null} Open Task History panel instance. */
+    let historyPanel = null;
+    /** @type {object|null} Open Task History popup instance. */
+    let historyPopup = null;
+
+    /**
+     * Closes the Task History popup (if open) and disposes the panel.
+     * Idempotent; the popup's onClose re-dispose is a guarded no-op.
+     *
+     * @returns {void}
+     */
+    function closeHistoryPanel() {
+        const popup = historyPopup;
+        const panel = historyPanel;
+        historyPopup = null;
+        historyPanel = null;
+        panel?.dispose?.();
+        if (popup) {
+            void popup.completeCancelled?.();
+        }
+    }
+
+    /**
+     * Opens the Task History panel in a nested popup. Open/New close this
+     * wizard and reopen it for the chosen (or a fresh) task.
+     *
+     * @returns {void}
+     */
+    function openHistoryPanel() {
+        if (historyPanel) {
+            return;
+        }
+        historyPanel = createTaskHistoryPanel({
+            client: resolvedClient,
+            currentTaskId: controller?.state?.taskId ?? null,
+            onOpenTask: (id) => {
+                closeHistoryPanel();
+                void controller.close();
+                void openTaskWizard(id, { client: resolvedClient, pages });
+            },
+            onNewTask: () => {
+                closeHistoryPanel();
+                void controller.close();
+                void (async () => {
+                    let fresh;
+                    try {
+                        fresh = await resolvedClient.createTask({ name: 'New Combine Task' });
+                    } catch (error) {
+                        reportError('Failed to create a new task.', error);
+                        return;
+                    }
+                    void openTaskWizard(fresh, { client: resolvedClient, pages });
+                })();
+            },
+        });
+        const host = document.createElement('div');
+        historyPanel.render(host);
+        void callGenericPopup(host, POPUP_TYPE.DISPLAY, 'Task History', {
+            wide: true,
+            allowVerticalScrolling: true,
+            onOpen: (popup) => { historyPopup = popup; },
+            onClose: () => {
+                historyPanel?.dispose?.();
+                historyPanel = null;
+                historyPopup = null;
+            },
+        });
+    }
+
+    controller = new TaskWizardController({
+        client: resolvedClient,
+        pages: pages ?? createWizardPageOverrides(),
+        onOpenHistory: openHistoryPanel,
+    });
     await controller.open(taskOrId);
     return controller;
 }

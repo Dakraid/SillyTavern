@@ -396,15 +396,37 @@ describe('TaskWizardController', () => {
         expect(items[3].getAttribute('aria-label')).toContain('Transform 2');
         expect(items[3].getAttribute('aria-label')).toContain('Disabled');
 
-        // Header: name input seeded, save indicator live, history button disabled.
+        // Header: name input seeded, save indicator live, history button enabled.
         expect(header().children[1].value).toBe('Test task');
         expect(header().children[2].textContent).toBe('Saved');
         expect(header().children[2].getAttribute('aria-live')).toBe('polite');
-        expect(header().children[4].disabled).toBe(true);
+        expect(header().children[4].disabled).toBe(false);
 
         // Popup opened as a non-blocking DISPLAY popup with the shell content.
         expect(lastPopupOptions.wide).toBe(true);
         expect(lastPopup.content).toBe(shellRoot());
+
+        await controller.close();
+        await openPromise;
+    });
+
+    test('Task History button delegates to the provided onOpenHistory callback (inert without one)', async () => {
+        // With no onOpenHistory: clicking the enabled button is a safe no-op.
+        const noCallback = new TaskWizardController({ client: createTaskClient() });
+        const { openPromise: noCallbackPromise } = await openAndFlush(noCallback);
+        const inertButton = header().children[4];
+        expect(inertButton.id).toBe('bc_task_history');
+        expect(inertButton.disabled).toBe(false);
+        expect(() => inertButton.click()).not.toThrow();
+        await noCallback.close();
+        await noCallbackPromise;
+
+        // With a callback: clicking delegates exactly once.
+        const onOpenHistory = jest.fn();
+        const controller = new TaskWizardController({ client: createTaskClient(), onOpenHistory });
+        const { openPromise } = await openAndFlush(controller);
+        header().children[4].click();
+        expect(onOpenHistory).toHaveBeenCalledTimes(1);
 
         await controller.close();
         await openPromise;
