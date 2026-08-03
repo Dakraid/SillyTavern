@@ -73,10 +73,12 @@ function deepMergeInto(target, patch) {
 
 export async function getRepo(request) {
     const root = request.user?.directories?.root;
-    if (typeof root !== 'string' || !path.isAbsolute(root)) {
+    if (typeof root !== 'string' || root.length === 0) {
         throw new TaskValidationError('Authenticated user data root is unavailable');
     }
-    const tasksRoot = path.join(root, TASKS_DIRECTORY);
+    // Resolve a possibly-relative data root against the process cwd (same as
+    // the rest of the app) instead of rejecting it.
+    const tasksRoot = path.join(path.resolve(root), TASKS_DIRECTORY);
     await fs.promises.mkdir(tasksRoot, { recursive: true });
     return new BulkCombineTaskRepository(tasksRoot);
 }

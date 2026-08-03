@@ -73,9 +73,13 @@ function resetActiveItemState(items) {
 
 export class BulkCombineTaskRepository {
     constructor(tasksRoot) {
-        if (typeof tasksRoot !== 'string' || !path.isAbsolute(tasksRoot)) {
-            throw new TypeError('tasksRoot must be an absolute path');
+        if (typeof tasksRoot !== 'string' || tasksRoot.length === 0) {
+            throw new TypeError('tasksRoot must be a non-empty path string');
         }
+        // Resolve rather than reject relative paths: a relative dataRoot is a
+        // valid SillyTavern deployment configuration that the rest of the app
+        // handles by letting Node resolve it against the process cwd. Matching
+        // that here keeps bulk-combine compatible with such deployments.
         this.tasksRoot = path.resolve(tasksRoot);
     }
 

@@ -40,6 +40,18 @@ afterAll(async () => {
 });
 
 describe('BulkCombineTaskRepository', () => {
+    test('accepts a relative tasksRoot and resolves it against the process cwd', async () => {
+        // Regression: a relative dataRoot is a valid deployment config; the
+        // repository must resolve it (like the rest of the app) instead of
+        // rejecting it.
+        const relative = path.relative(process.cwd(), root);
+        expect(path.isAbsolute(relative)).toBe(false);
+        const relativeRepo = new BulkCombineTaskRepository(relative);
+        expect(relativeRepo.tasksRoot).toBe(path.resolve(relative));
+        const created = await relativeRepo.createTask({ name: 'Relative' });
+        expect(await relativeRepo.getTask(created.id)).toMatchObject({ name: 'Relative' });
+    });
+
     test('creates, gets, lists, and updates tasks with a revision bump', async () => {
         const created = await repo.createTask({ name: 'First' });
 
