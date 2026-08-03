@@ -1,0 +1,351 @@
+/* ==========================================================================
+   Guided task wizard — Prompt & Settings page (Step 11d)
+
+   Styles for `wizard/pages/promptSettingsPage.js`. Kept in a dedicated file
+   so the page lands without touching `styles.css`; the orchestrator adds the
+   `@import` line to `public/style.css` when wiring the page registry.
+
+   Classes: .bc-task-*  |  SmartTheme variables only; no fixed theme colors.
+   ========================================================================== */
+
+/* --- Prompt workspaces (main prompt + assistant, side by side) --- */
+
+.bc-task-prompt-workspaces {
+	display: flex;
+	align-items: flex-start;
+	gap: 1em;
+}
+
+.bc-task-workspace {
+	flex: 1 1 0;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	padding: 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 94%, var(--SmartThemeQuoteColor) 6%);
+}
+
+.bc-task-workspace-title {
+	margin: 0;
+	font-size: 1.05em;
+}
+
+.bc-task-workspace-note {
+	margin: 0;
+	font-size: 0.85em;
+	opacity: 0.65;
+}
+
+.bc-task-prompt-textarea,
+.bc-task-assist-textarea,
+.bc-task-pass-textarea {
+	width: 100%;
+	box-sizing: border-box;
+	resize: vertical;
+	font-family: inherit;
+	font-size: 0.95em;
+	line-height: 1.4;
+}
+
+.bc-task-prompt-actions,
+.bc-task-assist-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5em;
+}
+
+.bc-task-save-prompt,
+.bc-task-suggest,
+.bc-task-apply-proposal,
+.bc-task-dismiss-proposal,
+.bc-task-preset-apply,
+.bc-task-preset-save,
+.bc-task-preset-delete {
+	padding: 0.35em 1em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-save-prompt,
+.bc-task-apply-proposal {
+	border-color: var(--SmartThemeQuoteColor);
+	font-weight: 600;
+}
+
+.bc-task-save-prompt:hover:not(:disabled),
+.bc-task-suggest:hover:not(:disabled),
+.bc-task-apply-proposal:hover:not(:disabled),
+.bc-task-dismiss-proposal:hover:not(:disabled),
+.bc-task-preset-apply:hover:not(:disabled),
+.bc-task-preset-save:hover:not(:disabled),
+.bc-task-preset-delete:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 80%, var(--SmartThemeQuoteColor) 20%);
+}
+
+.bc-task-save-prompt:focus-visible,
+.bc-task-suggest:focus-visible,
+.bc-task-apply-proposal:focus-visible,
+.bc-task-dismiss-proposal:focus-visible,
+.bc-task-preset-apply:focus-visible,
+.bc-task-preset-save:focus-visible,
+.bc-task-preset-delete:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-save-prompt:disabled,
+.bc-task-suggest:disabled,
+.bc-task-preset-apply:disabled,
+.bc-task-preset-delete:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* --- Prompt preset rows --- */
+
+.bc-task-preset-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.5em;
+}
+
+.bc-task-preset-select {
+	flex: 1 1 12em;
+	min-width: 0;
+	max-width: none;
+}
+
+.bc-task-preset-apply,
+.bc-task-preset-save,
+.bc-task-preset-delete {
+	padding: 0.25em 0.75em;
+}
+
+/* --- Assistant status / error / proposal --- */
+
+.bc-task-assist-status {
+	margin: 0;
+	font-size: 0.85em;
+	font-style: italic;
+	opacity: 0.8;
+}
+
+.bc-task-assist-error {
+	margin: 0;
+	padding: 0.5em 0.75em;
+	border: 1px solid var(--SmartThemeEmColor);
+	border-radius: 8px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeEmColor) 15%);
+	font-size: 0.85em;
+	overflow-wrap: break-word;
+}
+
+.bc-task-proposal {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	padding: 0.6em 0.75em;
+	border: 1px solid var(--SmartThemeQuoteColor);
+	border-radius: 10px;
+}
+
+.bc-task-proposal-title {
+	margin: 0;
+	font-size: 0.95em;
+}
+
+.bc-task-proposal-diff {
+	max-height: 18em;
+	overflow-y: auto;
+	padding: 0.5em 0.6em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 92%, var(--SmartThemeQuoteColor) 8%);
+	font-size: 0.88em;
+	line-height: 1.45;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+.bc-task-diff-ins {
+	background-color: color-mix(in srgb, transparent 80%, var(--SmartThemeEmColor) 20%);
+	border-radius: 3px;
+	text-decoration: none;
+}
+
+.bc-task-diff-del {
+	background-color: color-mix(in srgb, transparent 82%, var(--SmartThemeQuoteColor) 18%);
+	border-radius: 3px;
+	text-decoration: line-through;
+	opacity: 0.85;
+}
+
+.bc-task-proposal-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5em;
+}
+
+/* --- Settings drawer (grouped details sections) --- */
+
+.bc-task-settings {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+}
+
+.bc-task-settings-title {
+	margin: 0;
+	font-size: 1.05em;
+}
+
+.bc-task-settings-note {
+	margin: 0;
+	font-size: 0.85em;
+	opacity: 0.65;
+}
+
+.bc-task-settings-group {
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 95%, var(--SmartThemeQuoteColor) 5%);
+}
+
+.bc-task-settings-summary {
+	padding: 0.55em 0.75em;
+	font-weight: 700;
+	cursor: pointer;
+	border-radius: 10px;
+	list-style-position: inside;
+	transition: background-color 0.15s ease;
+}
+
+.bc-task-settings-summary:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 88%, var(--SmartThemeQuoteColor) 12%);
+}
+
+.bc-task-settings-summary:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: -2px;
+}
+
+.bc-task-settings-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6em;
+	padding: 0.25em 0.75em 0.75em;
+}
+
+/* --- Field rows --- */
+
+.bc-task-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25em;
+}
+
+.bc-task-field-label {
+	font-size: 0.88em;
+	font-weight: 600;
+}
+
+.bc-task-field-hint {
+	font-size: 0.8em;
+	opacity: 0.6;
+}
+
+.bc-task-select,
+.bc-task-number {
+	max-width: 24em;
+}
+
+.bc-task-number:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.bc-task-checkbox {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	cursor: pointer;
+}
+
+.bc-task-checkbox-label {
+	font-size: 0.92em;
+}
+
+.bc-task-mode-option {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.5em;
+	cursor: pointer;
+}
+
+.bc-task-mode-text {
+	display: flex;
+	flex-direction: column;
+	gap: 0.1em;
+}
+
+.bc-task-mode-title {
+	font-size: 0.92em;
+	font-weight: 600;
+}
+
+.bc-task-mode-description {
+	font-size: 0.8em;
+	opacity: 0.6;
+}
+
+.bc-task-resolved-readout {
+	margin: 0;
+	padding: 0.4em 0.6em;
+	border: 1px dashed var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	font-size: 0.82em;
+	opacity: 0.85;
+	overflow-wrap: break-word;
+}
+
+/* --- Reduced motion --- */
+
+@media (prefers-reduced-motion: reduce) {
+	.bc-task-save-prompt,
+	.bc-task-suggest,
+	.bc-task-apply-proposal,
+	.bc-task-dismiss-proposal,
+	.bc-task-preset-apply,
+	.bc-task-preset-save,
+	.bc-task-preset-delete,
+	.bc-task-settings-summary {
+		transition: none;
+	}
+}
+
+/* --- Narrow screens: workspaces stack --- */
+
+@media (max-width: 600px) {
+	.bc-task-prompt-workspaces {
+		flex-direction: column;
+	}
+
+	.bc-task-workspace {
+		width: 100%;
+		box-sizing: border-box;
+	}
+
+	.bc-task-select,
+	.bc-task-number {
+		max-width: 100%;
+	}
+}

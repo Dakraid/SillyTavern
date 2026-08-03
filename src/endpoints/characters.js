@@ -50,15 +50,7 @@ import {
     generateMosaicComposite,
     generateVoronoiComposite,
 } from '../util/voronoi-composite.js';
-import { groupCardJobManager } from '../util/group-card-job.js';
 import { globalJobRegistry } from '../util/job-manager.js';
-import {
-    createBackup as createGroupCardBackup,
-    listBackups as listGroupCardBackups,
-    restoreBackup as restoreGroupCardBackup,
-} from '../util/group-card-backup.js';
-
-globalJobRegistry.register('group-card', groupCardJobManager);
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue(
@@ -438,7 +430,7 @@ const calculateDataSize = (data) => {
  * @param {object} character Character object
  * @returns {{shallow: true, [key: string]: any}} Shallow character
  */
-const toShallow = (character) => {
+export const toShallow = (character) => {
     return {
         shallow: true,
         name: character.name,
@@ -461,6 +453,7 @@ const toShallow = (character) => {
                 fav: _.get(character, 'data.extensions.fav', false),
                 world: _.get(character, 'data.extensions.world', ''),
                 group_card_wizard: _.get(character, 'data.extensions.group_card_wizard', null),
+                bulk_combine_task: _.get(character, 'data.extensions.bulk_combine_task', null),
             },
         },
     };
@@ -2165,196 +2158,12 @@ router.post(
     },
 );
 
-router.post('/group-card-job', async function (request, response) {
-    try {
-        if (!request.body || typeof request.body !== 'object') {
-            return response.status(400).send({ message: 'Job config is required' });
-        }
-
-        const config = {
-            ...(request.body.config && typeof request.body.config === 'object'
-                ? request.body.config
-                : request.body),
-            directories: request.user.directories,
-        };
-        const job = groupCardJobManager.createJob(config);
-
-        return response.send({ jobId: job.id });
-    } catch (err) {
-        console.error('Group card job creation failed:', err);
-        return response
-            .status(500)
-            .send({ message: 'Failed to create group card job' });
-    }
-});
-
-router.post('/group-card-job/regen', async function (request, response) {
-    try {
-        if (!request.body || typeof request.body !== 'object') {
-            return response.status(400).send({ message: 'Regen config is required' });
-        }
-
-        const config = {
-            ...(request.body.config && typeof request.body.config === 'object'
-                ? request.body.config
-                : request.body),
-            directories: request.user.directories,
-        };
-
-        if (!Array.isArray(config.characters) || config.characters.length === 0) {
-            return response
-                .status(400)
-                .send({ message: 'At least one character is required' });
-        }
-
-        const { jobId } = await groupCardJobManager.createRegenJob(config);
-
-        return response.send({ jobId });
-    } catch (err) {
-        console.error('Group card regen job creation failed:', err);
-        return response.status(500).send({ message: 'Failed to create regen job' });
-    }
-});
-
 router.get('/jobs', function (_request, response) {
     response.json({ jobs: globalJobRegistry.getAllActiveJobs() });
 });
 
 router.get('/jobs/events', function (_request, response) {
     globalJobRegistry.addGlobalSseClient(response);
-});
-
-router.get('/group-card-job/:id/events', function (request, response) {
-    const jobId = String(request.params.id ?? '');
-    const job = groupCardJobManager.getJob(jobId);
-
-    if (!job) {
-        return response.status(404).send({ message: 'Group card job not found' });
-    }
-
-    response.setHeader('Content-Type', 'text/event-stream');
-    response.setHeader('Cache-Control', 'no-cache');
-    response.setHeader('Connection', 'keep-alive');
-    response.flushHeaders?.();
-    response.write(': connected\n\n');
-
-    const lastEventId = Number(request.get('Last-Event-ID') ?? 0);
-    groupCardJobManager.addSseClient(
-        jobId,
-        response,
-        Number.isFinite(lastEventId) ? lastEventId : 0,
-    );
-});
-
-router.get('/group-card-job/:id', function (request, response) {
-    const job = groupCardJobManager.getJob(String(request.params.id ?? ''));
-
-    if (!job) {
-        return response.status(404).send({ message: 'Group card job not found' });
-    }
-
-    return response.send(groupCardJobManager.serializeJob(job));
-});
-
-router.post('/group-card-job/:id/cancel', function (request, response) {
-    const cancelled = groupCardJobManager.cancelJob(
-        String(request.params.id ?? ''),
-    );
-
-    if (!cancelled) {
-        return response.status(404).send({ message: 'Group card job not found' });
-    }
-
-    return response.send({ cancelled: true });
-});
-
-function validateGroupCardBackupAvatar(avatar) {
-    return (
-        typeof avatar === 'string' &&
-		!forbiddenRegExp.test(avatar) &&
-		!avatar.includes('/') &&
-		!avatar.includes('\\') &&
-		path.extname(avatar).toLowerCase() === '.png' &&
-		path.basename(avatar) === avatar
-    );
-}
-
-router.post('/group-card-backup', async function (request, response) {
-    try {
-        const avatar = request.body?.avatar;
-        if (!validateGroupCardBackupAvatar(avatar)) {
-            return response.status(400).send({ message: 'Invalid avatar filename.' });
-        }
-
-        const fullPath = path.join(request.user.directories.characters, avatar);
-        if (!fs.existsSync(fullPath)) {
-            return response
-                .status(404)
-                .send({ message: `Avatar not found: ${avatar}` });
-        }
-
-        const backup = createGroupCardBackup(
-            request.user.directories.characters,
-            avatar,
-        );
-        const backups = listGroupCardBackups(
-            request.user.directories.characters,
-            avatar,
-        );
-        return response.send({ ...backup, backups });
-    } catch (error) {
-        console.error('Group card backup failed:', error);
-        return response.status(500).send({ message: 'Failed to create backup.' });
-    }
-});
-
-router.post(
-    '/group-card-backup/:avatar/restore',
-    async function (request, response) {
-        try {
-            const avatar = request.params.avatar;
-            const timestamp = String(request.body?.timestamp ?? '');
-            if (!validateGroupCardBackupAvatar(avatar)) {
-                return response
-                    .status(400)
-                    .send({ message: 'Invalid avatar filename.' });
-            }
-            if (!timestamp) {
-                return response.status(400).send({ message: 'timestamp is required.' });
-            }
-
-            restoreGroupCardBackup(
-                request.user.directories.characters,
-                avatar,
-                timestamp,
-            );
-            return response.send({ restored: true });
-        } catch (error) {
-            console.error('Group card backup restore failed:', error);
-            return response
-                .status(500)
-                .send({ message: 'Failed to restore backup.' });
-        }
-    },
-);
-
-router.get('/group-card-backup/:avatar', async function (request, response) {
-    try {
-        const avatar = request.params.avatar;
-        if (!validateGroupCardBackupAvatar(avatar)) {
-            return response.status(400).send({ message: 'Invalid avatar filename.' });
-        }
-
-        return response.send({
-            backups: listGroupCardBackups(
-                request.user.directories.characters,
-                avatar,
-            ),
-        });
-    } catch (error) {
-        console.error('Group card backup list failed:', error);
-        return response.status(500).send({ message: 'Failed to list backups.' });
-    }
 });
 
 const VALID_GRID_ALIGNS = [

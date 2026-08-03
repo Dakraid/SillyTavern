@@ -1,0 +1,295 @@
+/* ==========================================================================
+   Guided task wizard — Review page (Step 11f)
+
+   Styles for `wizard/pages/reviewPage.js`. Dedicated file so the page lands
+   without touching `styles.css`; the orchestrator adds the `@import` line
+   to `public/style.css` when wiring the page registry.
+
+   Classes: .bc-task-review-*  |  SmartTheme variables only.
+   Shared shell (.bc-task-page/-title/-note) lives in bulk-combine/styles.css;
+   .bc-task-continue lives in cardsPage.css.
+   ========================================================================== */
+
+/* --- Stale banner --- */
+
+.bc-task-review-stale {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.6em;
+	padding: 0.6em 0.8em;
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 10%);
+}
+
+.bc-task-review-stale > i {
+	margin-top: 0.15em;
+	opacity: 0.85;
+}
+
+.bc-task-review-stale-text {
+	margin: 0;
+	overflow-wrap: break-word;
+}
+
+/* --- Toolbar --- */
+
+.bc-task-review-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	padding-top: 0.5em;
+}
+
+.bc-task-review-refresh {
+	padding: 0.3em 0.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-review-refresh:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-review-refresh:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-review-refresh:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+/* --- Loading / error --- */
+
+.bc-task-review-loading {
+	margin: 0;
+	opacity: 0.7;
+	font-style: italic;
+}
+
+.bc-task-review-error {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4em;
+	padding: 0.6em 0.8em;
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
+	border-radius: 10px;
+}
+
+.bc-task-review-error-text {
+	margin: 0;
+	color: color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 75%, currentColor);
+	overflow-wrap: break-word;
+}
+
+.bc-task-review-retry {
+	align-self: flex-start;
+	padding: 0.3em 0.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-review-retry:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+/* --- Editable final card --- */
+
+.bc-task-review-card,
+.bc-task-review-destination {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	padding: 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 93%, var(--SmartThemeQuoteColor) 7%);
+}
+
+.bc-task-review-section-title {
+	margin: 0;
+	font-size: 1.05em;
+}
+
+.bc-task-review-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25em;
+}
+
+.bc-task-review-label {
+	font-size: 0.9em;
+	opacity: 0.8;
+}
+
+.bc-task-review-name {
+	max-width: 28em;
+}
+
+.bc-task-review-description,
+.bc-task-review-firstMes {
+	resize: vertical;
+	min-height: 8em;
+	font-family: var(--monoFont, monospace);
+}
+
+/* --- Destination preview tabs --- */
+
+.bc-task-review-destination-note {
+	margin: 0;
+	font-size: 0.85em;
+	opacity: 0.65;
+	font-style: italic;
+}
+
+.bc-task-review-tabs {
+	display: flex;
+	align-items: center;
+	gap: 0.4em;
+	flex-wrap: wrap;
+}
+
+.bc-task-review-tab {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4em;
+	padding: 0.3em 0.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-bottom: none;
+	border-radius: 6px 6px 0 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-review-tab[aria-selected='true'] {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 80%, var(--SmartThemeQuoteColor) 20%);
+	border-color: var(--SmartThemeQuoteColor);
+	font-weight: 600;
+}
+
+.bc-task-review-tab:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-review-tab-badge {
+	font-size: 0.7em;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	opacity: 0.7;
+}
+
+.bc-task-review-card-preview {
+	margin: 0;
+	padding: 0.6em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 0 8px 8px 8px;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	max-height: 20em;
+	overflow-y: auto;
+	font-family: var(--monoFont, monospace);
+	font-size: 0.9em;
+}
+
+/* --- Lorebook entries --- */
+
+.bc-task-review-lorebook {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	max-height: 24em;
+	overflow-y: auto;
+}
+
+.bc-task-review-lorebook-note {
+	margin: 0;
+	opacity: 0.7;
+	font-style: italic;
+}
+
+.bc-task-review-entry {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2em;
+	padding: 0.5em 0.6em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+}
+
+.bc-task-review-entry-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5em;
+}
+
+.bc-task-review-entry-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 600;
+}
+
+.bc-task-review-entry-order {
+	flex-shrink: 0;
+	font-size: 0.78em;
+	opacity: 0.7;
+}
+
+.bc-task-review-entry-keys {
+	font-size: 0.82em;
+	opacity: 0.65;
+}
+
+.bc-task-review-entry-preview {
+	margin: 0;
+	font-size: 0.88em;
+	overflow-wrap: break-word;
+	opacity: 0.9;
+}
+
+/* --- Footer (shared .bc-task-continue) --- */
+
+.bc-task-review-footer {
+	display: flex;
+	justify-content: flex-end;
+	padding-top: 0.75em;
+	border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+/* --- Reduced motion --- */
+
+@media (prefers-reduced-motion: reduce) {
+	.bc-task-review-refresh,
+	.bc-task-review-retry,
+	.bc-task-review-tab {
+		transition: none;
+	}
+}
+
+@media (max-width: 600px) {
+	.bc-task-review-entry-head {
+		flex-direction: column;
+		align-items: flex-start;
+	}
+}

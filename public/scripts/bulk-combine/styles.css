@@ -626,84 +626,6 @@
       the two-column avatar studio.
    ======================================================================== */
 
-/* --- Stepper (stage indicator bar) --- */
-
-.bcw-stepper {
-	display: flex;
-	align-items: center;
-	gap: 0.5em;
-	flex-wrap: wrap;
-}
-
-/* Individual stage node: icon + label, pill-shaped */
-.bcw-stepper-node {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.35em;
-	min-width: 2.25em;
-	min-height: 2.25em;
-	padding: 0.35em 0.7em;
-	border: 1px solid var(--SmartThemeBorderColor);
-	border-radius: 999px;
-	background-color: color-mix(
-		in srgb,
-		var(--SmartThemeBlurTintColor) 88%,
-		var(--SmartThemeBodyColor) 12%
-	);
-	color: var(--SmartThemeBodyColor);
-	font-size: 0.85em;
-	font-weight: 600;
-	opacity: 0.4;
-	cursor: default;
-	transition: opacity 0.2s, transform 0.2s, border-color 0.2s;
-}
-
-.bcw-stepper-node.clickable {
-	cursor: pointer;
-}
-
-.bcw-stepper-node.active {
-	border-color: var(--SmartThemeQuoteColor);
-	box-shadow: 0 0 0 1px var(--SmartThemeQuoteColor) inset;
-	color: var(--SmartThemeQuoteColor);
-	opacity: 1;
-	transform: scale(1.05);
-}
-
-.bcw-stepper-node.completed {
-	border-color: rgba(76, 175, 80, 0.75);
-	color: #7fd37f;
-	opacity: 0.9;
-}
-
-/* Connecting line between nodes: dashed when upcoming, solid when done */
-.bcw-stepper-line {
-	flex: 1 1 auto;
-	min-width: 1.5em;
-	height: 0;
-	border-top: 2px dashed var(--SmartThemeBorderColor);
-}
-
-.bcw-stepper-line.completed {
-	border-top: 2px solid rgba(76, 175, 80, 0.6);
-}
-
-/* --- Stage panel (one visible at a time, 200 ms fade) --- */
-
-.bcw-stage {
-	display: none;
-	animation: bcw-stage-fade 0.2s ease;
-}
-
-.bcw-stage.active {
-	display: block;
-}
-
-@keyframes bcw-stage-fade {
-	from { opacity: 0; }
-	to { opacity: 1; }
-}
-
 /* --- Stage 1: character card strip --- */
 
 .bcw-character-strip {
@@ -1053,11 +975,6 @@
 		scroll-snap-type: none;
 	}
 
-	.bcw-stepper {
-		overflow-x: auto;
-		flex-wrap: nowrap;
-	}
-
 	.bcw-button-primary,
 	.bcw-button-secondary {
 		flex: 1 1 auto;
@@ -1107,5 +1024,329 @@
 @media (max-width: 768px) {
 	.bcw-preview-container {
 		grid-template-columns: 1fr;
+	}
+}
+
+/* ==========================================================================
+   Guided task wizard shell (8-page durable workflow)
+   Classes: .bc-task-*  |  Element ids: bc_task_*
+   ========================================================================== */
+
+.bc-task {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75em;
+	height: 100%;
+	min-height: 0;
+	/* Status tones routed through SmartTheme variables (DESIGN: no fixed
+	   theme colors). Page CSS files consume these via var() fallbacks. */
+	--bc-task-tone-info: var(--SmartThemeQuoteColor);
+	--bc-task-tone-success: var(--SmartThemeUnderlineColor);
+	--bc-task-tone-warning: color-mix(in srgb, var(--SmartThemeQuoteColor) 60%, var(--SmartThemeEmColor) 40%);
+	--bc-task-tone-danger: var(--SmartThemeEmColor);
+}
+
+/* --- Header: task name, save state, execution summary, Task History --- */
+
+.bc-task-header {
+	display: flex;
+	align-items: center;
+	gap: 0.75em;
+	flex-wrap: wrap;
+	padding-bottom: 0.5em;
+	border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.bc-task-name-label {
+	font-weight: 600;
+	opacity: 0.8;
+	flex: 0 0 auto;
+}
+
+.bc-task-name {
+	flex: 1 1 16em;
+	min-width: 10em;
+	max-width: 32em;
+}
+
+.bc-task-save-state {
+	flex: 0 0 auto;
+	font-size: 0.85em;
+	opacity: 0.75;
+	transition: opacity 0.2s ease;
+}
+
+.bc-task-save-state--saving {
+	opacity: 1;
+}
+
+.bc-task-save-state--conflict,
+.bc-task-save-state--error {
+	opacity: 1;
+	color: var(--bc-task-tone-warning);
+}
+
+.bc-task-execution {
+	flex: 1 1 auto;
+	font-size: 0.85em;
+	font-style: italic;
+	opacity: 0.8;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.bc-task-history-button {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4em;
+}
+
+.bc-task-history-button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* --- Main two-column area: rail + canvas --- */
+
+.bc-task-main {
+	display: grid;
+	grid-template-columns: minmax(14em, 18em) minmax(0, 1fr);
+	gap: 1em;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.bc-task-rail-host {
+	min-height: 0;
+	overflow-y: auto;
+	border-right: 1px solid var(--SmartThemeBorderColor);
+	padding-right: 0.75em;
+}
+
+.bc-task-rail {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35em;
+}
+
+.bc-task-rail-item {
+	display: grid;
+	grid-template-columns: 1.6em minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.5em;
+	padding: 0.5em 0.6em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-rail-item:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+}
+
+.bc-task-rail-item:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-rail-item.active {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 75%, var(--SmartThemeQuoteColor) 25%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-rail-item:disabled {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+.bc-task-rail-item--skipped {
+	font-style: italic;
+}
+
+.bc-task-rail-number {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.6em;
+	height: 1.6em;
+	border-radius: 50%;
+	border: 1px solid var(--SmartThemeBorderColor);
+	font-size: 0.85em;
+	font-weight: 700;
+	opacity: 0.85;
+}
+
+.bc-task-rail-item.active .bc-task-rail-number {
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-rail-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 600;
+}
+
+/* --- Status badges (status tints match the existing .bcw-status-badge family) --- */
+
+.bc-task-status {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.15em 0.5em;
+	border-radius: 999px;
+	font-size: 0.75em;
+	font-weight: 700;
+	white-space: nowrap;
+}
+
+.bc-task-status--not_started {
+	color: var(--grey75);
+	opacity: 0.8;
+}
+
+.bc-task-status--ready {
+	color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-status--running {
+	color: var(--bc-task-tone-info);
+	animation: bcw-status-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.bc-task-status--complete {
+	color: var(--bc-task-tone-success);
+}
+
+.bc-task-status--stale,
+.bc-task-status--interrupted {
+	color: var(--bc-task-tone-warning);
+}
+
+.bc-task-status--failed {
+	color: var(--bc-task-tone-danger);
+}
+
+.bc-task-status--skipped,
+.bc-task-status--disabled {
+	color: var(--grey75);
+	opacity: 0.7;
+}
+
+/* --- Shared completed-task read-only note --- */
+
+.bc-task-readonly-note {
+	margin: 0;
+	padding: 0.5em 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--bc-task-tone-info) 10%);
+	font-size: 0.9em;
+	font-style: italic;
+}
+
+/* --- Content canvas + placeholder pages --- */
+
+.bc-task-canvas {
+	min-width: 0;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 0.25em 0.25em 0.5em;
+}
+
+.bc-task-page {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75em;
+}
+
+.bc-task-page-title {
+	margin: 0;
+	font-size: 1.3em;
+}
+
+.bc-task-page-title:focus {
+	outline: none;
+}
+
+.bc-task-page-note {
+	margin: 0;
+	opacity: 0.65;
+	font-style: italic;
+}
+
+.bc-task-page-summary {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35em;
+	padding: 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--SmartThemeQuoteColor) 10%);
+	font-size: 0.9em;
+}
+
+.bc-task-page-summary-line {
+	margin: 0;
+	overflow-wrap: break-word;
+}
+
+/* --- Reduced motion --- */
+
+@media (prefers-reduced-motion: reduce) {
+	.bc-task-rail-item,
+	.bc-task-save-state {
+		transition: none;
+	}
+
+	.bc-task-status--running {
+		animation: none;
+	}
+}
+
+/* --- Narrow screens: rail collapses to a compact page/status strip --- */
+
+@media (max-width: 768px) {
+	.bc-task-main {
+		grid-template-columns: 1fr;
+	}
+
+	.bc-task-rail-host {
+		border-right: none;
+		border-bottom: 1px solid var(--SmartThemeBorderColor);
+		padding-right: 0;
+		padding-bottom: 0.5em;
+		overflow-x: auto;
+		overflow-y: hidden;
+	}
+
+	.bc-task-rail {
+		flex-direction: row;
+		flex-wrap: nowrap;
+	}
+
+	.bc-task-rail-item {
+		flex: 0 0 auto;
+		grid-template-columns: 1.6em auto;
+	}
+
+	.bc-task-rail-title {
+		display: none;
+	}
+
+	.bc-task-header {
+		gap: 0.5em;
+	}
+
+	.bc-task-execution {
+		flex-basis: 100%;
+		order: 5;
 	}
 }

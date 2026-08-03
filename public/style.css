@@ -17,6 +17,14 @@
 @import url(css/chat-backups.css);
 @import url(css/streaming-display.css);
 @import url(scripts/bulk-combine/styles.css);
+@import url(scripts/bulk-combine/wizard/pages/cardsPage.css);
+@import url(scripts/bulk-combine/wizard/pages/promptSettingsPage.css);
+@import url(scripts/bulk-combine/wizard/pages/transformPage.css);
+@import url(scripts/bulk-combine/wizard/pages/postPage.css);
+@import url(scripts/bulk-combine/wizard/pages/reviewPage.css);
+@import url(scripts/bulk-combine/wizard/pages/avatarPage.css);
+@import url(scripts/bulk-combine/components/TaskHistoryPanel.css);
+@import url(scripts/bulk-combine/components/AvatarCompositor.css);
 
 :root {
 	interpolate-size: allow-keywords;

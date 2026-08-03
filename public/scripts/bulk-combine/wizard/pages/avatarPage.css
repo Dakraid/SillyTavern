@@ -1,0 +1,259 @@
+/* ==========================================================================
+   Guided task wizard — Avatar Studio & Create page (Step 11g, Part B)
+
+   Styles for `wizard/pages/avatarPage.js`. Dedicated file so the page lands
+   without touching `styles.css`; the orchestrator adds the `@import` line
+   to `public/style.css` when wiring the page registry (together with the
+   `components/AvatarCompositor.css` import).
+
+   Classes: .bc-task-avatar-*  |  SmartTheme variables only.
+   Shared shell (.bc-task-page/-title/-note) lives in bulk-combine/styles.css;
+   .bc-task-continue lives in cardsPage.css; .bc-compositor* lives in
+   components/AvatarCompositor.css.
+   ========================================================================== */
+
+/* --- Stale banner --- */
+
+.bc-task-avatar-stale {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.6em;
+	padding: 0.6em 0.8em;
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 10%);
+}
+
+.bc-task-avatar-stale > i {
+	margin-top: 0.15em;
+	opacity: 0.85;
+}
+
+.bc-task-avatar-stale-text {
+	margin: 0;
+	overflow-wrap: break-word;
+}
+
+/* --- Loading / payload error --- */
+
+.bc-task-avatar-loading {
+	margin: 0;
+	opacity: 0.7;
+	font-style: italic;
+}
+
+.bc-task-avatar-error {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4em;
+	padding: 0.6em 0.8em;
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
+	border-radius: 10px;
+}
+
+.bc-task-avatar-error-text {
+	margin: 0;
+	color: color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 75%, currentColor);
+	overflow-wrap: break-word;
+}
+
+.bc-task-avatar-retry {
+	align-self: flex-start;
+	padding: 0.3em 0.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-avatar-retry:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-avatar-retry:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+/* --- Sections (summary / studio / create / created) --- */
+
+.bc-task-avatar-summary,
+.bc-task-avatar-studio,
+.bc-task-avatar-create,
+.bc-task-avatar-created {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	padding: 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 10px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 93%, var(--SmartThemeQuoteColor) 7%);
+}
+
+.bc-task-avatar-section-title {
+	display: flex;
+	align-items: center;
+	gap: 0.4em;
+	margin: 0;
+	font-size: 1.05em;
+}
+
+.bc-task-avatar-created .bc-task-avatar-section-title > i {
+	color: color-mix(in srgb, var(--bc-task-tone-success, var(--SmartThemeUnderlineColor)) 80%, currentColor);
+}
+
+/* --- Summary rows --- */
+
+.bc-task-avatar-summary-row {
+	display: flex;
+	align-items: baseline;
+	gap: 0.6em;
+}
+
+.bc-task-avatar-summary-label {
+	flex-shrink: 0;
+	min-width: 7.5em;
+	font-size: 0.9em;
+	opacity: 0.75;
+}
+
+.bc-task-avatar-summary-value {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 600;
+}
+
+.bc-task-avatar-summary-preview {
+	white-space: nowrap;
+	font-weight: 400;
+	opacity: 0.9;
+}
+
+.bc-task-avatar-description-preview {
+	margin: 0;
+	padding: 0.6em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	max-height: 14em;
+	overflow-y: auto;
+	font-family: var(--monoFont, monospace);
+	font-size: 0.88em;
+}
+
+/* --- Compositor host --- */
+
+.bc-task-avatar-compositor-host {
+	min-width: 0;
+}
+
+.bc-task-avatar-compositor-error {
+	margin: 0;
+	padding: 0.5em 0.7em;
+	border: 1px dashed var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	font-size: 0.9em;
+	opacity: 0.8;
+}
+
+/* --- Create section --- */
+
+.bc-task-avatar-create-button {
+	align-self: flex-start;
+	padding: 0.45em 1.4em;
+	border: 1px solid var(--SmartThemeQuoteColor);
+	border-radius: 8px;
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 25%, var(--SmartThemeBlurTintColor));
+	color: inherit;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-avatar-create-button:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 45%, var(--SmartThemeBlurTintColor));
+}
+
+.bc-task-avatar-create-button:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-avatar-create-button:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.bc-task-avatar-create-status {
+	margin: 0;
+	font-size: 0.9em;
+	opacity: 0.75;
+	font-style: italic;
+}
+
+.bc-task-avatar-create-error {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4em;
+	padding: 0.5em 0.7em;
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
+	border-radius: 8px;
+}
+
+.bc-task-avatar-create-error-text {
+	margin: 0;
+	color: color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 75%, currentColor);
+	overflow-wrap: break-word;
+}
+
+/* --- Created panel --- */
+
+.bc-task-avatar-created {
+	border-color: color-mix(in srgb, var(--bc-task-tone-success, var(--SmartThemeUnderlineColor)) 45%, var(--SmartThemeBorderColor));
+}
+
+.bc-task-avatar-created-warning {
+	margin: 0;
+	padding: 0.5em 0.7em;
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
+	border-radius: 8px;
+	font-size: 0.9em;
+	overflow-wrap: break-word;
+}
+
+/* --- Footer (shared .bc-task-continue) --- */
+
+.bc-task-avatar-footer {
+	display: flex;
+	justify-content: flex-start;
+	padding-top: 0.75em;
+	border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+/* --- Reduced motion / narrow screens --- */
+
+@media (prefers-reduced-motion: reduce) {
+	.bc-task-avatar-retry,
+	.bc-task-avatar-create-button {
+		transition: none;
+	}
+}
+
+@media (max-width: 600px) {
+	.bc-task-avatar-summary-row {
+		flex-direction: column;
+		gap: 0.1em;
+	}
+
+	.bc-task-avatar-summary-label {
+		min-width: 0;
+	}
+}
