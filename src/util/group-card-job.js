@@ -19,7 +19,7 @@ import {
 } from './job-manager.js';
 import { write as writeCharacterPngData } from '../character-card-parser.js';
 import { getUniqueName } from '../util.js';
-import { generateVoronoiComposite } from './voronoi-composite.js';
+import { generateVoronoiComposite, generateGridComposite, generateMosaicComposite } from './voronoi-composite.js';
 import {
     escapeXml,
     validateGeneratedGroupCardDescription,
@@ -1265,15 +1265,50 @@ export class GroupCardJobManager extends JobManager {
             `group-card-${crypto.randomUUID()}.png`,
         );
         createdArtifacts.tempAvatarPath = tempAvatarPath;
-        const { path: compositePath } = await generateVoronoiComposite(
-            avatarPaths,
-            tempAvatarPath,
-            {
-                cropStrategy: config.cropStrategy,
-                cropPadding: config.cropPadding,
-                offsets: config.avatarOffsets,
-            },
-        );
+        const layout = config.layout || 'voronoi';
+        let compositeResult;
+        if (layout === 'mosaic') {
+            compositeResult = await generateMosaicComposite(
+                avatarPaths,
+                tempAvatarPath,
+                {
+                    cropStrategy: config.cropStrategy,
+                    cropPadding: config.cropPadding,
+                    offsets: config.avatarOffsets,
+                    gap: config.gap ?? 2,
+                },
+            );
+        } else if (layout === 'grid-portrait' || layout === 'grid-square') {
+            compositeResult = await generateGridComposite(
+                avatarPaths,
+                tempAvatarPath,
+                {
+                    cropStrategy: config.cropStrategy,
+                    cropPadding: config.cropPadding,
+                    offsets: config.avatarOffsets,
+                    cellAspect: layout,
+                    gap: config.gap ?? 2,
+                    maxCols: config.maxCols ?? 0,
+                    minCols: config.minCols ?? 0,
+                    colsMaxBound: config.colsMaxBound ?? 0,
+                    gridAlign: config.gridAlign ?? 'center',
+                    gridVAlign: config.gridVAlign ?? 'center',
+                    gridDirection: config.gridDirection ?? 'row',
+                    cellFit: config.cellFit ?? 'cover',
+                },
+            );
+        } else {
+            compositeResult = await generateVoronoiComposite(
+                avatarPaths,
+                tempAvatarPath,
+                {
+                    cropStrategy: config.cropStrategy,
+                    cropPadding: config.cropPadding,
+                    offsets: config.avatarOffsets,
+                },
+            );
+        }
+        const { path: compositePath } = compositeResult;
         this.emitEvent(job.id, 'avatar_completed', {});
         throwIfAborted(signal);
 

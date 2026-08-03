@@ -24,10 +24,11 @@ import { initCollapsible } from './CollapsibleSection.js';
 /**
  * Generation lifecycle status values.
  *
- * @type {Readonly<{PENDING: string, GENERATING: string, COMPLETE: string, FAILED: string}>}
+ * @type {Readonly<{PENDING: string, QUEUED: string, GENERATING: string, COMPLETE: string, FAILED: string}>}
  */
 export const RESULT_STATUS = Object.freeze({
     PENDING: 'pending',
+    QUEUED: 'queued',
     GENERATING: 'generating',
     COMPLETE: 'complete',
     FAILED: 'failed',
@@ -40,6 +41,7 @@ export const RESULT_STATUS = Object.freeze({
  */
 const STATUS_BADGE = {
     [RESULT_STATUS.PENDING]: { icon: 'fa-hourglass-half', label: 'Pending' },
+    [RESULT_STATUS.QUEUED]: { icon: 'fa-hourglass-half', label: 'Queued' },
     [RESULT_STATUS.GENERATING]: { icon: 'fa-spinner fa-spin', label: 'Generating' },
     [RESULT_STATUS.COMPLETE]: { icon: 'fa-check', label: 'Complete' },
     [RESULT_STATUS.FAILED]: { icon: 'fa-xmark', label: 'Failed' },
@@ -220,11 +222,19 @@ export function createResultCard(characterId, callbacks = {}) {
  */
 export function updateResultCardStatus(element, status, parseStatus) {
     const $card = $(element);
-    const info = STATUS_BADGE[status] ?? STATUS_BADGE[RESULT_STATUS.PENDING];
 
     // Rebuild the badge for the new status.
     const $newBadge = createStatusBadge(status);
     $card.find('.bcw-status-badge').first().replaceWith($newBadge);
+
+    // Disable the regen button while a card is queued to prevent
+    // duplicate-click re-queuing; re-enable for all other statuses.
+    const $regenBtn = $card.find('.bcw-regen-btn');
+    const isQueued = status === RESULT_STATUS.QUEUED;
+    $regenBtn
+        .toggleClass('disabled', isQueued)
+        .attr('aria-disabled', isQueued ? 'true' : 'false')
+        .css('pointer-events', isQueued ? 'none' : '');
 
     if (parseStatus === 'ok' || parseStatus === 'error') {
         const $parse = $card.find('.bcw-parse-status');

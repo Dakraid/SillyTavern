@@ -45,6 +45,8 @@ function createDefaultConfig() {
         layout: 'voronoi',
         gap: 2,
         maxCols: 0,
+        minCols: 0,
+        colsMaxBound: 0,
         gridAlign: 'center',
         gridVAlign: 'center',
         gridDirection: 'row',

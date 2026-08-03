@@ -19,7 +19,7 @@ import {
 import { getValidSelectedCharacters, getCoreCharacterField } from '../helpers.js';
 import { throwIfNotOk } from '../services/JobClient.js';
 
-const VALID_LAYOUTS = ['voronoi', 'grid-portrait', 'grid-square'];
+const VALID_LAYOUTS = ['voronoi', 'grid-portrait', 'grid-square', 'mosaic'];
 const VALID_CROP_FOCUS = ['attention', 'entropy', 'center', 'top', 'face'];
 const VALID_GRID_ALIGN = [
     'center',
@@ -149,6 +149,7 @@ export class AvatarEditor {
         this.cells = [];
         this.selectedCellIndex = -1;
         this.regenerating = false;
+        this.pendingRegen = false;
         this.abortController = null;
         this.dragState = null;
         this.pinchState = null;
@@ -229,13 +230,28 @@ export class AvatarEditor {
         this.$stage.find('#bcw_gap_value').text(String(gap));
         this.$stage.find('#bcw_max_cols').val(String(maxCols));
         this.$stage.find('#bcw_max_cols_value').text(String(maxCols));
+        const minCols = clampNumber(config.minCols, 0, 20, 0);
+        const colsMaxBound = clampNumber(config.colsMaxBound, 0, 20, 0);
+        this.$stage.find('#bcw_min_cols').val(String(minCols));
+        this.$stage.find('#bcw_min_cols_value').text(String(minCols));
+        this.$stage.find('#bcw_cols_max_bound').val(String(colsMaxBound));
+        this.$stage.find('#bcw_cols_max_bound_value').text(String(colsMaxBound));
+        // Disable min/max when exact mode (maxCols != 0)
+        const isExact = maxCols !== 0;
+        this.$stage.find('#bcw_min_cols, #bcw_cols_max_bound').prop('disabled', isExact);
         this.$stage.find('#bcw_grid_align').val(gridAlign);
         this.$stage.find('#bcw_grid_valign').val(gridVAlign);
         this.$stage.find('#bcw_grid_direction').val(gridDirection);
         this.$stage.find('#bcw_cell_fit').val(cellFit);
 
         // Grid controls visibility.
+        const isMosaic = layout === 'mosaic';
         this.$stage.find('#bcw_grid_controls').prop('hidden', layout === 'voronoi');
+        this.$stage.find('#bcw_max_cols').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_align').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_valign').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_direction').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_cell_fit').closest('label').prop('hidden', isMosaic);
 
         // Aspect ratio pills.
         this.$stage.find('.bcw-ratio-pill').removeClass('active');
@@ -301,6 +317,23 @@ export class AvatarEditor {
             );
             this.$stage.find('#bcw_max_cols_value').text(String(maxCols));
             this.wizardState.update({ maxCols });
+            // Toggle min/max disabled state
+            const isExact = maxCols !== 0;
+            this.$stage.find('#bcw_min_cols, #bcw_cols_max_bound').prop('disabled', isExact);
+            await this.regenerate();
+        });
+
+        this.$stage.find('#bcw_min_cols').on('input', async () => {
+            const v = clampNumber(this.$stage.find('#bcw_min_cols').val(), 0, 20, 0);
+            this.$stage.find('#bcw_min_cols_value').text(String(v));
+            this.wizardState.update({ minCols: v });
+            await this.regenerate();
+        });
+
+        this.$stage.find('#bcw_cols_max_bound').on('input', async () => {
+            const v = clampNumber(this.$stage.find('#bcw_cols_max_bound').val(), 0, 20, 0);
+            this.$stage.find('#bcw_cols_max_bound_value').text(String(v));
+            this.wizardState.update({ colsMaxBound: v });
             await this.regenerate();
         });
 
@@ -364,7 +397,13 @@ export class AvatarEditor {
     async setLayout(layout) {
         const valid = VALID_LAYOUTS.includes(layout) ? layout : 'voronoi';
         this.wizardState.update({ layout: valid });
+        const isMosaic = valid === 'mosaic';
         this.$stage.find('#bcw_grid_controls').prop('hidden', valid === 'voronoi');
+        this.$stage.find('#bcw_max_cols').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_align').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_valign').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_grid_direction').closest('label').prop('hidden', isMosaic);
+        this.$stage.find('#bcw_cell_fit').closest('label').prop('hidden', isMosaic);
         await this.regenerate();
     }
 
@@ -394,6 +433,10 @@ export class AvatarEditor {
      */
     async regenerate() {
         if (this.regenerating) {
+            // Coalesce overlapping requests: keep only the latest pending
+            // call. Each retry reads fresh config from wizardState.
+            this.pendingRegen = true;
+            this.#showLoading(true, 'Queued…');
             return;
         }
 
@@ -437,6 +480,8 @@ export class AvatarEditor {
                         layout,
                         gap: config.gap,
                         maxCols: config.maxCols ?? 0,
+                        minCols: config.minCols ?? 0,
+                        colsMaxBound: config.colsMaxBound ?? 0,
                         gridAlign: config.gridAlign ?? 'center',
                         gridVAlign: config.gridVAlign ?? 'center',
                         gridDirection: config.gridDirection ?? 'row',
@@ -461,7 +506,14 @@ export class AvatarEditor {
             );
         } finally {
             this.regenerating = false;
-            this.#showLoading(false);
+            if (this.pendingRegen) {
+                this.pendingRegen = false;
+                // Fire-and-forget — the call synchronously re-shows loading
+                // before its first await, so there is no visible gap.
+                this.regenerate();
+            } else {
+                this.#showLoading(false);
+            }
         }
     }
 
@@ -483,9 +535,10 @@ export class AvatarEditor {
      * Show or hide the loading spinner overlay on the preview.
      *
      * @param {boolean} show Whether to show the spinner.
+     * @param {string} [text] Optional status text (defaults to "Generating…").
      * @returns {void}
      */
-    #showLoading(show) {
+    #showLoading(show, text) {
         const $canvas = this.$stage.find('#bcw_avatar_canvas');
         $canvas.find('.bcw-avatar-loading').remove();
         if (show) {
@@ -496,6 +549,8 @@ export class AvatarEditor {
                         position: 'absolute',
                         inset: '0',
                         display: 'flex',
+                        'flex-direction': 'column',
+                        gap: '0.5em',
                         'align-items': 'center',
                         'justify-content': 'center',
                         'background-color': 'rgba(0,0,0,0.4)',
@@ -506,6 +561,11 @@ export class AvatarEditor {
                         $('<i></i>')
                             .addClass('fa-solid fa-spinner fa-spin fa-2x')
                             .css({ color: 'var(--SmartThemeQuoteColor)' }),
+                    )
+                    .append(
+                        $('<div></div>')
+                            .addClass('bcw-avatar-loading-text')
+                            .text(text || 'Generating…'),
                     ),
             );
         }
@@ -632,11 +692,22 @@ export class AvatarEditor {
                 'avatar',
                 character?.avatar ?? '',
             );
-            cellImg.style.cssText =
-                `position:absolute;width:${previewWidth}px;` +
-                `height:${previewHeight}px;` +
-                `left:${-bounds.x * scaleX}px;top:${-bounds.y * scaleY}px;` +
-                'pointer-events:none;';
+            if (cell.type === 'rect') {
+                // Grid/Mosaic: size image to cell display dimensions.
+                const cellDisplayW = bounds.w * scaleX;
+                const cellDisplayH = bounds.h * scaleY;
+                cellImg.style.cssText =
+                    `position:absolute;width:${cellDisplayW}px;` +
+                    `height:${cellDisplayH}px;` +
+                    'left:0;top:0;object-fit:cover;pointer-events:none;';
+            } else {
+                // Voronoi: avatar fills entire canvas, cell clips it.
+                cellImg.style.cssText =
+                    `position:absolute;width:${previewWidth}px;` +
+                    `height:${previewHeight}px;` +
+                    `left:${-bounds.x * scaleX}px;top:${-bounds.y * scaleY}px;` +
+                    'pointer-events:none;';
+            }
             overlayEl.appendChild(cellImg);
             $editor[0].appendChild(overlayEl);
 
@@ -1093,6 +1164,8 @@ export class AvatarEditor {
             layout,
             gap: clampNumber(config.gap, 0, 10, 2),
             maxCols: clampNumber(config.maxCols, 0, 20, 0),
+            minCols: clampNumber(config.minCols, 0, 20, 0),
+            colsMaxBound: clampNumber(config.colsMaxBound, 0, 20, 0),
             gridAlign: VALID_GRID_ALIGN.includes(gridAlignValue)
                 ? gridAlignValue
                 : 'center',
