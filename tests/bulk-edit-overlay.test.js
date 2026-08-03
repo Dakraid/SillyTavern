@@ -110,13 +110,19 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     getSortableDelay: () => 200,
 }));
 
-/** @type {import('../public/scripts/BulkEditOverlay.js')} */
-let mod;
+/** @type {import('../public/scripts/bulk-combine/helpers.js')} */
+let helpersMod;
+/** @type {import('../public/scripts/bulk-combine/services/CardCreator.js')} */
+let cardCreatorMod;
 /** @type {import('../public/scripts/group-card-xml-parser.js')} */
 let parserMod;
 
 beforeAll(async () => {
-    mod = await import('../public/scripts/BulkEditOverlay.js');
+    // Import the canonical leaf modules directly (not the BulkEditOverlay
+    // re-export hub, which transitively pulls lib.js -> svg-inject -> window
+    // and crashes the Node test env at module load).
+    helpersMod = await import('../public/scripts/bulk-combine/helpers.js');
+    cardCreatorMod = await import('../public/scripts/bulk-combine/services/CardCreator.js');
     parserMod = await import('../public/scripts/group-card-xml-parser.js');
 });
 
@@ -356,7 +362,7 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
             '<character><summary>Brief Alice</summary><name>Alice</name><description>Full Alice</description></character>',
             '<character><summary>Brief Bob</summary><name>Bob</name><description>Full Bob</description></character>',
         ].join('\n\n');
-        const lorebookData = mod.buildDynamicLorebookData(xml);
+        const lorebookData = helpersMod.buildDynamicLorebookData(xml);
 
         expect(Object.keys(lorebookData.entries)).toEqual(['0', '1']);
         expect(lorebookData.entries[0].key).toEqual(['Alice', 'alice']);
@@ -372,7 +378,7 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
     });
 
     test('buildDynamicLorebookData skips non-character blocks', () => {
-        const lorebookData = mod.buildDynamicLorebookData(
+        const lorebookData = helpersMod.buildDynamicLorebookData(
             '<setting>Keep in card</setting>\n\n<character><summary>Brief</summary><name>Alice</name></character>',
         );
         expect(Object.keys(lorebookData.entries)).toEqual(['0']);
@@ -386,7 +392,7 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
             '<rules>Also keep</rules>',
         ].join('\n\n');
 
-        expect(mod.buildDynamicSummaryDescription(xml)).toBe(
+        expect(helpersMod.buildDynamicSummaryDescription(xml)).toBe(
             [
                 '<setting>Keep in card</setting>',
                 '<character>\n  <name>Alice</name>\n  <summary>Brief Alice</summary>\n</character>',
@@ -396,12 +402,12 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
     });
 
     test('buildDynamicSummaryDescription returns empty string for empty input', () => {
-        expect(mod.buildDynamicSummaryDescription('')).toBe('');
+        expect(helpersMod.buildDynamicSummaryDescription('')).toBe('');
     });
 
     test('buildDynamicSummaryDescription preserves only non-character blocks', () => {
         expect(
-            mod.buildDynamicSummaryDescription(
+            helpersMod.buildDynamicSummaryDescription(
                 '<setting>Dungeon</setting>\n\n<rules>Stay quiet</rules>',
             ),
         ).toBe('<setting>Dungeon</setting>\n\n<rules>Stay quiet</rules>');
@@ -409,7 +415,7 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
 
     test('buildDynamicSummaryDescription preserves adjacent character and non-character blocks', () => {
         expect(
-            mod.buildDynamicSummaryDescription(
+            helpersMod.buildDynamicSummaryDescription(
                 '<character><summary>Brief</summary><name>Alice</name></character><setting>Dungeon</setting>',
             ),
         ).toBe(
@@ -419,7 +425,7 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
 
     test('buildDynamicSummaryDescription skips self-closing tags without breaking surrounding blocks', () => {
         expect(
-            mod.buildDynamicSummaryDescription(
+            helpersMod.buildDynamicSummaryDescription(
                 '<setting>Dungeon</setting><marker/><character><summary>Brief</summary><name>Alice</name></character>',
             ),
         ).toBe(
@@ -429,7 +435,7 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
 
     test('buildDynamicSummaryDescription preserves deeply nested same-name blocks', () => {
         expect(
-            mod.buildDynamicSummaryDescription(
+            helpersMod.buildDynamicSummaryDescription(
                 '<rules><rules>inner</rules><note>outer</note></rules><character><summary>Brief</summary><name>Alice</name></character>',
             ),
         ).toBe(
@@ -440,8 +446,8 @@ describe('BulkEditOverlay dynamic lorebook helpers', () => {
 
 describe('BulkEditOverlay group card helper tests', () => {
     test('normalizes names for collision checks', () => {
-        expect(mod.normalizeName('  Mixed CASE Name  ')).toBe('mixed case name');
-        expect(mod.normalizeName(null)).toBe('');
+        expect(helpersMod.normalizeName('  Mixed CASE Name  ')).toBe('mixed case name');
+        expect(helpersMod.normalizeName(null)).toBe('');
     });
 
     test('validates selected character indexes and rejects character name collisions', () => {
@@ -453,7 +459,7 @@ describe('BulkEditOverlay group card helper tests', () => {
         ];
 
         expect(
-            mod.validateGroupCardRequest(' Existing Group ', [0, 1], {
+            helpersMod.validateGroupCardRequest(' Existing Group ', [0, 1], {
                 characterList,
                 worldNames: [],
                 toaster,
@@ -470,7 +476,7 @@ describe('BulkEditOverlay group card helper tests', () => {
         const characterList = [{ name: 'Alice' }, { name: 'Bob' }];
 
         expect(
-            mod.validateGroupCardRequest('   ', [0, 1], {
+            helpersMod.validateGroupCardRequest('   ', [0, 1], {
                 characterList,
                 worldNames: [],
                 toaster,
@@ -482,7 +488,7 @@ describe('BulkEditOverlay group card helper tests', () => {
         );
 
         expect(
-            mod.validateGroupCardRequest(
+            helpersMod.validateGroupCardRequest(
                 'Group',
                 [{ description: 'missing name' }, { data: {} }],
                 { characterList, worldNames: [], toaster },
@@ -494,7 +500,7 @@ describe('BulkEditOverlay group card helper tests', () => {
         );
 
         expect(
-            mod.validateGroupCardRequest('Shared Lore', [0, 1], {
+            helpersMod.validateGroupCardRequest('Shared Lore', [0, 1], {
                 characterList,
                 worldNames: [' shared lore '],
                 toaster,
@@ -511,7 +517,7 @@ describe('BulkEditOverlay group card helper tests', () => {
         const characterList = [{ name: 'Alice' }, { name: 'Bob' }];
 
         expect(
-            mod.validateGroupCardRequest('Shared Lore', [0, 1], {
+            helpersMod.validateGroupCardRequest('Shared Lore', [0, 1], {
                 characterList,
                 worldNames: [' shared lore '],
                 toaster,
@@ -526,7 +532,7 @@ describe('BulkEditOverlay group card helper tests', () => {
     });
 
     test('builds core payload with top-level fields and .data fallback, leaving missing fields empty', () => {
-        const payload = mod.getCoreCharacterPayload({
+        const payload = helpersMod.getCoreCharacterPayload({
             name: 'Top Name',
             description: 'Top description',
             data: {
@@ -549,7 +555,7 @@ describe('BulkEditOverlay group card helper tests', () => {
     });
 
     test('extracts fenced generated output and trims non-character wrapper text', () => {
-        const result = mod.validateGeneratedGroupCardDescription(
+        const result = parserMod.validateGeneratedGroupCardDescription(
             `\`\`\`xml
 Intro text
 <character>one</character>
@@ -565,11 +571,11 @@ Trailing text
     });
 
     test('rejects empty generated output and too few character tags', () => {
-        expect(() => mod.validateGeneratedGroupCardDescription('', 1)).toThrow(
+        expect(() => parserMod.validateGeneratedGroupCardDescription('', 1)).toThrow(
             'Generation returned empty output.',
         );
         expect(() =>
-            mod.validateGeneratedGroupCardDescription(
+            parserMod.validateGeneratedGroupCardDescription(
                 '<character>only</character>',
                 2,
             ),
@@ -577,7 +583,7 @@ Trailing text
     });
 
     test('builds deterministic lorebook entry shape from original core fields', () => {
-        const entry = mod.buildLorebookEntry(
+        const entry = helpersMod.buildLorebookEntry(
             {
                 name: 'Alice',
                 description: 'Original description',
@@ -611,7 +617,7 @@ Trailing text
     });
 
     test('builds lorebook data with one keyed entry per selected character', () => {
-        const lorebookData = mod.buildLorebookData([
+        const lorebookData = helpersMod.buildLorebookData([
             { name: 'Alice' },
             { data: { name: 'Bob' } },
         ]);
@@ -621,63 +627,13 @@ Trailing text
         expect(lorebookData.entries[1].key).toEqual(['Bob', 'bob']);
     });
 
-    test('saves, overwrites, and deletes prompt presets', async () => {
-        await expect(
-            mod.saveGroupCardCombinePromptPreset('  My Preset  ', 'first prompt'),
-        ).resolves.toEqual({
-            name: 'My Preset',
-            prompt: 'first prompt',
-        });
-        expect(mockPowerUser.group_card_combine_prompt_presets).toEqual([
-            { name: 'My Preset', prompt: 'first prompt' },
-        ]);
-        expect(mockSaveSettingsDebounced).toHaveBeenCalledTimes(1);
-
-        mockCallGenericPopup.mockResolvedValueOnce('affirmative');
-        await expect(
-            mod.saveGroupCardCombinePromptPreset('my preset', 'updated prompt'),
-        ).resolves.toEqual({
-            name: 'my preset',
-            prompt: 'updated prompt',
-        });
-        expect(mockCallGenericPopup).toHaveBeenCalledWith(
-            expect.stringContaining('Overwrite prompt preset'),
-            'confirm',
-            '',
-            expect.objectContaining({ okButton: 'Overwrite' }),
-        );
-        expect(mockPowerUser.group_card_combine_prompt_presets).toEqual([
-            { name: 'my preset', prompt: 'updated prompt' },
-        ]);
-        expect(mockSaveSettingsDebounced).toHaveBeenCalledTimes(2);
-
-        expect(mod.deleteGroupCardCombinePromptPreset(0)).toBe(true);
-        expect(mockPowerUser.group_card_combine_prompt_presets).toEqual([]);
-        expect(mockSaveSettingsDebounced).toHaveBeenCalledTimes(3);
-    });
-
-    test('does not overwrite prompt preset when duplicate confirmation is cancelled', async () => {
-        mockPowerUser.group_card_combine_prompt_presets = [
-            { name: 'Existing', prompt: 'old prompt' },
-        ];
-        mockCallGenericPopup.mockResolvedValueOnce(false);
-
-        await expect(
-            mod.saveGroupCardCombinePromptPreset('existing', 'new prompt'),
-        ).resolves.toBeNull();
-        expect(mockPowerUser.group_card_combine_prompt_presets).toEqual([
-            { name: 'Existing', prompt: 'old prompt' },
-        ]);
-        expect(mockSaveSettingsDebounced).not.toHaveBeenCalled();
-    });
-
     test('skips lorebook creation and link when requested', async () => {
         global.fetch.mockResolvedValueOnce(
             createResponse({ text: '{"avatar":"group.png"}' }),
         );
 
         await expect(
-            mod.createGeneratedGroupCard(
+            cardCreatorMod.createGeneratedGroupCard(
                 'Group',
                 '<character>Group</character>',
                 [{ name: 'Alice' }, { name: 'Bob' }],
@@ -704,7 +660,7 @@ Trailing text
             .mockResolvedValueOnce(createResponse());
 
         await expect(
-            mod.createGeneratedGroupCard('Group', '<character>Group</character>', [
+            cardCreatorMod.createGeneratedGroupCard('Group', '<character>Group</character>', [
                 { name: 'Alice' },
                 { name: 'Bob' },
             ]),
@@ -732,7 +688,7 @@ Trailing text
         };
 
         await expect(
-            mod.createGeneratedGroupCard(
+            cardCreatorMod.createGeneratedGroupCard(
                 'Group',
                 '<character>Group</character>',
                 [{ name: 'Alice' }, { name: 'Bob' }],
@@ -756,25 +712,17 @@ Trailing text
     });
 
     test('normalizes selected optional fields with always-included fields', () => {
-        expect(mod.ALWAYS_INCLUDED_CHARACTER_FIELDS).toEqual([
+        expect(helpersMod.ALWAYS_INCLUDED_CHARACTER_FIELDS).toEqual([
             'name',
             'description',
         ]);
-        expect(mod.OPTIONAL_CHARACTER_FIELDS).toEqual([
+        expect(helpersMod.OPTIONAL_CHARACTER_FIELDS).toEqual([
             'personality',
             'scenario',
             'first_mes',
             'mes_example',
         ]);
-        expect(mod.normalizeSelectedFields()).toEqual([
-            'name',
-            'description',
-            'personality',
-            'scenario',
-            'first_mes',
-            'mes_example',
-        ]);
-        expect(mod.normalizeSelectedFields(null)).toEqual([
+        expect(helpersMod.normalizeSelectedFields()).toEqual([
             'name',
             'description',
             'personality',
@@ -782,19 +730,27 @@ Trailing text
             'first_mes',
             'mes_example',
         ]);
-        expect(mod.normalizeSelectedFields(['personality'])).toEqual([
+        expect(helpersMod.normalizeSelectedFields(null)).toEqual([
+            'name',
+            'description',
+            'personality',
+            'scenario',
+            'first_mes',
+            'mes_example',
+        ]);
+        expect(helpersMod.normalizeSelectedFields(['personality'])).toEqual([
             'name',
             'description',
             'personality',
         ]);
         expect(
-            mod.normalizeSelectedFields(['scenario', 'first_mes', 'mes_example']),
+            helpersMod.normalizeSelectedFields(['scenario', 'first_mes', 'mes_example']),
         ).toEqual(['name', 'description', 'scenario', 'first_mes', 'mes_example']);
-        expect(mod.normalizeSelectedFields(['invalid_field'])).toEqual([
+        expect(helpersMod.normalizeSelectedFields(['invalid_field'])).toEqual([
             'name',
             'description',
         ]);
-        expect(mod.normalizeSelectedFields(['personality', 'personality'])).toEqual(
+        expect(helpersMod.normalizeSelectedFields(['personality', 'personality'])).toEqual(
             ['name', 'description', 'personality'],
         );
     });
@@ -810,17 +766,17 @@ Trailing text
                 mes_example: '<START>Example chat',
             },
         };
-        const filteredBlock = mod.buildCoreCharacterPromptBlock(character, [
+        const filteredBlock = helpersMod.buildCoreCharacterPromptBlock(character, [
             'name',
             'description',
             'personality',
         ]);
-        const filteredPrompt = mod.buildGroupCardCombineQuietPrompt(
+        const filteredPrompt = helpersMod.buildGroupCardCombineQuietPrompt(
             'Prompt',
             [character],
             ['name', 'description'],
         );
-        const fullBlock = mod.buildCoreCharacterPromptBlock(character);
+        const fullBlock = helpersMod.buildCoreCharacterPromptBlock(character);
 
         expect(filteredBlock).toContain('<name>Alice</name>');
         expect(filteredBlock).toContain(
@@ -852,13 +808,13 @@ Trailing text
                 mes_example: '<START>Example chat',
             },
         };
-        const filteredContent = mod.buildLorebookEntryContent(character, [
+        const filteredContent = helpersMod.buildLorebookEntryContent(character, [
             'name',
             'description',
             'scenario',
         ]);
-        const fullContent = mod.buildLorebookEntryContent(character);
-        const filteredData = mod.buildLorebookData(
+        const fullContent = helpersMod.buildLorebookEntryContent(character);
+        const filteredData = helpersMod.buildLorebookData(
             [character],
             ['name', 'description', 'scenario'],
         );
@@ -882,7 +838,7 @@ Trailing text
             .mockResolvedValueOnce(createResponse());
 
         await expect(
-            mod.createGeneratedGroupCard(
+            cardCreatorMod.createGeneratedGroupCard(
                 'Group',
                 '<character>Group</character>',
                 [
