@@ -434,4 +434,59 @@ describe('postPage', () => {
         page.dispose();
         expect(() => page.render(container, makeSnapshot(), actions)).not.toThrow();
     });
+
+    test('an identical rerun clears the running state once the new ranAt lands', async () => {
+        const page = createPostPage();
+        const actions = makeActions();
+        // Previously succeeded run with a captured ranAt.
+        const succeeded = {
+            status: 'succeeded',
+            input: 'IN',
+            output: 'OUT',
+            error: null,
+            ranAt: '2026-01-01T00:00:00.000Z',
+        };
+        page.render(container, makeSnapshot({
+            task: { prompts: { post: { text: 'clean it up' } }, post: succeeded },
+        }), actions);
+
+        // Rerun: optimistic running indicator shows.
+        findOne(container, hasClass('bc-task-post-run')).click();
+        await flush();
+        expect(actions.runPostProcess).toHaveBeenCalledTimes(1);
+        expect(container.textContent).toContain('Post-processing is running');
+
+        // The rerun settles with an IDENTICAL record except a fresh ranAt.
+        page.render(container, makeSnapshot({
+            task: {
+                prompts: { post: { text: 'clean it up' } },
+                post: { ...succeeded, ranAt: '2026-01-01T00:05:00.000Z' },
+            },
+        }), actions);
+
+        // The optimistic running state cleared (the signature tracks ranAt).
+        expect(container.textContent).not.toContain('Post-processing is running');
+        expect(findOne(container, hasClass('bc-task-post-run')).disabled).toBe(false);
+    });
+
+    test('completed tasks render read-only: Run/Skip/Suggest disabled, Continue stays navigable', () => {
+        const { root, actions } = renderPage(makeSnapshot({
+            task: {
+                status: 'completed',
+                prompts: { post: { text: 'clean it up' } },
+                post: { status: 'succeeded', output: 'OUT' },
+            },
+        }));
+
+        expect(root.textContent).toContain('read-only');
+        expect(findOne(root, hasClass('bc-task-post-run')).disabled).toBe(true);
+        expect(findOne(root, hasClass('bc-task-post-skip')).disabled).toBe(true);
+        expect(findOne(container, (e) => e.id === 'bc-task-post-prompt').readOnly).toBe(true);
+        expect(findOne(container, (e) => e.id === 'bc-task-post-mode').disabled).toBe(true);
+
+        const continueButton = findOne(root, hasClass('bc-task-continue'));
+        expect(continueButton.disabled).toBe(false);
+        continueButton.click();
+        expect(actions.goToPage).toHaveBeenCalledWith(7);
+    });
 });

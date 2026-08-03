@@ -384,17 +384,29 @@ describe('reviewPage', () => {
         expect(actions.getReview.mock.calls.length).toBe(2);
     });
 
-    test('a stale fetch response (revision moved on) is discarded and not rendered', async () => {
-        const actions = makeActions(makePayload({ mergedDescription: 'STALE PAYLOAD' }));
+    test('a revision bump mid-flight refetches for the new revision and discards the stale response', async () => {
+        // First fetch (revision 1) resolves late with a stale payload; the
+        // second fetch (revision 2) carries the fresh one.
+        const actions = makeActions();
+        let call = 0;
+        actions.getReview = jest.fn(() => {
+            call++;
+            return Promise.resolve(call === 1
+                ? makePayload({ mergedDescription: 'STALE PAYLOAD' })
+                : makePayload({ mergedDescription: 'FRESH PAYLOAD' }));
+        });
         const page = createReviewPage();
         page.render(container, makeSnapshot({ task: { revision: 1 } }), actions);
 
-        // Before the fetch settles, advance the revision.
+        // Before the first fetch settles, advance the revision: a NEW fetch
+        // must start even while the old one is in flight (no stuck loading).
         page.render(container, makeSnapshot({ task: { revision: 2 } }), actions);
+        expect(actions.getReview).toHaveBeenCalledTimes(2);
         await flush();
 
-        // The revision-1 response is discarded; the tree reflects revision-2's fetch.
+        // The revision-1 response was discarded; revision-2's payload renders.
         expect(container.textContent).not.toContain('STALE PAYLOAD');
+        expect(container.textContent).toContain('FRESH PAYLOAD');
     });
 
     test('Continue navigates to the Avatar Studio (page 8)', async () => {
@@ -410,5 +422,16 @@ describe('reviewPage', () => {
         await flush();
         page.dispose();
         expect(() => page.render(container, makeSnapshot(), actions)).not.toThrow();
+    });
+
+    test('completed tasks render read-only fields but stay navigable', async () => {
+        const { root, actions } = await renderSettled(makeSnapshot({ task: { status: 'completed' } }));
+
+        expect(root.textContent).toContain('read-only');
+        expect(findOne(root, hasClass('bc-task-review-name')).readOnly).toBe(true);
+        expect(findOne(root, hasClass('bc-task-review-description')).readOnly).toBe(true);
+
+        findOne(root, hasClass('bc-task-continue')).click();
+        expect(actions.goToPage).toHaveBeenCalledWith(8);
     });
 });

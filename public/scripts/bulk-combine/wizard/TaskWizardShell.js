@@ -66,7 +66,7 @@ export function buildTaskWizardShell() {
 
     const historyButton = document.createElement('button');
     historyButton.id = 'bc_task_history';
-    historyButton.className = 'menu_button bc-task-history';
+    historyButton.className = 'menu_button bc-task-history-button';
     historyButton.type = 'button';
     historyButton.title = 'Open the task history panel to manage saved combine tasks.';
 

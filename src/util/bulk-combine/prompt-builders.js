@@ -215,9 +215,7 @@ export async function preflightTokens({
     const normalizedOutputTokens = Number.isFinite(outputTokens) && outputTokens > 0
         ? outputTokens
         : 0;
-    const hasConstraint = normalizedOutputTokens > 0
-        && Number.isFinite(contextTokens)
-        && contextTokens > 0;
+    const hasConstraint = Number.isFinite(contextTokens) && contextTokens > 0;
     const items = [];
     const blocked = [];
 

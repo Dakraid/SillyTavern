@@ -1038,6 +1038,12 @@
 	gap: 0.75em;
 	height: 100%;
 	min-height: 0;
+	/* Status tones routed through SmartTheme variables (DESIGN: no fixed
+	   theme colors). Page CSS files consume these via var() fallbacks. */
+	--bc-task-tone-info: var(--SmartThemeQuoteColor);
+	--bc-task-tone-success: var(--SmartThemeUnderlineColor);
+	--bc-task-tone-warning: color-mix(in srgb, var(--SmartThemeQuoteColor) 60%, var(--SmartThemeEmColor) 40%);
+	--bc-task-tone-danger: var(--SmartThemeEmColor);
 }
 
 /* --- Header: task name, save state, execution summary, Task History --- */
@@ -1077,7 +1083,7 @@
 .bc-task-save-state--conflict,
 .bc-task-save-state--error {
 	opacity: 1;
-	color: #ffb86b;
+	color: var(--bc-task-tone-warning);
 }
 
 .bc-task-execution {
@@ -1090,14 +1096,14 @@
 	white-space: nowrap;
 }
 
-.bc-task-history {
+.bc-task-history-button {
 	flex: 0 0 auto;
 	display: inline-flex;
 	align-items: center;
 	gap: 0.4em;
 }
 
-.bc-task-history:disabled {
+.bc-task-history-button:disabled {
 	opacity: 0.5;
 	cursor: not-allowed;
 }
@@ -1211,27 +1217,39 @@
 }
 
 .bc-task-status--running {
-	color: #6aa9ff;
+	color: var(--bc-task-tone-info);
 	animation: bcw-status-pulse 1.2s ease-in-out infinite alternate;
 }
 
 .bc-task-status--complete {
-	color: #7fd37f;
+	color: var(--bc-task-tone-success);
 }
 
 .bc-task-status--stale,
 .bc-task-status--interrupted {
-	color: #ffb86b;
+	color: var(--bc-task-tone-warning);
 }
 
 .bc-task-status--failed {
-	color: #ff6b6b;
+	color: var(--bc-task-tone-danger);
 }
 
 .bc-task-status--skipped,
 .bc-task-status--disabled {
 	color: var(--grey75);
 	opacity: 0.7;
+}
+
+/* --- Shared completed-task read-only note --- */
+
+.bc-task-readonly-note {
+	margin: 0;
+	padding: 0.5em 0.75em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--bc-task-tone-info) 10%);
+	font-size: 0.9em;
+	font-style: italic;
 }
 
 /* --- Content canvas + placeholder pages --- */

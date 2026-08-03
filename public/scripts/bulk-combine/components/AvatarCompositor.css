@@ -29,7 +29,7 @@
 	height: 100%;
 	border: 1px solid var(--SmartThemeBorderColor);
 	border-radius: 10px;
-	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 92%, #000 8%);
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 92%, var(--SmartThemeShadowColor) 8%);
 	cursor: grab;
 	touch-action: none; /* required for pointer-event pan/pinch on touch */
 }
@@ -48,6 +48,19 @@
 	font-size: 0.8em;
 	opacity: 0.65;
 	text-align: center;
+}
+
+/* Visually-hidden live region announcing the active cell (a11y). */
+.bc-compositor-status {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+	border: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

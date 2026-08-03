@@ -45,6 +45,7 @@ const UPSTREAM_PASS_KEYS = Object.freeze(['transform1', 'transform2', 'summary']
 const STALE_BANNER_TEXT = 'Upstream results changed since this review was assembled. Creating uses the assembled data shown here — go back to Review and Refresh to re-assemble from the latest results.';
 const LOADING_TEXT = 'Assembling the review payload…';
 const RETRY_TITLE = 'Try loading the review payload again.';
+const WAITING_FOR_IMAGES_TEXT = 'Waiting for avatar images to load…';
 const COMPOSITOR_UNAVAILABLE_TEXT = 'The avatar compositor could not start in this environment. You can still create the card — it will keep a default avatar.';
 
 /**
@@ -245,8 +246,14 @@ export function createAvatarPage() {
      * @type {{revision: number|null, payload: object|null, error: string|null}}
      */
     let cache = { revision: null, payload: null, error: null };
-    /** @type {boolean} Whether a getReview fetch is in flight (dedupe). */
-    let fetchInFlight = false;
+    /**
+     * Active fetch token. A fetch for revision N is superseded by any fetch
+     * started for a newer revision — superseded responses are discarded, so
+     * the latest revision ALWAYS gets its payload (no stuck "Assembling…").
+     *
+     * @type {{revision: number}|null}
+     */
+    let activeFetch = null;
     /** @type {object|null} Live compositor instance (persistent across re-renders). */
     let compositor = null;
     /** @type {Element|null} Persistent compositor host node (re-appended on every render). */
@@ -314,46 +321,53 @@ export function createAvatarPage() {
     }
 
     /**
-     * Starts the deduped review-payload fetch for a revision.
+     * Starts the review-payload fetch for a revision. Fetches for the SAME
+     * revision are deduplicated by the caller; a fetch for a NEWER revision
+     * always starts and supersedes any older in-flight one.
      *
      * @param {number} revision Task revision to fetch at.
      * @returns {void}
      */
     function startFetch(revision) {
-        fetchInFlight = true;
+        const token = { revision };
+        activeFetch = token;
         let result;
         try {
             result = latestActions?.getReview?.();
         } catch (error) {
-            settleFetch(null, error, revision);
+            settleFetch(token, null, error);
             return;
         }
         if (result === undefined || result === null) {
-            settleFetch(null, new Error('getReview is unavailable.'), revision);
+            settleFetch(token, null, new Error('getReview is unavailable.'));
             return;
         }
         Promise.resolve(result).then(
-            (payload) => settleFetch(payload, null, revision),
-            (error) => settleFetch(null, error, revision),
+            (payload) => settleFetch(token, payload, null),
+            (error) => settleFetch(token, null, error),
         );
     }
 
     /**
      * Settles an in-flight fetch: caches the outcome and re-renders, unless
-     * the page was disposed or the task revision moved on.
+     * the fetch was superseded by a newer one, the page was disposed, or
+     * the task revision moved on.
      *
+     * @param {{revision: number}} token Fetch token from {@link startFetch}.
      * @param {object|null} payload Review payload on success.
      * @param {unknown} error Failure on error.
-     * @param {number} revision Revision the fetch was started for.
      * @returns {void}
      */
-    function settleFetch(payload, error, revision) {
-        fetchInFlight = false;
-        if (!host || revision !== revisionOf(latestSnapshot)) {
+    function settleFetch(token, payload, error) {
+        if (activeFetch !== token) {
+            return;
+        }
+        activeFetch = null;
+        if (!host || token.revision !== revisionOf(latestSnapshot)) {
             return;
         }
         cache = {
-            revision,
+            revision: token.revision,
             payload: isRecord(payload) ? payload : null,
             error: error === null || error === undefined ? null : String(error),
         };
@@ -409,6 +423,13 @@ export function createAvatarPage() {
                         void applyPatch(latestActions, { avatar: { offsets } });
                     }
                 },
+                // Images settle asynchronously — re-render so the Create
+                // button ungates the moment every image loaded (or failed).
+                onSettle: () => {
+                    if (host) {
+                        renderPage();
+                    }
+                },
             });
             compositorHost = mount;
         } catch (error) {
@@ -428,9 +449,29 @@ export function createAvatarPage() {
     }
 
     /**
+     * Whether the compositor is up but its source images are still loading.
+     * Create stays gated until every image settled so a fast click cannot
+     * produce a default/partial composite.
+     *
+     * @returns {boolean} True while waiting for images.
+     */
+    function waitingForImages() {
+        if (!compositor || typeof compositor.isReady !== 'function') {
+            return false;
+        }
+        return compositor.isReady() !== true;
+    }
+
+    /**
      * Runs the Create action: composes the avatar, creates the card via the
-     * CardCreator task wrapper, and records `task.artifacts`. Never throws;
-     * failures land in the inline error state.
+     * CardCreator task wrapper, and records `task.artifacts` (plus the
+     * completed lifecycle status). Never throws; failures land in the
+     * inline error state.
+     *
+     * Duplicate-create resilience: before creating, the server task is
+     * re-fetched and its `artifacts` re-checked — if an earlier create's
+     * artifacts PATCH was lost (popup closed, conflict, network), a reopen
+     * still sees the recorded artifacts and refuses a second create.
      *
      * @returns {Promise<void>}
      */
@@ -447,9 +488,29 @@ export function createAvatarPage() {
         if (!name.trim() || !description.trim()) {
             return;
         }
+        if (waitingForImages()) {
+            return;
+        }
 
         createState = { status: 'creating', error: null, result: null };
         renderPage();
+
+        // Re-check the server: an earlier create may have recorded artifacts
+        // that the local snapshot has not seen (lost PATCH + reopen).
+        try {
+            const fresh = await latestActions?.refresh?.();
+            if (fresh && createdArtifactsOf({ task: fresh })) {
+                createState = { status: 'idle', error: null, result: null };
+                if (host) {
+                    renderPage();
+                }
+                return;
+            }
+        } catch (refreshError) {
+            // Best-effort guard: proceed with the local snapshot when the
+            // re-fetch itself failed.
+            console.warn('avatarPage: pre-create artifacts re-check failed.', refreshError);
+        }
 
         let dataUrl = null;
         try {
@@ -462,14 +523,25 @@ export function createAvatarPage() {
         try {
             const result = await createGroupCardFromTask(latestSnapshot?.task ?? {}, payload, dataUrl);
             createState = { status: 'created', error: null, result: isRecord(result) ? result : null };
-            await applyPatch(latestActions, {
+            // Record the artifacts AND the completed lifecycle in one patch;
+            // retry once so a transient failure cannot leave a created card
+            // unrecorded (which would silently allow a second create).
+            const completionPatch = {
                 artifacts: {
                     characterName: String(result?.characterName ?? ''),
                     characterAvatar: String(result?.characterAvatar ?? ''),
                     lorebookName: String(result?.lorebookName ?? ''),
                     createdAt: new Date().toISOString(),
                 },
-            });
+                status: 'completed',
+            };
+            const recorded = await applyPatch(latestActions, completionPatch);
+            if (!recorded) {
+                const retried = await applyPatch(latestActions, completionPatch);
+                if (!retried) {
+                    console.error('avatarPage: the card was created but recording task.artifacts failed twice.');
+                }
+            }
             try {
                 await getCharacters?.();
             } catch (refreshError) {
@@ -610,12 +682,15 @@ export function createAvatarPage() {
         const description = effectiveDescription(payload);
         const sources = sourcesOf(latestSnapshot);
         const creating = createState.status === 'creating';
+        const imagesPending = waitingForImages();
 
         let disabledReason = '';
         if (!name.trim() || !description.trim()) {
             disabledReason = 'The card needs a name and a description — complete the transform passes and the Review page first.';
         } else if (sources.length < 2) {
             disabledReason = 'At least two source cards are required to combine.';
+        } else if (imagesPending) {
+            disabledReason = WAITING_FOR_IMAGES_TEXT;
         }
 
         section.append(buildButton({
@@ -627,6 +702,14 @@ export function createAvatarPage() {
                 void handleCreate();
             },
         }));
+
+        if (imagesPending && !creating) {
+            const waiting = document.createElement('p');
+            waiting.className = 'bc-task-avatar-waiting';
+            waiting.setAttribute('role', 'status');
+            waiting.textContent = WAITING_FOR_IMAGES_TEXT;
+            section.append(waiting);
+        }
 
         if (creating) {
             const status = document.createElement('p');
@@ -733,7 +816,12 @@ export function createAvatarPage() {
      */
     function renderPage() {
         const revision = revisionOf(latestSnapshot);
-        if (cache.revision !== revision && !fetchInFlight) {
+        // Fetch when this revision has no cached outcome. Dedupe per
+        // revision — a render for a NEWER revision always starts a fresh
+        // fetch even while an older one is in flight (the older response is
+        // discarded by its token), so a mid-flight revision bump can never
+        // leave the page stuck on "Assembling…".
+        if (cache.revision !== revision && activeFetch?.revision !== revision) {
             startFetch(revision);
         }
 
@@ -812,6 +900,7 @@ export function createAvatarPage() {
             latestSnapshot = null;
             latestActions = null;
             cache = { revision: null, payload: null, error: null };
+            activeFetch = null;
             createState = { status: 'idle', error: null, result: null };
         },
     };

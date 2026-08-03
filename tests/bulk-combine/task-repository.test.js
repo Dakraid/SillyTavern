@@ -5,7 +5,6 @@ import path from 'node:path';
 
 import {
     BulkCombineTaskRepository,
-    InvalidSidecarFilenameError,
     InvalidTaskIdError,
     TaskNotFoundError,
     TaskRevisionConflictError,
@@ -114,7 +113,7 @@ describe('BulkCombineTaskRepository', () => {
         await expect(repo.deleteTask(task.id)).rejects.toBeInstanceOf(TaskNotFoundError);
     });
 
-    test('duplicates lifecycle state and sidecars while retaining sources and outputs', async () => {
+    test('duplicates lifecycle state while retaining sources and outputs', async () => {
         const task = await repo.createTask({ name: 'Original' });
         const running = await repo.updateTask(task.id, draft => {
             draft.status = 'running';
@@ -127,7 +126,6 @@ describe('BulkCombineTaskRepository', () => {
                 items: { alpha: { status: 'succeeded', output: 'Kept output' } },
             };
         }, { expectedRevision: 1 });
-        await repo.writeSidecar(task.id, 'preview.png', Buffer.from('preview'));
 
         const duplicate = await repo.duplicateTask(task.id, { name: 'Duplicate' });
 
@@ -143,7 +141,6 @@ describe('BulkCombineTaskRepository', () => {
         expect(duplicate.passes.transform1.items.alpha.output).toBe('Kept output');
         expect(duplicate.passes.transform1.status).toBe('pending');
         expect(duplicate.execution.status).toBe('idle');
-        await expect(repo.readSidecar(duplicate.id, 'preview.png')).resolves.toEqual(Buffer.from('preview'));
     });
 
     test('archives and unarchives tasks', async () => {
@@ -255,25 +252,9 @@ describe('BulkCombineTaskRepository', () => {
         await expect(secondRepo.listTasks()).resolves.toEqual([expect.objectContaining({ name: 'User two' })]);
     });
 
-    test('rejects traversal task ids and sidecar filenames', async () => {
+    test('rejects traversal task ids', async () => {
         await expect(repo.getTask('../escape')).rejects.toBeInstanceOf(InvalidTaskIdError);
         await expect(repo.deleteTask('not-a-uuid')).rejects.toBeInstanceOf(InvalidTaskIdError);
-        expect(() => repo.getSidecarPath('../escape', 'preview.png')).toThrow(InvalidTaskIdError);
-
-        const task = await repo.createTask({ name: 'Sidecars' });
-        for (const filename of ['../secret', '..', 'nested/file.png', 'nested\\file.png']) {
-            expect(() => repo.getSidecarPath(task.id, filename)).toThrow(InvalidSidecarFilenameError);
-        }
-    });
-
-    test('writes and reads binary sidecars', async () => {
-        const task = await repo.createTask({ name: 'Sidecars' });
-        const content = Buffer.from([0, 1, 2, 255]);
-
-        await repo.writeSidecar(task.id, 'avatar.png', content);
-
-        await expect(repo.readSidecar(task.id, 'avatar.png')).resolves.toEqual(content);
-        expect(repo.getSidecarPath(task.id, 'avatar.png')).toBe(path.join(root, task.id, 'avatar.png'));
     });
 
     test('serializes concurrent updates to one task in call order', async () => {

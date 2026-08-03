@@ -45,6 +45,7 @@ jest.unstable_mockModule('../../public/scripts/extensions.js', () => ({
 jest.unstable_mockModule('../../public/scripts/openai.js', () => ({
     openai_setting_names: mockPresetNames,
     openai_settings: mockPresets,
+    proxies: [],
 }));
 
 jest.unstable_mockModule('../../public/scripts/slash-commands.js', () => ({
@@ -304,13 +305,15 @@ function makePrompt(text = '', assistant = {}) {
  * @param {object} [options] Fixture options.
  * @param {object} [options.settings] Settings overrides.
  * @param {object} [options.prompts] Prompt overrides (whole records).
+ * @param {string} [options.status] Task lifecycle status (`draft` | `completed`).
  * @returns {object} State snapshot payload (mirrors `TaskWizardState#getSnapshot`).
  */
-function makeSnapshot({ settings = {}, prompts = {} } = {}) {
+function makeSnapshot({ settings = {}, prompts = {}, status = 'draft' } = {}) {
     return {
         task: {
             id: 'task-1',
             name: 'Task',
+            status,
             sources: [],
             settings: {
                 mode: 'individual',
@@ -1027,5 +1030,118 @@ describe('promptSettingsPage', () => {
         const visibleSummaryRow = findOne(container, hasFieldKey('prompt:summary:text')).parentElement;
         expect(visibleSummaryRow.hidden).toBe(false);
         expect(findOne(visibleSummaryRow, hasAriaLabel('summary prompt presets'))).not.toBe(null);
+    });
+
+    // ------------------------------------------------------------------
+    // Continue (page advance), assist durability, read-only completed tasks
+    // ------------------------------------------------------------------
+
+    test('Continue is gated on the main prompt and advances to Transform 1 (page 3)', async () => {
+        const page = createPromptSettingsPage();
+        const actions = makeActions();
+
+        // Empty prompt: disabled with an explanation; click is a no-op.
+        page.render(container, makeSnapshot({ prompts: { main: makePrompt('  ') } }), actions);
+        let continueButton = findOne(container, hasClass('bc-task-continue'));
+        expect(continueButton.disabled).toBe(true);
+        expect(continueButton.title).toContain('combine prompt');
+        continueButton.click();
+        await flushAsync();
+        expect(actions.goToPage).not.toHaveBeenCalled();
+
+        // Saved prompt text: enabled and advances to Transform 1.
+        page.render(container, makeSnapshot(), actions);
+        continueButton = findOne(container, hasClass('bc-task-continue'));
+        expect(continueButton.disabled).toBe(false);
+        continueButton.click();
+        await flushAsync();
+        expect(actions.goToPage).toHaveBeenCalledTimes(1);
+        expect(actions.goToPage).toHaveBeenCalledWith(3);
+    });
+
+    test('Continue commits an unsaved prompt draft before advancing', async () => {
+        const page = createPromptSettingsPage();
+        const actions = makeActions();
+        page.render(container, makeSnapshot(), actions);
+
+        const textarea = findOne(container, hasFieldKey('prompt:main:text'));
+        textarea.value = 'Draft replacement prompt';
+        textarea.fire('input');
+
+        findOne(container, hasClass('bc-task-continue')).click();
+        await flushAsync();
+
+        expect(actions.update).toHaveBeenCalledWith({ prompts: { main: { text: 'Draft replacement prompt' } } });
+        expect(actions.goToPage).toHaveBeenCalledWith(3);
+    });
+
+    test('a snapshot-persisted pending assist request keeps Suggest disabled and offers Discard', async () => {
+        const page = createPromptSettingsPage();
+        const actions = makeActions();
+
+        // Re-opened page with an outstanding assist request (no proposal/error
+        // yet): the waiting state is derived from the snapshot, not a closure.
+        const pending = makeSnapshot({ prompts: { main: makePrompt('Combine these cards into one.', { request: 'Make it shorter' }) } });
+        page.render(container, pending, actions);
+
+        const suggestButton = findOne(container, hasClass('bc-task-suggest'));
+        expect(suggestButton.disabled).toBe(true);
+        expect(container.textContent).toContain('Generating a proposal');
+        suggestButton.click();
+        await flushAsync();
+        expect(actions.runPromptAssist).not.toHaveBeenCalled();
+
+        // The pending request can be discarded so Suggest becomes usable again.
+        findOne(container, hasClass('bc-task-discard-request')).click();
+        await flushAsync();
+        expect(actions.update).toHaveBeenCalledWith({
+            prompts: { main: { assistant: { request: '', proposal: '', diff: '', applied: false, error: '' } } },
+        });
+    });
+
+    test('an assist launch failure surfaces an inline alert (not console-only)', async () => {
+        const actions = makeActions();
+        actions.runPromptAssist = jest.fn(async () => {
+            throw new Error('assist route down');
+        });
+        const page = createPromptSettingsPage();
+        page.render(container, makeSnapshot(), actions);
+
+        const requestArea = findOne(container, hasFieldKey('assistant:main:request'));
+        requestArea.value = 'Make it spicier';
+        requestArea.fire('input');
+        findOne(container, hasClass('bc-task-suggest')).click();
+        await flushAsync();
+
+        const alert = findOne(container, (element) => element.getAttribute?.('role') === 'alert' && hasClass('bc-task-assist-error')(element));
+        expect(alert).not.toBe(null);
+        expect(alert.textContent).toContain('assist route down');
+        // Suggest is usable again after the failed launch.
+        expect(findOne(container, hasClass('bc-task-suggest')).disabled).toBe(false);
+    });
+
+    test('completed tasks render read-only (edits/runs disabled) but stay navigable', async () => {
+        const page = createPromptSettingsPage();
+        const actions = makeActions();
+        page.render(container, makeSnapshot({ status: 'completed' }), actions);
+
+        expect(container.textContent).toContain('read-only');
+        expect(findOne(container, hasFieldKey('prompt:main:text')).readOnly).toBe(true);
+        expect(findOne(container, hasFieldKey('assistant:main:request')).readOnly).toBe(true);
+        expect(findOne(container, hasClass('bc-task-save-prompt')).disabled).toBe(true);
+        expect(findOne(container, hasClass('bc-task-suggest')).disabled).toBe(true);
+        // Settings controls are disabled too.
+        expect(findOne(container, hasAriaLabel('Connection profile')).disabled).toBe(true);
+        expect(findOne(container, hasAriaLabel('Second pass')).disabled).toBe(true);
+        expect(findOne(container, hasAriaLabel('Total context tokens')).disabled).toBe(true);
+
+        // Navigation still works: Continue is pure navigation.
+        const continueButton = findOne(container, hasClass('bc-task-continue'));
+        expect(continueButton.disabled).toBe(false);
+        continueButton.click();
+        await flushAsync();
+        expect(actions.goToPage).toHaveBeenCalledWith(3);
+        // …without committing anything (read-only).
+        expect(actions.update).not.toHaveBeenCalled();
     });
 });

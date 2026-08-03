@@ -23,6 +23,8 @@ jest.unstable_mockModule('../../src/endpoints/tokenizers.js', () => ({
 
 let createBulkCombineRouter;
 let sanitizeCompletionSettings;
+let scheduleBulkCombineCleanup;
+let TaskAlreadyRunningError;
 let router;
 let eventBus;
 let fakeRunner;
@@ -58,6 +60,8 @@ function makeResponse() {
         setHeader(name, value) {
             this.headers[name] = value;
         },
+        flushHeaders: jest.fn(),
+        flush: jest.fn(),
         write: jest.fn(),
     };
 }
@@ -78,18 +82,30 @@ async function invoke(method, routePath, {
 }
 
 beforeAll(async () => {
-    ({ createBulkCombineRouter, sanitizeCompletionSettings } = await import('../../src/endpoints/bulk-combine.js'));
+    ({
+        createBulkCombineRouter,
+        sanitizeCompletionSettings,
+        scheduleBulkCombineCleanup,
+    } = await import('../../src/endpoints/bulk-combine.js'));
+    ({ TaskAlreadyRunningError } = await import('../../src/util/bulk-combine/task-runner.js'));
 });
 
 beforeEach(async () => {
     userRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'st-bulk-combine-routes-'));
     tempRoots.push(userRoot);
     eventBus = createTaskEventBus();
+    const schedule = async ({ prepareTask, onScheduled }) => {
+        const task = typeof prepareTask === 'function' ? await prepareTask() : null;
+        onScheduled?.(task);
+        return null;
+    };
     fakeRunner = {
-        runPromptAssist: jest.fn(async () => null),
-        runPass: jest.fn(async () => null),
+        runPromptAssist: jest.fn(schedule),
+        runPass: jest.fn(schedule),
         runPostProcess: jest.fn(async () => null),
-        resume: jest.fn(async () => null),
+        resume: jest.fn(async ({ taskId, repo, onScheduled }) => {
+            onScheduled?.(await repo.getTask(taskId));
+        }),
         cancel: jest.fn(async () => false),
     };
     router = createBulkCombineRouter({ runner: fakeRunner, eventBus });
@@ -212,6 +228,30 @@ describe('/api/bulk-combine task routes', () => {
         expect(badPatch.body).toEqual({ error: 'invalid_request' });
     });
 
+    test('never persists credentials supplied through PATCH completion settings', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Sanitized patch' } })).body;
+        const response = await invoke('patch', '/tasks/:id', {
+            params: { id: created.id },
+            body: {
+                expectedRevision: created.revision,
+                patch: {
+                    completion: {
+                        model: 'safe-model',
+                        api_key: 'plaintext-secret',
+                        nested: { proxy_password: 'plaintext-proxy-secret', temperature: 0.4 },
+                    },
+                },
+            },
+        });
+        const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
+
+        expect(response.body.completion).toEqual({
+            model: 'safe-model',
+            nested: { temperature: 0.4 },
+        });
+        await expect(repo.getTask(created.id)).resolves.toMatchObject({ completion: response.body.completion });
+    });
+
     test('sanitizes completion settings without removing execution fields', () => {
         expect(sanitizeCompletionSettings({
             api_key: 'remove',
@@ -281,6 +321,8 @@ describe('/api/bulk-combine task routes', () => {
             promptKey: 'main',
             repo: expect.any(BulkCombineTaskRepository),
             userDirectories: { root: userRoot },
+            prepareTask: expect.any(Function),
+            onScheduled: expect.any(Function),
         });
 
         const applied = await invoke('patch', '/tasks/:id', {
@@ -319,9 +361,36 @@ describe('/api/bulk-combine task routes', () => {
         expect(fakeRunner.runPromptAssist).toHaveBeenCalledTimes(1);
     });
 
+    test('rejects immediately conflicting prompt assistance without checkpointing its request', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Assist conflict' } })).body;
+        fakeRunner.runPromptAssist.mockImplementationOnce(async () => {
+            throw new TaskAlreadyRunningError(created.id);
+        });
+
+        const response = await invoke('post', '/tasks/:id/prompts/:promptKey/assist', {
+            params: { id: created.id, promptKey: 'main' },
+            body: {
+                request: 'Must not persist',
+                completionSettings: { model: 'must-not-persist' },
+            },
+        });
+        const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
+
+        expect(response.statusCode).toBe(409);
+        expect(response.body).toEqual({ error: 'task_already_running' });
+        await expect(repo.getTask(created.id)).resolves.toMatchObject({
+            revision: 1,
+            completion: {},
+            prompts: { main: { assistant: { request: '' } } },
+        });
+    });
+
     test('starts a pass in the background and stores sanitized completion settings', async () => {
         const created = (await invoke('post', '/tasks', { body: { name: 'Runnable' } })).body;
-        fakeRunner.runPass.mockReturnValueOnce(new Promise(() => {}));
+        fakeRunner.runPass.mockImplementationOnce(async ({ prepareTask, onScheduled }) => {
+            onScheduled(await prepareTask());
+            await new Promise(() => {});
+        });
         const response = await invoke('post', '/tasks/:id/passes/:pass/run', {
             params: { id: created.id, pass: 'transform1' },
             body: {
@@ -357,11 +426,30 @@ describe('/api/bulk-combine task routes', () => {
             userDirectories: { root: userRoot },
             scope: 'all',
             itemKeys: ['character-a'],
+            prepareTask: expect.any(Function),
+            onScheduled: expect.any(Function),
         });
 
         const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
         const stored = await repo.getTask(created.id);
         expect(stored.completion).toEqual(response.body.completion);
+    });
+
+    test('rejects an immediately conflicting run without checkpointing completion settings', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Already running' } })).body;
+        fakeRunner.runPass.mockImplementationOnce(async () => {
+            throw new TaskAlreadyRunningError(created.id);
+        });
+
+        const response = await invoke('post', '/tasks/:id/passes/:pass/run', {
+            params: { id: created.id, pass: 'transform1' },
+            body: { completionSettings: { model: 'must-not-persist' } },
+        });
+        const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
+
+        expect(response.statusCode).toBe(409);
+        expect(response.body).toEqual({ error: 'task_already_running' });
+        await expect(repo.getTask(created.id)).resolves.toMatchObject({ revision: 1, completion: {} });
     });
 
     test('rejects invalid passes and missing tasks before scheduling work', async () => {
@@ -397,6 +485,20 @@ describe('/api/bulk-combine task routes', () => {
         });
         expect(missing.statusCode).toBe(404);
         expect(fakeRunner.runPostProcess).toHaveBeenCalledTimes(1);
+    });
+
+    test('maps a corrupt task record to a clean task-corrupt response', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Corrupt' } })).body;
+        await fs.promises.writeFile(
+            path.join(userRoot, 'bulk-combine-tasks', created.id, 'task.json'),
+            '{not json',
+            'utf8',
+        );
+
+        const response = await invoke('get', '/tasks/:id', { params: { id: created.id } });
+
+        expect(response.statusCode).toBe(500);
+        expect(response.body).toEqual({ error: 'task_corrupt' });
     });
 
     test('returns the derived review assembly without storing duplicate artifacts', async () => {
@@ -442,8 +544,10 @@ describe('/api/bulk-combine task routes', () => {
         expect(response.body).toMatchObject({ id: created.id });
         expect(fakeRunner.resume).toHaveBeenCalledWith({
             taskId: created.id,
+            passKey: 'transform1',
             repo: expect.any(BulkCombineTaskRepository),
             userDirectories: { root: userRoot },
+            onScheduled: expect.any(Function),
         });
     });
 
@@ -456,6 +560,16 @@ describe('/api/bulk-combine task routes', () => {
 
         expect(cancelled.body).toEqual({ cancelled: true });
         expect(inactive.body).toEqual({ cancelled: false });
+    });
+
+    test('returns 404 instead of subscribing events for an unknown task', async () => {
+        const response = await invoke('get', '/tasks/:id/events', {
+            params: { id: '00000000-0000-4000-8000-000000000099' },
+            request: new EventEmitter(),
+        });
+
+        expect(response.statusCode).toBe(404);
+        expect(response.body).toEqual({ error: 'task_not_found' });
     });
 
     test('subscribes to task events and unsubscribes when the request closes', async () => {
@@ -475,10 +589,27 @@ describe('/api/bulk-combine task routes', () => {
             'Cache-Control': 'no-cache',
             Connection: 'keep-alive',
         });
-        expect(response.write).toHaveBeenCalledWith('data: {"type":"progress","completed":1}\n\n');
+        expect(response.flushHeaders).toHaveBeenCalledTimes(1);
+        expect(response.write).toHaveBeenNthCalledWith(1, ': connected\n\n');
+        expect(response.write).toHaveBeenNthCalledWith(2, 'data: {"type":"progress","completed":1}\n\n');
+        expect(response.flush).toHaveBeenCalledTimes(2);
 
         request.emit('close');
         eventBus.emit(created.id, { type: 'progress', completed: 2 });
-        expect(response.write).toHaveBeenCalledTimes(1);
+        expect(response.write).toHaveBeenCalledTimes(2);
+    });
+
+    test('schedules recurring cleanup and allows its timer to be cleared', async () => {
+        jest.useFakeTimers();
+        const cleanup = jest.fn(async () => undefined);
+        const timer = scheduleBulkCombineCleanup({ cleanup, intervalMs: 1000 });
+
+        await jest.advanceTimersByTimeAsync(3000);
+        expect(cleanup).toHaveBeenCalledTimes(3);
+
+        clearInterval(timer);
+        await jest.advanceTimersByTimeAsync(1000);
+        expect(cleanup).toHaveBeenCalledTimes(3);
+        jest.useRealTimers();
     });
 });

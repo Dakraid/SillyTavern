@@ -4,12 +4,13 @@
  * @file Public entry point for the durable Bulk Card Combine task wizard.
  */
 
-import { characters } from '../../script.js';
+import { characters, unshallowCharacter } from '../../script.js';
 import {
     getCharacterName,
     getCoreCharacterPayload,
 } from './helpers.js';
 import { createTaskClient } from './services/TaskClient.js';
+import { withResolvedWindowPersistence } from './services/resolveCompletionSettings.js';
 import { openTaskWizard } from './wizard/TaskWizardController.js';
 
 // Re-export helpers --------------------------------------------------
@@ -65,13 +66,9 @@ export function initBulkCombine() {}
  * Builds a display name for a new durable task.
  *
  * @param {number[]} validIds Valid selected character ids.
- * @param {object} [rerunConfig] Optional re-run configuration.
  * @returns {string} Task name.
  */
-function resolveTaskName(validIds, rerunConfig) {
-    if (rerunConfig?.groupName != null) {
-        return String(rerunConfig.groupName);
-    }
+function resolveTaskName(validIds) {
     const names = validIds
         .map((id) => getCharacterName(characters[id]))
         .filter(Boolean);
@@ -79,46 +76,25 @@ function resolveTaskName(validIds, rerunConfig) {
 }
 
 /**
- * Maps legacy re-run config onto durable task settings and prompts.
- *
- * @param {object} [rerunConfig] Optional re-run configuration.
- * @returns {{settings: object, prompts: object}} Settings/prompts patch fragments.
- */
-function seedTaskConfigFromRerun(rerunConfig) {
-    const config = rerunConfig?.rerunMeta?.config ?? rerunConfig?.config ?? {};
-    const settings = {};
-    const prompts = {};
-
-    if (typeof config.prompt === 'string' && config.prompt.trim()) {
-        prompts.main = { text: config.prompt };
-    }
-    if (config.createLorebook || config.dynamicLorebook) {
-        settings.destination = 'lorebook';
-    }
-    if (config.postMergeEnabled) {
-        settings.postProcessingEnabled = true;
-        if (typeof config.postMergePrompt === 'string' && config.postMergePrompt.trim()) {
-            prompts.post = { text: config.postMergePrompt };
-        }
-    }
-    if (config.minify) {
-        settings.xmlEnabled = true;
-        settings.xmlMinify = true;
-    }
-    return { settings, prompts };
-}
-
-/**
  * Creates a durable server task seeded from selected characters.
  *
+ * Each character is unshallowed BEFORE its core payload is snapshotted:
+ * with `performance.lazyLoadCharacters` enabled, shallow roster entries
+ * carry empty description/personality/scenario/first_mes/mes_example, which
+ * would otherwise produce empty durable source snapshots (and empty
+ * generation prompts). `unshallowCharacter` is a no-op for non-shallow
+ * characters.
+ *
  * @param {number[]} selectedCharacterIds Selected character ids.
- * @param {object} [rerunConfig] Optional re-run configuration.
  * @returns {Promise<{task: object, client: import('./services/TaskClient.js').TaskClient}>} Created task and client.
  */
-async function createTaskForSelection(selectedCharacterIds, rerunConfig) {
-    const client = createTaskClient();
+async function createTaskForSelection(selectedCharacterIds) {
+    const client = withResolvedWindowPersistence(createTaskClient());
     const validIds = (selectedCharacterIds ?? []).filter((id) => characters[id]);
-    const task = await client.createTask({ name: resolveTaskName(validIds, rerunConfig) });
+    for (const id of validIds) {
+        await unshallowCharacter(id);
+    }
+    const task = await client.createTask({ name: resolveTaskName(validIds) });
     const sources = validIds.map((id) => {
         const character = characters[id];
         return {
@@ -128,8 +104,7 @@ async function createTaskForSelection(selectedCharacterIds, rerunConfig) {
             fields: getCoreCharacterPayload(character),
         };
     });
-    const { settings, prompts } = seedTaskConfigFromRerun(rerunConfig);
-    const seeded = await client.patchTask(task.id, { sources, settings, prompts });
+    const seeded = await client.patchTask(task.id, { sources });
     return { task: seeded, client };
 }
 
@@ -137,10 +112,9 @@ async function createTaskForSelection(selectedCharacterIds, rerunConfig) {
  * Create and open a durable combine task for the selected characters.
  *
  * @param {number[]} selectedCharacterIds Selected character ids.
- * @param {object} [rerunConfig] Optional legacy configuration to seed.
  * @returns {Promise<void>} Resolves when the task wizard closes.
  */
-export async function openCombineWizard(selectedCharacterIds, rerunConfig) {
+export async function openCombineWizard(selectedCharacterIds) {
     const validIds = (selectedCharacterIds ?? []).filter((id) => characters[id]);
     if (validIds.length < 2) {
         globalThis.toastr?.warning?.(
@@ -150,6 +124,6 @@ export async function openCombineWizard(selectedCharacterIds, rerunConfig) {
         return;
     }
 
-    const { task, client } = await createTaskForSelection(validIds, rerunConfig);
+    const { task, client } = await createTaskForSelection(validIds);
     await openTaskWizard(task, { client });
 }

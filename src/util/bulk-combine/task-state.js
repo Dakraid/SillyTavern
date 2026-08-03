@@ -329,9 +329,10 @@ export function hashInputs(value) {
  * Returns only settings that affect generated pass inputs. Concurrency is
  * intentionally excluded because it changes scheduling, not generation.
  * @param {object} settings Task generation settings
+ * @param {object} completion Sanitized completion-generation settings
  * @returns {object} Stable generation-affecting settings subset
  */
-export function relevantSettings(settings = {}) {
+export function relevantSettings(settings = {}, completion = {}) {
     return {
         mode: settings.mode,
         totalContextTokens: settings.totalContextTokens,
@@ -339,7 +340,7 @@ export function relevantSettings(settings = {}) {
         destination: settings.destination,
         connectionProfile: settings.connectionProfile,
         preset: settings.preset,
-        completion: settings.completion,
+        completion,
     };
 }
 
@@ -403,7 +404,7 @@ export function computePassInputHash(task, passKey) {
     return hashInputs({
         sources: passInputSources(task, passKey),
         prompts: passInputPrompts(task, passKey),
-        settings: relevantSettings(task.settings),
+        settings: relevantSettings(task.settings, task.completion),
     });
 }
 

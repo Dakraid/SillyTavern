@@ -32,9 +32,11 @@ function newItem(existing = {}) {
 
 function completionError(result) {
     const detail = result?.data?.error?.message ?? result?.data?.error;
-    return new Error(typeof detail === 'string' && detail
+    const error = new Error(typeof detail === 'string' && detail
         ? detail
         : `Completion failed with status ${result?.status ?? 'unknown'}`);
+    if (Number.isInteger(result?.status)) error.status = result.status;
+    return error;
 }
 
 function completionContent(result) {
@@ -55,13 +57,6 @@ function promptText(task, passKey) {
         return `${task.prompts.main.text}\n\n${task.prompts.secondPass.text}`;
     }
     return passKey === 'summary' ? task.prompts.summary.text : task.prompts.main.text;
-}
-
-function modelFromSettings(settings) {
-    return settings?.model
-        ?? settings?.connectionProfile?.model
-        ?? settings?.preset?.model
-        ?? null;
 }
 
 function sourceWithOutput(source, output) {
@@ -121,11 +116,25 @@ function finalStatus(task, passKey, keys) {
     return 'partial';
 }
 
+function tokenLimitError(preflight, contextTokens) {
+    const blocked = preflight.blocked[0];
+    const usage = preflight.items.find(item => item.key === blocked.key);
+    return new Error(`Token limit exceeded (needs ${usage.total}, context ${contextTokens})`);
+}
+
 export class TaskAlreadyRunningError extends Error {
     constructor(taskId) {
         super(`Bulk Combine task is already running: ${taskId}`);
         this.name = 'TaskAlreadyRunningError';
         this.taskId = taskId;
+    }
+}
+
+export class TaskNotResumableError extends Error {
+    constructor(passKey) {
+        super(`Bulk Combine pass is not resumable: ${passKey}`);
+        this.name = 'TaskNotResumableError';
+        this.passKey = passKey;
     }
 }
 
@@ -152,6 +161,8 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         userDirectories,
         scope = 'missing',
         itemKeys = null,
+        prepareTask = null,
+        onScheduled = null,
     }) {
         if (!PASS_KEYS.includes(passKey)) throw new TypeError(`Invalid pass key: ${passKey}`);
         if (active.has(taskId)) throw new TaskAlreadyRunningError(taskId);
@@ -162,7 +173,10 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         const { signal } = controller;
 
         try {
-            const task = await repo.getTask(taskId);
+            const task = typeof prepareTask === 'function'
+                ? await prepareTask()
+                : await repo.getTask(taskId);
+            if (typeof onScheduled === 'function') onScheduled(task);
             const keys = targetKeys(task, passKey, scope, itemKeys);
             const inputs = deriveInputs(task, passKey);
             const text = promptText(task, passKey);
@@ -188,7 +202,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 prompts: [...prompts].map(([key, prompt]) => ({ key, text: prompt })),
                 outputTokens: task.settings.outputTokens,
                 contextTokens: task.settings.totalContextTokens,
-                model: modelFromSettings(task.settings) || (task.completion && task.completion.model) || null,
+                model: task.completion?.model ?? null,
             }, countTokens);
             const preflightItems = new Map(preflight.items.map(item => [item.key, item]));
             const blockedKeys = new Set();
@@ -303,11 +317,13 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         const content = await withRetries(async () => {
                             attempts++;
                             // This run-time completion snapshot is the frontend's sanitized config-resolution seam; the executor resolves secret_id.
-                            return completionContent(await executeCompletion({
+                            const output = completionContent(await executeCompletion({
                                 body: { ...(task.completion || {}), messages: [{ role: 'user', content: prompts.get(key) }], stream: false },
                                 userDirectories,
                                 signal,
                             }));
+                            if (!output.trim()) throw new Error('Completion returned empty content');
+                            return output;
                         }, signal, 3);
                         await repo.checkpoint(taskId, draft => {
                             const item = draft.passes[passKey].items[key];
@@ -354,7 +370,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 return { passKey, status: 'interrupted', items: itemStatuses(interrupted, passKey, keys) };
             }
 
-            const status = finalStatus(settled, passKey, keys);
+            const status = finalStatus(settled, passKey, settled.sources.map(source => source.key));
             const completed = await repo.checkpoint(taskId, draft => {
                 draft.passes[passKey].status = status;
                 if (status === 'succeeded') {
@@ -371,7 +387,14 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         }
     }
 
-    async function runPromptAssist({ taskId, promptKey, repo, userDirectories }) {
+    async function runPromptAssist({
+        taskId,
+        promptKey,
+        repo,
+        userDirectories,
+        prepareTask = null,
+        onScheduled = null,
+    }) {
         if (active.has(taskId)) throw new TaskAlreadyRunningError(taskId);
         if (!PROMPT_KEYS.includes(promptKey)) throw new TypeError(`Invalid prompt key: ${promptKey}`);
 
@@ -381,13 +404,24 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         const { signal } = controller;
 
         try {
-            const task = await repo.getTask(taskId);
+            const task = typeof prepareTask === 'function'
+                ? await prepareTask()
+                : await repo.getTask(taskId);
+            if (typeof onScheduled === 'function') onScheduled(task);
             const original = task.prompts[promptKey].text;
             const request = task.prompts[promptKey].assistant.request;
             if (!request.trim()) return { status: 'skipped' };
 
             try {
                 const instruction = `You are helping refine a prompt.\n\nCURRENT PROMPT:\n${original}\n\nREFINEMENT REQUEST:\n${request}\n\nReturn ONLY the revised prompt text, with no commentary or code fences.`;
+                const preflight = await preflightTokens({
+                    prompts: [{ key: promptKey, text: instruction }],
+                    outputTokens: task.settings.outputTokens,
+                    contextTokens: task.settings.totalContextTokens,
+                    model: task.completion?.model ?? null,
+                }, countTokens);
+                if (!preflight.ok) throw tokenLimitError(preflight, task.settings.totalContextTokens);
+
                 const proposal = stripCodeFences(await withRetries(async () => {
                     throwIfAborted(signal);
                     return completionContent(await executeCompletion({
@@ -453,15 +487,21 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             }
 
             try {
+                const prompt = buildPostProcessPrompt(task.prompts.post.text, input);
+                const preflight = await preflightTokens({
+                    prompts: [{ key: 'post', text: prompt }],
+                    outputTokens: task.settings.outputTokens,
+                    contextTokens: task.settings.totalContextTokens,
+                    model: task.completion?.model ?? null,
+                }, countTokens);
+                if (!preflight.ok) throw tokenLimitError(preflight, task.settings.totalContextTokens);
+
                 const content = await withRetries(async () => {
                     throwIfAborted(signal);
                     return completionContent(await executeCompletion({
                         body: {
                             ...(task.completion || {}),
-                            messages: [{
-                                role: 'user',
-                                content: buildPostProcessPrompt(task.prompts.post.text, input),
-                            }],
+                            messages: [{ role: 'user', content: prompt }],
                             stream: false,
                         },
                         userDirectories,
@@ -501,12 +541,14 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         }
     }
 
-    async function resume({ taskId, repo, userDirectories }) {
+    async function resume({ taskId, passKey, repo, userDirectories, onScheduled = null }) {
+        if (!PASS_KEYS.includes(passKey)) throw new TypeError(`Invalid pass key: ${passKey}`);
         const task = await repo.getTask(taskId);
+        const pass = task.passes[passKey];
+        const hasResumableItem = task.sources.some(source => RESUMABLE_STATUSES.has(newItem(pass.items[source.key]).status));
+        if (pass.status !== 'interrupted' || !hasResumableItem) throw new TaskNotResumableError(passKey);
+        if (typeof onScheduled === 'function') onScheduled(task);
         // Persisted live-running items are intentionally excluded to avoid silently billing uncertain work twice.
-        const passKey = task.activePass
-            || PASS_KEYS.find(key => task.passes[key].status === 'interrupted');
-        if (!passKey) return null;
         return runPass({ taskId, passKey, repo, userDirectories, scope: 'missing' });
     }
 

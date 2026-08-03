@@ -19,8 +19,11 @@
  * Review-payload caching: the payload is derived on read and any task
  * change can affect it, so the closure cache is keyed by
  * `snapshot.task.revision`. The first render (and every revision change)
- * triggers one deduped fetch; a stale in-flight response is discarded by
- * revision check. The Refresh button forces a refetch at the current
+ * triggers one fetch per revision, deduplicated by a fetch TOKEN: a render
+ * for a newer revision always starts a fresh fetch (even while an older
+ * one is in flight) and stale responses are discarded by token comparison,
+ * so the page can never get stuck on "Assembling…".
+ * The Refresh button forces a refetch at the current
  * revision; failures render an inline error with a Retry button.
  *
  * Rendering NEVER executes: only Refresh/Retry fetch, and only field
@@ -48,6 +51,7 @@ const STALE_BANNER_TEXT = 'Upstream results changed since this review was assemb
 const LOADING_TEXT = 'Assembling the review payload…';
 const REFRESH_TITLE = 'Re-assemble the review payload from the latest task state.';
 const RETRY_TITLE = 'Try loading the review payload again.';
+const READ_ONLY_NOTE = 'This task is completed — it is read-only. Duplicate it from Task History to keep iterating.';
 const DESTINATION_NOTE = 'Preview only — the destination is chosen on the Prompt & Settings page.';
 
 /**
@@ -223,10 +227,23 @@ export function createReviewPage() {
      * @type {{revision: number|null, payload: object|null, error: string|null}}
      */
     let cache = { revision: null, payload: null, error: null };
-    /** @type {boolean} Whether a getReview fetch is in flight (dedupe). */
-    let fetchInFlight = false;
+    /**
+     * Active fetch token. A fetch for revision N is superseded by any fetch
+     * started for a newer revision — superseded responses are discarded, so
+     * the latest revision ALWAYS gets its payload.
+     *
+     * @type {{revision: number}|null}
+     */
+    let activeFetch = null;
     /** @type {string|null} Active destination-preview tab (defaults to the payload's destination). */
     let activeTab = null;
+    /**
+     * Whether the task is completed (read-only rendering): set on every
+     * render from the snapshot.
+     *
+     * @type {boolean}
+     */
+    let readOnlyMode = false;
 
     /**
      * Effective value of an editable review field: uncommitted draft, then
@@ -244,47 +261,54 @@ export function createReviewPage() {
     }
 
     /**
-     * Starts the deduped review-payload fetch for a revision.
+     * Starts the review-payload fetch for a revision. Fetches for the SAME
+     * revision are deduplicated by the caller; a fetch for a NEWER revision
+     * always starts and supersedes any older in-flight one.
      *
      * @param {number} revision Task revision to fetch at.
      * @returns {void}
      */
     function startFetch(revision) {
-        fetchInFlight = true;
+        const token = { revision };
+        activeFetch = token;
         let result;
         try {
             result = latestActions?.getReview?.();
         } catch (error) {
-            settleFetch(null, error, revision);
+            settleFetch(token, null, error);
             return;
         }
         if (result === undefined || result === null) {
-            settleFetch(null, new Error('getReview is unavailable.'), revision);
+            settleFetch(token, null, new Error('getReview is unavailable.'));
             return;
         }
         Promise.resolve(result).then(
-            (payload) => settleFetch(payload, null, revision),
-            (error) => settleFetch(null, error, revision),
+            (payload) => settleFetch(token, payload, null),
+            (error) => settleFetch(token, null, error),
         );
     }
 
     /**
      * Settles an in-flight fetch: caches the outcome and re-renders, unless
-     * the page was disposed or the task revision moved on (stale response —
-     * the next render refetches at the new revision).
+     * the fetch was superseded by a newer one, the page was disposed, or
+     * the task revision moved on (stale response — the latest render
+     * already started a fresh fetch for the new revision).
      *
+     * @param {{revision: number}} token Fetch token from {@link startFetch}.
      * @param {object|null} payload Review payload on success.
      * @param {unknown} error Failure on error.
-     * @param {number} revision Revision the fetch was started for.
      * @returns {void}
      */
-    function settleFetch(payload, error, revision) {
-        fetchInFlight = false;
-        if (!host || revision !== revisionOf(latestSnapshot)) {
+    function settleFetch(token, payload, error) {
+        if (activeFetch !== token) {
+            return;
+        }
+        activeFetch = null;
+        if (!host || token.revision !== revisionOf(latestSnapshot)) {
             return;
         }
         cache = {
-            revision,
+            revision: token.revision,
             payload: isRecord(payload) ? payload : null,
             error: error === null || error === undefined ? null : String(error),
         };
@@ -351,6 +375,7 @@ export function createReviewPage() {
         } else {
             field.setAttribute('rows', '12');
         }
+        field.readOnly = readOnlyMode === true;
         field.value = value;
         field.addEventListener('input', () => {
             drafts.set(key, String(field.value ?? ''));
@@ -564,8 +589,14 @@ export function createReviewPage() {
      * @returns {Element} The page heading (focus target).
      */
     function renderPage() {
+        readOnlyMode = latestSnapshot?.task?.status === 'completed';
         const revision = revisionOf(latestSnapshot);
-        if (cache.revision !== revision && !fetchInFlight) {
+        // Fetch when this revision has no cached outcome. Dedupe per
+        // revision — a render for a NEWER revision always starts a fresh
+        // fetch even while an older one is in flight (the older response is
+        // discarded by its token), so a mid-flight revision bump can never
+        // leave the page stuck on "Assembling…".
+        if (cache.revision !== revision && activeFetch?.revision !== revision) {
             startFetch(revision);
         }
 
@@ -585,6 +616,13 @@ export function createReviewPage() {
         if (upstreamStale(latestSnapshot)) {
             root.append(buildStaleBanner());
         }
+        if (readOnlyMode) {
+            const readOnly = document.createElement('p');
+            readOnly.className = 'bc-task-readonly-note';
+            readOnly.setAttribute('role', 'status');
+            readOnly.textContent = READ_ONLY_NOTE;
+            root.append(readOnly);
+        }
 
         const toolbar = document.createElement('div');
         toolbar.className = 'bc-task-review-toolbar';
@@ -592,7 +630,7 @@ export function createReviewPage() {
             className: 'bc-task-review-refresh',
             label: 'Refresh',
             title: REFRESH_TITLE,
-            disabled: fetchInFlight && cache.payload === null && cache.error === null,
+            disabled: activeFetch !== null && cache.payload === null && cache.error === null,
             onClick: forceRefetch,
         }));
         root.append(toolbar, ...buildBody());
@@ -649,7 +687,9 @@ export function createReviewPage() {
             latestActions = null;
             drafts.clear();
             cache = { revision: null, payload: null, error: null };
+            activeFetch = null;
             activeTab = null;
+            readOnlyMode = false;
         },
     };
 }

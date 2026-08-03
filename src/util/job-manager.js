@@ -7,6 +7,20 @@ export const TERMINAL_EVENT_TYPES = new Set(['job_completed', 'job_failed']);
 export const TERMINAL_SSE_RETRY_MS = 24 * 60 * 60 * 1000;
 
 const MAX_LLM_RETRIES = 3;
+const RETRYABLE_CLIENT_STATUSES = new Set([408, 425, 429]);
+
+function errorStatus(error) {
+    const status = error?.status ?? error?.statusCode ?? error?.response?.status ?? error?.cause?.status;
+    return Number.isInteger(status) ? status : null;
+}
+
+function isPermanentClientError(error) {
+    const status = errorStatus(error);
+    return status !== null
+        && status >= 400
+        && status < 500
+        && !RETRYABLE_CLIENT_STATUSES.has(status);
+}
 
 export function delay(ms, signal) {
     return new Promise((resolve, reject) => {
@@ -45,7 +59,7 @@ export async function withRetries(task, signal, attempts = MAX_LLM_RETRIES) {
         } catch (error) {
             lastError = error;
 
-            if (attempt >= attempts) {
+            if (attempt >= attempts || isPermanentClientError(error)) {
                 break;
             }
 

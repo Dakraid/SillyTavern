@@ -44,7 +44,7 @@
 }
 
 .bc-task-post-banner[data-status='failed'] {
-	border-color: color-mix(in srgb, #d33 45%, var(--SmartThemeBorderColor));
+	border-color: color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
 }
 
 .bc-task-post-banner[data-status='running'] {
@@ -212,7 +212,7 @@
 
 .bc-task-assist-error {
 	margin: 0;
-	color: color-mix(in srgb, #d33 75%, currentColor);
+	color: color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 75%, currentColor);
 }
 
 .bc-task-assist-status {

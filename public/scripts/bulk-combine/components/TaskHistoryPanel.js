@@ -42,14 +42,24 @@ const STATUS_LABELS = Object.freeze({
     running: 'Running',
     interrupted: 'Interrupted',
     succeeded: 'Succeeded',
+    completed: 'Completed',
     failed: 'Failed',
     skipped: 'Skipped',
     idle: 'Idle',
 });
 
+/**
+ * Default open-only poll interval: the visible list refreshes itself while
+ * the panel is open (background runs keep moving server-side).
+ *
+ * @type {number}
+ */
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+
 const NEW_TASK_TITLE = 'Start a fresh combine task.';
 const OPEN_TITLE = 'Open this task in the wizard.';
 const DUPLICATE_TITLE = 'Create a copy of this task.';
+const RENAME_TITLE = 'Rename this task.';
 const ARCHIVE_TITLE = 'Archive this task. Archived tasks are kept beyond the 7-day cleanup.';
 const UNARCHIVE_TITLE = 'Return this task to the active list.';
 const DELETE_TITLE = 'Delete this task permanently.';
@@ -148,13 +158,14 @@ function buildButton({ className, label, title, disabled, onClick }) {
  * Creates the Task History panel component.
  *
  * @param {object} options Options.
- * @param {object} options.client TaskClient instance (`listTasks`, `duplicateTask`, `archiveTask`, `unarchiveTask`, `deleteTask`).
+ * @param {object} options.client TaskClient instance (`listTasks`, `duplicateTask`, `archiveTask`, `unarchiveTask`, `deleteTask`, `patchTask`).
  * @param {(id: string) => void} [options.onOpenTask] Opens a task in the wizard (orchestrator wires popup close/reopen).
  * @param {() => void} [options.onNewTask] Starts a fresh task (orchestrator wires create+open).
  * @param {string|number|null} [options.currentTaskId] Task currently open in the wizard; marked with a badge and given no Open button.
+ * @param {number} [options.pollIntervalMs] Open-only list poll interval (0 disables; defaults to 5s).
  * @returns {{render: (container: Element) => Element|null, refresh: () => Promise<void>, dispose: () => void}} Panel instance.
  */
-export function createTaskHistoryPanel({ client, onOpenTask, onNewTask, currentTaskId } = {}) {
+export function createTaskHistoryPanel({ client, onOpenTask, onNewTask, currentTaskId, pollIntervalMs } = {}) {
     /** @type {Element|null} Host container; null after dispose. */
     let host = null;
     /** @type {boolean} Whether the initial fetch has been kicked off. */
@@ -173,6 +184,50 @@ export function createTaskHistoryPanel({ client, onOpenTask, onNewTask, currentT
     const pendingIds = new Set();
     /** @type {string|null} Task id showing the inline delete confirm. */
     let confirmDeleteId = null;
+    /** @type {string|null} Task id showing the inline rename editor. */
+    let renameId = null;
+    /** @type {string} Rename editor draft text. */
+    let renameDraft = '';
+    /** @type {number} Effective poll interval (0 = disabled). */
+    const pollMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0
+        ? pollIntervalMs
+        : DEFAULT_POLL_INTERVAL_MS;
+    /** @type {ReturnType<typeof setInterval>|null} Open-only poll timer. */
+    let pollTimer = null;
+
+    /**
+     * Starts the open-only poll: the visible list refreshes itself every
+     * `pollMs` while the panel is open. Idempotent; cleaned up by dispose.
+     *
+     * @returns {void}
+     */
+    function startPolling() {
+        if (pollTimer !== null || pollMs <= 0 || typeof setInterval !== 'function') {
+            return;
+        }
+        pollTimer = setInterval(() => {
+            // Skip while the panel is gone or a mutation/confirm is in play
+            // (a mid-edit refresh would clobber the inline editor).
+            if (!host || pendingIds.size > 0 || renameId !== null || confirmDeleteId !== null) {
+                return;
+            }
+            void refresh();
+        }, pollMs);
+        // Never keep a Node process alive for a UI poll.
+        pollTimer.unref?.();
+    }
+
+    /**
+     * Stops the open-only poll. Idempotent.
+     *
+     * @returns {void}
+     */
+    function stopPolling() {
+        if (pollTimer !== null && typeof clearInterval === 'function') {
+            clearInterval(pollTimer);
+        }
+        pollTimer = null;
+    }
 
     /**
      * Whether a summary is the task currently open in the wizard.
@@ -319,6 +374,18 @@ export function createTaskHistoryPanel({ client, onOpenTask, onNewTask, currentT
             onClick: () => void runTaskAction(summary.id, () => client.duplicateTask(summary.id)),
         }));
         actions.append(buildButton({
+            className: 'bc-task-history-action bc-task-history-rename',
+            label: 'Rename',
+            title: RENAME_TITLE,
+            disabled: pending,
+            onClick: () => {
+                renameId = summary.id;
+                renameDraft = summary.name;
+                confirmDeleteId = null;
+                paint();
+            },
+        }));
+        actions.append(buildButton({
             className: 'bc-task-history-action bc-task-history-archive',
             label: summary.archived ? 'Unarchive' : 'Archive',
             title: summary.archived ? UNARCHIVE_TITLE : ARCHIVE_TITLE,
@@ -339,6 +406,60 @@ export function createTaskHistoryPanel({ client, onOpenTask, onNewTask, currentT
             },
         }));
         return actions;
+    }
+
+    /**
+     * Builds the inline rename editor that replaces the row actions while a
+     * rename is being edited.
+     *
+     * @param {object} summary Normalized summary.
+     * @returns {Element} Rename editor container.
+     */
+    function buildRename(summary) {
+        const editor = document.createElement('div');
+        editor.className = 'bc-task-history-rename-editor';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'bc-task-history-rename-input';
+        input.setAttribute('aria-label', 'New task name');
+        input.setAttribute('maxlength', '120');
+        input.value = renameId === summary.id ? renameDraft : summary.name;
+        input.addEventListener('input', () => {
+            renameDraft = String(input.value ?? '');
+        });
+
+        const saveRename = () => {
+            const name = renameDraft.trim();
+            if (!name || name === summary.name) {
+                renameId = null;
+                paint();
+                return;
+            }
+            renameId = null;
+            void runTaskAction(summary.id, () => client.patchTask(summary.id, { name }));
+        };
+
+        editor.append(input, buildButton({
+            className: 'bc-task-history-action bc-task-history-rename-save',
+            label: 'Save',
+            title: RENAME_TITLE,
+            onClick: saveRename,
+        }), buildButton({
+            className: 'bc-task-history-action bc-task-history-rename-cancel',
+            label: 'Cancel',
+            title: CONFIRM_CANCEL_TITLE,
+            onClick: () => {
+                renameId = null;
+                paint();
+            },
+        }));
+        input.addEventListener('keydown', (event) => {
+            if (event?.key === 'Enter') {
+                saveRename();
+            }
+        });
+        return editor;
     }
 
     /**
@@ -428,7 +549,11 @@ export function createTaskHistoryPanel({ client, onOpenTask, onNewTask, currentT
         meta.append(pill, updated);
 
         main.append(nameLine, meta);
-        row.append(main, confirmDeleteId === summary.id ? buildConfirm(summary) : buildActions(summary));
+        if (renameId === summary.id) {
+            row.append(main, buildRename(summary));
+        } else {
+            row.append(main, confirmDeleteId === summary.id ? buildConfirm(summary) : buildActions(summary));
+        }
         return row;
     }
 
@@ -564,18 +689,22 @@ export function createTaskHistoryPanel({ client, onOpenTask, onNewTask, currentT
         } else {
             paint();
         }
+        startPolling();
         return host.children.length ? host.children[0] : null;
     }
 
     /**
      * Detaches the panel: pending fetch resolutions no longer repaint the
-     * container. Safe to call multiple times.
+     * container, and the open-only poll stops. Safe to call multiple times.
      *
      * @returns {void}
      */
     function dispose() {
+        stopPolling();
         host = null;
         confirmDeleteId = null;
+        renameId = null;
+        renameDraft = '';
     }
 
     return { render, refresh, dispose };

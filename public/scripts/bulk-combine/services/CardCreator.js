@@ -21,6 +21,7 @@
 import { characters, getRequestHeaders } from '../../../script.js';
 import { world_names } from '../../world-info.js';
 import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../popup.js';
+import { escapeHtml } from '../../utils.js';
 import { minifyXml } from '../../group-card-xml-parser.js';
 import {
     GROUP_CARD_WIZARD_METADATA_KEY,
@@ -125,25 +126,35 @@ export async function readCreatedCharacterAvatar(response, groupName) {
  * (appending the first free `" (n)"` suffix). Mutates
  * `request.collisionResolution` and, on rename, `request.groupName`.
  *
+ * The user-editable group name is HTML-escaped before interpolation: string
+ * popup content is assigned to `innerHTML` (public/scripts/popup.js), so a
+ * colliding name containing markup would otherwise execute same-origin
+ * HTML/JS.
+ *
+ * Popup dismissal (Escape/X — any result that is neither AFFIRMATIVE nor
+ * NEGATIVE) CANCELS the creation; it never falls through to rename.
+ *
  * @param {object} request Validated group-card request.
  * @param {object} [options] Options.
  * @param {boolean} [options.createLorebook] Whether a lorebook will be created.
  * @returns {Promise<void>}
+ * @throws {Error} When the user dismisses the collision popup.
  */
 async function resolveNameCollisions(request, { createLorebook = true } = {}) {
     if (!request.collisions?.character && !request.collisions?.lorebook) {
         return;
     }
 
+    const safeGroupName = escapeHtml(request.groupName);
     const collisionParts = [];
     if (request.collisions.character) {
         collisionParts.push(
-            `A character named "${request.groupName}" already exists.`,
+            `A character named "${safeGroupName}" already exists.`,
         );
     }
     if (request.collisions.lorebook) {
         collisionParts.push(
-            `A lorebook named "${request.groupName}" already exists.`,
+            `A lorebook named "${safeGroupName}" already exists.`,
         );
     }
 
@@ -157,6 +168,11 @@ async function resolveNameCollisions(request, { createLorebook = true } = {}) {
     if (overwrite === POPUP_RESULT.AFFIRMATIVE) {
         request.collisionResolution = 'overwrite';
         return;
+    }
+
+    if (overwrite !== POPUP_RESULT.NEGATIVE) {
+        // Dismissal (Escape/X, POPUP_RESULT.CANCELLED) is a cancel, not a rename.
+        throw new Error('Group card creation cancelled by the user.');
     }
 
     request.collisionResolution = 'rename';
@@ -184,13 +200,99 @@ async function resolveNameCollisions(request, { createLorebook = true } = {}) {
 }
 
 /**
- * Creates the lorebook record for a validated request.
+ * Snapshots an existing lorebook's data before it is overwritten, so a
+ * later creation failure can restore it instead of leaving the user's
+ * lorebook permanently replaced. Fails closed: when the snapshot cannot be
+ * captured, the overwrite is aborted before any mutation happens.
+ *
+ * @param {string} groupName Lorebook name.
+ * @returns {Promise<object>} Parsed lorebook data snapshot.
+ * @throws {Error} When the snapshot cannot be captured.
+ */
+async function snapshotExistingLorebook(groupName) {
+    const response = await sendJsonRequest('/api/worldinfo/get', {
+        name: groupName,
+    });
+    if (!response?.ok) {
+        const responseText = typeof response?.text === 'function' ? await response.text() : '';
+        throw new Error(
+            `Failed to snapshot the existing lorebook "${groupName}" before overwriting it; aborting to avoid data loss. ${responseText || 'No response body.'}`,
+        );
+    }
+    try {
+        return await response.json();
+    } catch (error) {
+        throw new Error(
+            `Failed to read the existing lorebook "${groupName}" before overwriting it; aborting to avoid data loss. ${error?.message ?? error}`,
+        );
+    }
+}
+
+/**
+ * Restores a lorebook that was overwritten after a snapshot, best-effort.
+ *
+ * @param {object} request Group-card request carrying `lorebookSnapshot`.
+ * @returns {Promise<string>} Restore status message.
+ */
+async function restoreOverwrittenLorebook(request) {
+    const groupName = request.groupName;
+    if (request.lorebookSnapshot === undefined) {
+        return `Could not restore the pre-existing lorebook "${groupName}": no pre-overwrite snapshot was captured.`;
+    }
+    try {
+        const response = await sendJsonRequest('/api/worldinfo/edit', {
+            name: groupName,
+            data: request.lorebookSnapshot,
+        });
+        await throwIfNotOk(
+            response,
+            `Failed to restore the pre-existing lorebook "${groupName}".`,
+        );
+        return `Restored the pre-existing lorebook "${groupName}".`;
+    } catch (error) {
+        return `Failed to restore the pre-existing lorebook "${groupName}": ${error?.message ?? error}.`;
+    }
+}
+
+/**
+ * Picks the correct lorebook undo for a failed creation step: restore the
+ * pre-overwrite snapshot when an existing lorebook was overwritten, delete
+ * a freshly created lorebook otherwise.
+ *
+ * @param {object} request Validated group-card request (post-collision).
+ * @param {object} [options] Options.
+ * @param {boolean} [options.createLorebook] Whether a lorebook was created.
+ * @returns {Promise<string>} Rollback/restore status message ('' when not applicable).
+ */
+async function rollbackOrRestoreLorebook(request, { createLorebook = true } = {}) {
+    if (!createLorebook) {
+        return '';
+    }
+    const overwritingLorebook =
+        request.collisionResolution === 'overwrite' &&
+        request.collisions?.lorebook;
+    return overwritingLorebook
+        ? restoreOverwrittenLorebook(request)
+        : rollbackGeneratedLorebook(request.groupName);
+}
+
+/**
+ * Creates the lorebook record for a validated request. When the request
+ * overwrites an existing lorebook, a restorable snapshot is captured FIRST
+ * (a failed snapshot aborts the overwrite before any mutation).
  *
  * @param {object} request Validated group-card request (post-collision).
  * @param {object} lorebookData Lorebook data (`{ entries }`).
  * @returns {Promise<void>}
  */
 async function createLorebookRecord(request, lorebookData) {
+    const overwritingLorebook =
+        request.collisionResolution === 'overwrite' &&
+        request.collisions?.lorebook;
+    if (overwritingLorebook) {
+        request.lorebookSnapshot = await snapshotExistingLorebook(request.groupName);
+    }
+
     const worldResponse = await sendJsonRequest('/api/worldinfo/edit', {
         name: request.groupName,
         data: lorebookData,
@@ -261,10 +363,6 @@ async function createOrUpdateGroupCharacter(request, characterData, { createLore
     const overwritingCharacter =
         request.collisionResolution === 'overwrite' &&
         request.collisions?.character;
-    const overwritingLorebook =
-        createLorebook &&
-        request.collisionResolution === 'overwrite' &&
-        request.collisions?.lorebook;
 
     if (overwritingCharacter) {
         const existingCharacter = (characters ?? []).find(
@@ -275,10 +373,7 @@ async function createOrUpdateGroupCharacter(request, characterData, { createLore
         const avatar = String(existingCharacter?.avatar ?? '');
 
         if (!avatar) {
-            const rollbackMessage =
-                createLorebook && !overwritingLorebook
-                    ? await rollbackGeneratedLorebook(request.groupName)
-                    : '';
+            const rollbackMessage = await rollbackOrRestoreLorebook(request, { createLorebook });
             throw new Error(
                 `Failed to find existing character "${request.groupName}" avatar. ${rollbackMessage}`,
             );
@@ -294,10 +389,7 @@ async function createOrUpdateGroupCharacter(request, characterData, { createLore
 
         if (!characterResponse.ok) {
             const responseText = await characterResponse.text();
-            const rollbackMessage =
-                createLorebook && !overwritingLorebook
-                    ? await rollbackGeneratedLorebook(request.groupName)
-                    : '';
+            const rollbackMessage = await rollbackOrRestoreLorebook(request, { createLorebook });
             const artifactMessage = createLorebook
                 ? ` after lorebook "${request.groupName}" was created`
                 : '';
@@ -316,10 +408,7 @@ async function createOrUpdateGroupCharacter(request, characterData, { createLore
 
     if (!characterResponse.ok) {
         const responseText = await characterResponse.text();
-        const rollbackMessage =
-            createLorebook && !overwritingLorebook
-                ? await rollbackGeneratedLorebook(request.groupName)
-                : '';
+        const rollbackMessage = await rollbackOrRestoreLorebook(request, { createLorebook });
         const artifactMessage = createLorebook
             ? ` after lorebook "${request.groupName}" was created`
             : '';
@@ -334,10 +423,7 @@ async function createOrUpdateGroupCharacter(request, characterData, { createLore
             request.groupName,
         );
     } catch (error) {
-        const rollbackMessage =
-            createLorebook && !overwritingLorebook
-                ? await rollbackGeneratedLorebook(request.groupName)
-                : '';
+        const rollbackMessage = await rollbackOrRestoreLorebook(request, { createLorebook });
         throw new Error(`${error?.message ?? error} ${rollbackMessage}`);
     }
 }
@@ -370,16 +456,10 @@ async function linkLorebookToGroupCharacter(request, avatar, { createLorebook = 
         const overwritingCharacter =
             request.collisionResolution === 'overwrite' &&
             request.collisions?.character;
-        const overwritingLorebook =
-            createLorebook &&
-            request.collisionResolution === 'overwrite' &&
-            request.collisions?.lorebook;
         const characterRollbackMessage = overwritingCharacter
             ? ''
             : await rollbackGeneratedCharacter(request.groupName, avatar);
-        const lorebookRollbackMessage = overwritingLorebook
-            ? ''
-            : await rollbackGeneratedLorebook(request.groupName);
+        const lorebookRollbackMessage = await rollbackOrRestoreLorebook(request, { createLorebook });
         throw new Error(
             `Failed to link lorebook "${request.groupName}" to character "${request.groupName}" (avatar "${avatar}"). ${responseText || 'No response body.'} ${characterRollbackMessage} ${lorebookRollbackMessage}`,
         );

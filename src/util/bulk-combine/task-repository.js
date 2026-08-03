@@ -28,8 +28,8 @@ class BulkCombineTaskError extends Error {
 }
 
 export class InvalidTaskIdError extends BulkCombineTaskError {}
-export class InvalidSidecarFilenameError extends BulkCombineTaskError {}
 export class TaskValidationError extends BulkCombineTaskError {}
+export class TaskCorruptError extends BulkCombineTaskError {}
 
 export class TaskNotFoundError extends BulkCombineTaskError {
     constructor(id) {
@@ -52,19 +52,6 @@ function validateTaskId(id) {
         throw new InvalidTaskIdError('Task id must be a UUID');
     }
     return id;
-}
-
-function validateSidecarFilename(filename) {
-    if (typeof filename !== 'string'
-        || !filename
-        || filename.includes('..')
-        || filename.includes('/')
-        || filename.includes('\\')
-        || filename.includes('\0')
-        || filename === TASK_FILENAME) {
-        throw new InvalidSidecarFilenameError('Invalid sidecar filename');
-    }
-    return filename;
 }
 
 function withTaskLock(id, operation) {
@@ -111,6 +98,9 @@ export class BulkCombineTaskRepository {
         } catch (error) {
             if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
                 throw new TaskNotFoundError(id);
+            }
+            if (error instanceof SyntaxError) {
+                throw new TaskCorruptError(`Bulk Combine task is corrupt: ${id}`);
             }
             throw error;
         }
@@ -334,28 +324,5 @@ export class BulkCombineTaskRepository {
             }
         }
         return recovered;
-    }
-
-    getSidecarPath(id, filename) {
-        validateTaskId(id);
-        validateSidecarFilename(filename);
-        return path.join(this.#taskDirectory(id), filename);
-    }
-
-    async writeSidecar(id, filename, buffer) {
-        validateTaskId(id);
-        validateSidecarFilename(filename);
-        if (!Buffer.isBuffer(buffer)) throw new TaskValidationError('Sidecar content must be a Buffer');
-        return withTaskLock(id, async () => {
-            await this.#readTask(id);
-            await writeFileAtomic(this.getSidecarPath(id, filename), buffer);
-        });
-    }
-
-    async readSidecar(id, filename) {
-        validateTaskId(id);
-        validateSidecarFilename(filename);
-        await this.#readTask(id);
-        return fs.promises.readFile(this.getSidecarPath(id, filename));
     }
 }

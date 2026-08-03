@@ -255,6 +255,19 @@ describe('bulk combine prompt builders', () => {
             expect(prompt.text).toBe('unchanged prompt');
         });
 
+        test('blocks an over-context prompt when output tokens are unset', async () => {
+            await expect(preflightTokens({
+                prompts: [{ key: 'a', text: 'prompt' }],
+                outputTokens: null,
+                contextTokens: 10,
+                model: 'model-a',
+            }, async () => 11)).resolves.toEqual({
+                ok: false,
+                blocked: [{ key: 'a', inputTokens: 11, overage: 1 }],
+                items: [{ key: 'a', inputTokens: 11, total: 11 }],
+            });
+        });
+
         test('treats null, zero, and invalid context limits as non-blocking', async () => {
             for (const contextTokens of [null, 0, Number.NaN]) {
                 const result = await preflightTokens({

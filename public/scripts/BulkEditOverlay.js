@@ -31,13 +31,11 @@ import {
     tag_import_setting,
 } from './tags.js';
 import { t } from './i18n.js';
-import {
-    getGroupCardWizardMetadata,
-    getCoreCharacterField,
-} from './bulk-combine/helpers.js';
 
 import { openCombineWizard } from './bulk-combine/index.js';
 import { openTaskWizard } from './bulk-combine/wizard/TaskWizardController.js';
+import { createTaskClient } from './bulk-combine/services/TaskClient.js';
+import { withResolvedWindowPersistence } from './bulk-combine/services/resolveCompletionSettings.js';
 
 /**
  * Triggers a browser download for a Blob.
@@ -132,7 +130,9 @@ class CharacterContextMenu {
         }
 
         try {
-            await openTaskWizard(String(taskId));
+            await openTaskWizard(String(taskId), {
+                client: withResolvedWindowPersistence(createTaskClient()),
+            });
         } catch (error) {
             console.error('Failed to re-open the source Bulk Combine task.', error);
             const message = String(error?.message ?? error);
@@ -1386,52 +1386,6 @@ class BulkEditOverlay {
         } finally {
             this.browseState();
         }
-    };
-
-    static rerunGroupCardWizard = async (characterId) => {
-        const character = characters[characterId];
-        const meta = getGroupCardWizardMetadata(character);
-        if (!character || !meta) {
-            toastr.error(
-                'This character was not created by the Group Card Wizard.',
-                'Combine into Group Card',
-            );
-            return;
-        }
-
-        const sourceCharacterIds = [];
-        const sourceAvatars = Array.isArray(meta.sourceCharacterAvatars)
-            ? meta.sourceCharacterAvatars
-            : [];
-        for (const avatar of sourceAvatars) {
-            const id = characters.findIndex(
-                (candidate) => candidate?.avatar === avatar,
-            );
-            if (id >= 0 && !sourceCharacterIds.includes(id)) {
-                sourceCharacterIds.push(id);
-            }
-        }
-
-        if (sourceAvatars.length > sourceCharacterIds.length) {
-            const foundAvatars = new Set(
-                sourceCharacterIds.map((id) => characters[id]?.avatar),
-            );
-            const missingAvatars = sourceAvatars.filter(
-                (avatar) => !foundAvatars.has(avatar),
-            );
-            if (missingAvatars.length > 0) {
-                toastr.warning(
-                    `${missingAvatars.length} source character(s) could not be found and will be skipped.`,
-                    'Combine into Group Card',
-                );
-            }
-        }
-
-        await openCombineWizard(sourceCharacterIds, {
-            rerunAvatar: character.avatar,
-            rerunMeta: meta,
-            groupName: getCoreCharacterField(character, 'name'),
-        });
     };
 
     static #showGroupCardJobPopup = () => {

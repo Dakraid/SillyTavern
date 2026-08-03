@@ -25,6 +25,8 @@ const mockExtensionSettings = { connectionManager: { profiles: [] } };
 const mockPresetNames = {};
 /** @type {object[]} Mutable fixture backing `openai_settings`. */
 const mockPresets = [];
+/** @type {object[]} Mutable fixture backing the `proxies` export (`{ name, url, password }`). */
+const mockProxies = [];
 
 jest.unstable_mockModule('../../public/scripts/extensions.js', () => ({
     extension_settings: mockExtensionSettings,
@@ -33,6 +35,7 @@ jest.unstable_mockModule('../../public/scripts/extensions.js', () => ({
 jest.unstable_mockModule('../../public/scripts/openai.js', () => ({
     openai_setting_names: mockPresetNames,
     openai_settings: mockPresets,
+    proxies: mockProxies,
 }));
 
 /**
@@ -114,9 +117,15 @@ function makePreset(overrides = {}) {
 }
 
 let resolveCompletionSettings;
+let windowSettingsPatchFromCompletion;
+let withResolvedWindowPersistence;
 
 beforeAll(async () => {
-    ({ resolveCompletionSettings } = await import('../../public/scripts/bulk-combine/services/resolveCompletionSettings.js'));
+    ({
+        resolveCompletionSettings,
+        windowSettingsPatchFromCompletion,
+        withResolvedWindowPersistence,
+    } = await import('../../public/scripts/bulk-combine/services/resolveCompletionSettings.js'));
 });
 
 beforeEach(() => {
@@ -125,6 +134,7 @@ beforeEach(() => {
         delete mockPresetNames[key];
     }
     mockPresets.splice(0, mockPresets.length);
+    mockProxies.splice(0, mockProxies.length);
 });
 
 describe('resolveCompletionSettings', () => {
@@ -146,7 +156,14 @@ describe('resolveCompletionSettings', () => {
             top_p: 0.9,
             top_k: 40,
             secret_id: 'openai-key-ref',
+            // Connection Manager mirror: the profile api-url feeds every
+            // provider endpoint slot (the executor uses only its own).
             custom_url: 'https://proxy.example/v1',
+            vertexai_region: 'https://proxy.example/v1',
+            zai_endpoint: 'https://proxy.example/v1',
+            siliconflow_endpoint: 'https://proxy.example/v1',
+            minimax_endpoint: 'https://proxy.example/v1',
+            pollinations_endpoint: 'https://proxy.example/v1',
         });
         // The runner spreads this body verbatim: the old-pipeline key is wrong here.
         expect(result).not.toHaveProperty('amount_gen');
@@ -335,5 +352,217 @@ describe('resolveCompletionSettings', () => {
         // With empty fixtures there is nothing to resolve — no throw, no keys.
         const result = resolveCompletionSettings(makeTask({ preset: 'Missing', connectionProfile: 'nope' }));
         expect(result).toEqual({ stream: false });
+    });
+
+    test('profile proxy preset supplies reverse_proxy (never its password)', () => {
+        const result = resolveCompletionSettings(
+            makeTask({ connectionProfile: 'profile-1' }),
+            {
+                profiles: [makeProfile({ proxy: 'corp' })],
+                proxies: [{ name: 'corp', url: 'http://reverse.example', password: 'hunter2' }],
+                apiMap: CC_MAP,
+            },
+        );
+
+        expect(result.reverse_proxy).toBe('http://reverse.example');
+        expect(result).not.toHaveProperty('proxy_password');
+        expect(Object.values(result)).not.toContain('hunter2');
+    });
+
+    test('profile proxy presets match by name only; unknown/blank names emit no reverse_proxy', () => {
+        const unknown = resolveCompletionSettings(
+            makeTask({ connectionProfile: 'profile-1' }),
+            {
+                profiles: [makeProfile({ proxy: 'gone' })],
+                proxies: [{ name: 'corp', url: 'http://reverse.example', password: 'hunter2' }],
+                apiMap: CC_MAP,
+            },
+        );
+        expect(unknown).not.toHaveProperty('reverse_proxy');
+
+        const blank = resolveCompletionSettings(
+            makeTask({ connectionProfile: 'profile-1' }),
+            {
+                profiles: [makeProfile({ proxy: 'corp' })],
+                proxies: [{ name: 'corp', url: '  ', password: 'hunter2' }],
+                apiMap: CC_MAP,
+            },
+        );
+        expect(blank).not.toHaveProperty('reverse_proxy');
+    });
+
+    test('profile prompt-post-processing is mirrored like the Connection Manager', () => {
+        const result = resolveCompletionSettings(
+            makeTask({ connectionProfile: 'profile-1' }),
+            { profiles: [makeProfile({ 'prompt-post-processing': 'strict' })], apiMap: CC_MAP },
+        );
+
+        expect(result.custom_prompt_post_processing).toBe('strict');
+    });
+
+    test('the full applicable preset sampling set is carried (top_a/min_p/repetition_penalty)', () => {
+        const result = resolveCompletionSettings(
+            makeTask({ preset: 'Fast' }),
+            {
+                presets: { Fast: makePreset({ top_a: 0.05, min_p: 0.02, repetition_penalty: 1.1 }) },
+                apiMap: CC_MAP,
+            },
+        );
+
+        expect(result.top_a).toBe(0.05);
+        expect(result.min_p).toBe(0.02);
+        expect(result.repetition_penalty).toBe(1.1);
+    });
+
+    test('preset seeds are forwarded only when actually set (ST sentinel -1 means unset)', () => {
+        const seeded = resolveCompletionSettings(
+            makeTask({ preset: 'Fast' }),
+            { presets: { Fast: makePreset({ seed: 42.9 }) }, apiMap: CC_MAP },
+        );
+        expect(seeded.seed).toBe(42);
+
+        const unset = resolveCompletionSettings(
+            makeTask({ preset: 'Fast' }),
+            { presets: { Fast: makePreset({ seed: -1 }) }, apiMap: CC_MAP },
+        );
+        expect(unset).not.toHaveProperty('seed');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// windowSettingsPatchFromCompletion (preflight window persistence)
+// ---------------------------------------------------------------------------
+
+describe('windowSettingsPatchFromCompletion', () => {
+    test('maps the resolved generation windows onto the task.settings keys the preflight reads', () => {
+        // Server preflight reads task.settings.outputTokens /
+        // task.settings.totalContextTokens (src/util/bulk-combine/task-runner.js).
+        expect(windowSettingsPatchFromCompletion({ max_tokens: 2048, max_context: 64000 })).toEqual({
+            outputTokens: 2048,
+            totalContextTokens: 64000,
+        });
+    });
+
+    test('is sparse: only resolvable windows appear in the patch', () => {
+        expect(windowSettingsPatchFromCompletion({ max_tokens: 500 })).toEqual({ outputTokens: 500 });
+        expect(windowSettingsPatchFromCompletion({ max_context: 128000 })).toEqual({ totalContextTokens: 128000 });
+    });
+
+    test('returns null when nothing is resolvable (non-object, empty, invalid values)', () => {
+        expect(windowSettingsPatchFromCompletion(null)).toBeNull();
+        expect(windowSettingsPatchFromCompletion(undefined)).toBeNull();
+        expect(windowSettingsPatchFromCompletion('nope')).toBeNull();
+        expect(windowSettingsPatchFromCompletion({})).toBeNull();
+        expect(windowSettingsPatchFromCompletion({ max_tokens: 0, max_context: -5 })).toBeNull();
+        expect(windowSettingsPatchFromCompletion({ max_tokens: 'abc' })).toBeNull();
+        // Other completion keys are never mistaken for windows.
+        expect(windowSettingsPatchFromCompletion({ temperature: 0.7, stream: false })).toBeNull();
+    });
+
+    test('truncates fractional windows to positive integers', () => {
+        expect(windowSettingsPatchFromCompletion({ max_tokens: 500.9, max_context: 64000.4 })).toEqual({
+            outputTokens: 500,
+            totalContextTokens: 64000,
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// withResolvedWindowPersistence (run-time settings persistence seam)
+// ---------------------------------------------------------------------------
+
+describe('withResolvedWindowPersistence', () => {
+    /** Builds a duck-typed fake TaskClient. */
+    function makeClient() {
+        return {
+            patchTask: jest.fn(async (id, patch) => ({ id, ...patch })),
+            runPass: jest.fn(async () => ({ status: 'accepted' })),
+            resumePass: jest.fn(async () => ({ status: 'resumed' })),
+        };
+    }
+
+    test('persists the resolved windows to task.settings BEFORE running the pass', async () => {
+        const innerRunPass = jest.fn(async () => ({ status: 'accepted' }));
+        const client = withResolvedWindowPersistence({
+            patchTask: jest.fn(async (id, patch) => ({ id, ...patch })),
+            runPass: innerRunPass,
+        });
+
+        const result = await client.runPass('task-1', 'transform1', {
+            scope: 'all',
+            completionSettings: { max_tokens: 500, max_context: 64000, stream: false },
+        });
+
+        expect(result).toEqual({ status: 'accepted' });
+        expect(client.patchTask).toHaveBeenCalledTimes(1);
+        expect(client.patchTask).toHaveBeenCalledWith('task-1', {
+            settings: { outputTokens: 500, totalContextTokens: 64000 },
+        });
+        // The original run options pass through verbatim.
+        expect(innerRunPass).toHaveBeenCalledWith('task-1', 'transform1', {
+            scope: 'all',
+            completionSettings: { max_tokens: 500, max_context: 64000, stream: false },
+        });
+        // Patch strictly precedes the run.
+        expect(client.patchTask.mock.invocationCallOrder[0])
+            .toBeLessThan(innerRunPass.mock.invocationCallOrder[0]);
+    });
+
+    test('run order: patchTask resolves before the underlying run request is issued', async () => {
+        const order = [];
+        const client = withResolvedWindowPersistence({
+            patchTask: jest.fn(async () => { order.push('patch'); }),
+            runPass: jest.fn(async () => { order.push('run'); }),
+        });
+
+        await client.runPass('task-1', 'transform2', {
+            completionSettings: { max_tokens: 300, max_context: 4096 },
+        });
+
+        expect(order).toEqual(['patch', 'run']);
+    });
+
+    test('skips the PATCH when the run carries no resolvable windows', async () => {
+        const client = withResolvedWindowPersistence(makeClient());
+
+        await client.runPass('task-1', 'transform1', { completionSettings: { stream: false } });
+        await client.runPass('task-1', 'transform1');
+
+        expect(client.patchTask).not.toHaveBeenCalled();
+    });
+
+    test('fails closed: a rejected settings PATCH aborts the run', async () => {
+        const innerRunPass = jest.fn(async () => ({ status: 'accepted' }));
+        const client = withResolvedWindowPersistence({
+            patchTask: jest.fn(async () => { throw new Error('revision_conflict'); }),
+            runPass: innerRunPass,
+        });
+
+        await expect(
+            client.runPass('task-1', 'transform1', { completionSettings: { max_tokens: 500 } }),
+        ).rejects.toThrow('revision_conflict');
+        expect(innerRunPass).not.toHaveBeenCalled();
+    });
+
+    test('is idempotent per client and leaves other methods untouched', async () => {
+        const client = makeClient();
+        const once = withResolvedWindowPersistence(client);
+        const twice = withResolvedWindowPersistence(client);
+
+        expect(once).toBe(client);
+        expect(twice).toBe(client);
+
+        await client.runPass('task-1', 'transform1', { completionSettings: { max_tokens: 500 } });
+        // Double-decoration must not double-patch.
+        expect(client.patchTask).toHaveBeenCalledTimes(1);
+
+        await client.resumePass('task-1', 'transform1');
+        expect(client.resumePass).toHaveBeenCalledWith('task-1', 'transform1');
+    });
+
+    test('passes through clients that cannot persist (missing patchTask/runPass)', () => {
+        expect(withResolvedWindowPersistence(null)).toBeNull();
+        const bare = { runPass: async () => ({}) };
+        expect(withResolvedWindowPersistence(bare)).toBe(bare);
     });
 });

@@ -23,7 +23,7 @@
  * environment with light DOM fakes.
  */
 
-import { characters, getThumbnailUrl } from '../../../../script.js';
+import { characters, getThumbnailUrl, unshallowCharacter } from '../../../../script.js';
 import { getCharacterName, getCoreCharacterPayload } from '../../helpers.js';
 
 /**
@@ -81,6 +81,23 @@ function liveCharacters() {
 
 /**
  * Finds the live character backing a source snapshot, matched by avatar
+ * file name, together with its roster index. Sources without an avatar (or
+ * whose card was deleted) have no live character.
+ *
+ * @param {object} [source] Source record (`{ avatar }`).
+ * @returns {{character: object, id: number}|null} Live character + roster index, or null when gone.
+ */
+function findLiveCharacterEntry(source) {
+    const avatar = String(source?.avatar ?? '');
+    if (!avatar) {
+        return null;
+    }
+    const id = liveCharacters().findIndex((character) => String(character?.avatar ?? '') === avatar);
+    return id >= 0 ? { character: liveCharacters()[id], id } : null;
+}
+
+/**
+ * Finds the live character backing a source snapshot, matched by avatar
  * file name. Sources without an avatar (or whose card was deleted) have no
  * live character.
  *
@@ -88,11 +105,7 @@ function liveCharacters() {
  * @returns {object|null} Live character, or null when gone.
  */
 function findLiveCharacter(source) {
-    const avatar = String(source?.avatar ?? '');
-    if (!avatar) {
-        return null;
-    }
-    return liveCharacters().find((character) => String(character?.avatar ?? '') === avatar) ?? null;
+    return findLiveCharacterEntry(source)?.character ?? null;
 }
 
 /**
@@ -237,38 +250,63 @@ export function createCardsPage() {
 
     /**
      * Re-snapshots one source's name and core fields from its live
-     * character. The server derives downstream staleness from the sources
-     * change — the page only mutates the array.
+     * character. With lazy character loading the roster entry may be
+     * shallow, so the character is unshallowed BEFORE reading payload
+     * fields — otherwise the snapshot would capture empty descriptions.
+     * The server derives downstream staleness from the sources change —
+     * the page only mutates the array.
      *
      * @param {number} index Source index.
-     * @returns {void}
+     * @returns {Promise<void>}
      */
-    function refreshSource(index) {
+    async function refreshSource(index) {
         const sources = sourcesOf(latestSnapshot);
         const source = sources[index];
-        const character = findLiveCharacter(source);
-        if (!source || !character) {
+        const live = findLiveCharacterEntry(source);
+        if (!source || !live) {
             return;
         }
+        const { character, id } = live;
+        try {
+            await unshallowCharacter(id);
+        } catch (error) {
+            console.error('cardsPage: failed to load the full character before refreshing.', error);
+            return;
+        }
+        // unshallowCharacter REPLACES the roster entry (getOneCharacter), so
+        // re-read the live record — the pre-await reference stays shallow.
+        const full = liveCharacters()[id] ?? character;
         const next = sources.map((entry, sourceIndex) => sourceIndex === index
             ? {
                 ...entry,
-                name: String(getCharacterName(character) ?? '') || entry.name,
-                fields: getCoreCharacterPayload(character),
+                name: String(getCharacterName(full) ?? '') || entry.name,
+                fields: getCoreCharacterPayload(full),
             }
             : entry);
         applySources(latestActions, next);
     }
 
     /**
-     * Appends a roster character as a new source snapshot.
+     * Appends a roster character as a new source snapshot. With lazy
+     * character loading the roster entry may be shallow, so the character
+     * is unshallowed BEFORE reading payload fields — otherwise the
+     * snapshot would capture empty descriptions.
      *
      * @param {object} character Character record.
      * @param {number} id Character index within the roster.
-     * @returns {void}
+     * @returns {Promise<void>}
      */
-    function addCharacter(character, id) {
-        applySources(latestActions, [...sourcesOf(latestSnapshot), buildSourceFromCharacter(character, id)]);
+    async function addCharacter(character, id) {
+        try {
+            await unshallowCharacter(id);
+        } catch (error) {
+            console.error('cardsPage: failed to load the full character before adding.', error);
+            return;
+        }
+        // unshallowCharacter REPLACES the roster entry (getOneCharacter), so
+        // re-read the live record — the pre-await reference stays shallow.
+        const full = liveCharacters()[id] ?? character;
+        applySources(latestActions, [...sourcesOf(latestSnapshot), buildSourceFromCharacter(full, id)]);
     }
 
     /**
@@ -364,7 +402,7 @@ export function createCardsPage() {
                 label: `Refresh ${name} snapshot`,
                 title: liveCharacter ? REFRESH_TITLE : REFRESH_MISSING_TITLE,
                 disabled: !liveCharacter,
-                onClick: () => refreshSource(index),
+                onClick: () => void refreshSource(index),
             }),
             buildControlButton({
                 icon: 'fa-xmark',
@@ -408,7 +446,7 @@ export function createCardsPage() {
         addButton.className = 'bc-task-picker-add';
         addButton.setAttribute('aria-label', `Add ${name}`);
         addButton.textContent = 'Add';
-        addButton.addEventListener('click', () => addCharacter(character, id));
+        addButton.addEventListener('click', () => void addCharacter(character, id));
 
         row.append(avatar, nameElement, addButton);
         return row;

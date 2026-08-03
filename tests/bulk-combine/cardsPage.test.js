@@ -24,10 +24,13 @@ import {
 
 /** @type {object[]} Mutable roster backing the mocked `characters` export. */
 const mockCharacters = [];
+/** @type {jest.Mock} Controllable unshallowCharacter double. */
+const mockUnshallowCharacter = jest.fn(async () => {});
 
 jest.unstable_mockModule('../../public/script.js', () => ({
     characters: mockCharacters,
     getThumbnailUrl: (type, file) => `/thumbnail?type=${type}&file=${encodeURIComponent(String(file ?? ''))}`,
+    unshallowCharacter: (...args) => mockUnshallowCharacter(...args),
 }));
 
 jest.unstable_mockModule('../../public/scripts/bulk-combine/helpers.js', () => ({
@@ -287,6 +290,11 @@ function makeActions() {
 let createCardsPage;
 let container;
 
+/** @returns {Promise<void>} Flushes microtasks and short timers (async add/refresh handlers). */
+function flush() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 /**
  * Creates a page, renders it, and returns the pieces under test.
  *
@@ -306,6 +314,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
     mockCharacters.splice(0, mockCharacters.length);
+    mockUnshallowCharacter.mockClear();
+    mockUnshallowCharacter.mockImplementation(async () => {});
     fakeDocument.activeElement = null;
     global.document = fakeDocument;
     container = fakeDocument.createElement('div');
@@ -413,7 +423,7 @@ describe('cardsPage', () => {
         expect(actions.update).toHaveBeenCalledTimes(1);
     });
 
-    test('refresh re-snapshots name and fields from the live character; disabled when the character is gone', () => {
+    test('refresh re-snapshots name and fields from the live character; disabled when the character is gone', async () => {
         const a = makeSource({ fields: { name: 'Alice', description: 'OLD', personality: '', scenario: '', first_mes: '', mes_example: '' } });
         const b = makeSource({ key: 'b.png', name: 'Bob', avatar: 'b.png', fields: { name: 'Bob' } });
         const gone = makeSource({ key: 'gone.png', name: 'Ghost', avatar: 'gone.png', fields: { name: 'Ghost' } });
@@ -424,6 +434,8 @@ describe('cardsPage', () => {
         const { root, actions } = renderCardsPage([a, b, gone]);
 
         findOne(root, hasAriaLabel('Refresh Alice snapshot')).click();
+        await flush();
+        expect(mockUnshallowCharacter).toHaveBeenCalledWith(0);
         expect(actions.update).toHaveBeenCalledTimes(1);
         expect(actions.update).toHaveBeenCalledWith({
             sources: [
@@ -442,10 +454,62 @@ describe('cardsPage', () => {
         expect(missingButton.disabled).toBe(true);
         expect(missingButton.title).toContain('no longer exists');
         missingButton.click();
+        await flush();
         expect(actions.update).toHaveBeenCalledTimes(1);
     });
 
-    test('add appends a correctly shaped source; picker excludes added characters and filters by search', () => {
+    test('add and refresh unshallow the roster character BEFORE reading payload fields (lazy loading)', async () => {
+        // Lazy-loaded roster: fields arrive only after unshallowCharacter
+        // replaces the roster entry (mirrors getOneCharacter semantics).
+        mockCharacters.push(
+            makeCharacter({ name: 'Alice', avatar: 'a.png' }),
+            makeCharacter({ name: 'Shallow Sam', avatar: 's.png', shallow: true }),
+        );
+        const a = makeSource();
+        const b = makeSource({ key: 'b.png', name: 'Bob', avatar: 'b.png', fields: { name: 'Bob' } });
+        mockUnshallowCharacter.mockImplementation(async (id) => {
+            if (id === 1) {
+                mockCharacters[1] = makeCharacter({ name: 'Shallow Sam', avatar: 's.png', description: 'FULL DESC', personality: 'calm' });
+            }
+            if (id === 0) {
+                mockCharacters[0] = makeCharacter({ name: 'Alice', avatar: 'a.png', description: 'FULL A' });
+            }
+        });
+        const { page, root, actions } = renderCardsPage([a, b]);
+
+        // Add: the snapshot must carry the unshallowed fields, not ''.
+        findOne(root, hasAriaLabel('Add Shallow Sam')).click();
+        await flush();
+        expect(mockUnshallowCharacter).toHaveBeenCalledWith(1);
+        expect(actions.update).toHaveBeenCalledTimes(1);
+        expect(actions.update).toHaveBeenLastCalledWith({
+            sources: [
+                a,
+                b,
+                {
+                    key: 's.png',
+                    name: 'Shallow Sam',
+                    avatar: 's.png',
+                    fields: { name: 'Shallow Sam', description: 'FULL DESC', personality: 'calm', scenario: '', first_mes: '', mes_example: '' },
+                },
+            ],
+        });
+
+        // Refresh: re-reads the (replaced) roster entry after unshallowing.
+        page.render(container, makeSnapshot([a, b]), actions);
+        findOne(container, hasAriaLabel('Refresh Alice snapshot')).click();
+        await flush();
+        expect(mockUnshallowCharacter).toHaveBeenCalledWith(0);
+        expect(actions.update).toHaveBeenCalledTimes(2);
+        expect(actions.update).toHaveBeenLastCalledWith({
+            sources: [
+                { ...a, fields: { name: 'Alice', description: 'FULL A', personality: '', scenario: '', first_mes: '', mes_example: '' } },
+                b,
+            ],
+        });
+    });
+
+    test('add appends a correctly shaped source; picker excludes added characters and filters by search', async () => {
         const a = makeSource();
         const b = makeSource({ key: 'b.png', name: 'Bob', avatar: 'b.png', fields: { name: 'Bob' } });
         mockCharacters.push(
@@ -466,6 +530,7 @@ describe('cardsPage', () => {
         expect(findOne(root, hasAriaLabel('Add Bob'))).toBe(null);
 
         findOne(root, hasAriaLabel('Add Carol')).click();
+        await flush();
         expect(actions.update).toHaveBeenCalledTimes(1);
         expect(actions.update).toHaveBeenCalledWith({
             sources: [

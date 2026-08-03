@@ -66,11 +66,13 @@ const PASS_KEYS = Object.freeze(['transform1', 'transform2', 'summary']);
 const PASS_STATUSES = Object.freeze(['pending', 'running', 'succeeded', 'partial', 'failed', 'interrupted']);
 
 /**
- * Valid per-item statuses (from `newItem` in the task runner).
+ * Valid per-item statuses (from `newItem`/the task runner: items are
+ * queued while waiting on the concurrency limit, skipped on partial
+ * cancels, and interrupted when the server stops mid-item).
  *
  * @type {ReadonlyArray<string>}
  */
-const ITEM_STATUSES = Object.freeze(['pending', 'running', 'succeeded', 'failed']);
+const ITEM_STATUSES = Object.freeze(['pending', 'queued', 'running', 'succeeded', 'failed', 'skipped', 'interrupted']);
 
 /** @type {number} Fallback Continue target (the Review page). */
 const REVIEW_PAGE_INDEX = 7;
@@ -83,6 +85,10 @@ const CANCEL_TITLE = 'Cancel the running pass.';
 const NO_MODEL_TITLE = 'Select a connection profile or preset on the Prompt & Settings page first.';
 const NO_MODEL_NOTE = 'No chat completion model is resolved for this task — select a connection profile or preset on the Prompt & Settings page.';
 const STALE_NOTE = 'Inputs for this pass changed since it ran — results may be outdated. Re-run to refresh.';
+const CONTINUE_RUNNING_TITLE = 'This pass is still running.';
+const CONTINUE_UNSETTLED_TITLE = 'Run this pass to completion (full or partial) before continuing.';
+const CONTINUE_STALE_TITLE = 'Inputs changed since this pass ran — re-run it before continuing.';
+const READ_ONLY_NOTE = 'This task is completed — it is read-only. Duplicate it from Task History to keep iterating.';
 const HINT_NOTE = 'A note attached to this item. Recorded as applied when a single-item regeneration runs with it.';
 const HINT_APPLIED_TITLE = 'Set server-side: the last single-item regeneration ran with a non-empty hint.';
 const EMPTY_LIST_NOTE = 'No source cards — add characters on the Cards page.';
@@ -197,6 +203,21 @@ export function createTransformPage({ passKey, title } = {}) {
      * @type {Map<string, Element>}
      */
     let fieldRefs = new Map();
+    /**
+     * In-flight item-field PATCH promises. Run/Resume/Regenerate await
+     * them so the server records edits (especially `regenHint`) BEFORE the
+     * pass starts — firing a run while a hint save is in flight would race.
+     *
+     * @type {Set<Promise<unknown>>}
+     */
+    const pendingCommits = new Set();
+    /**
+     * Whether the task is completed (read-only rendering): set on every
+     * render from the snapshot.
+     *
+     * @type {boolean}
+     */
+    let readOnlyMode = false;
 
     /** @returns {object} Current task record (defensive). */
     function taskOf() {
@@ -339,13 +360,17 @@ export function createTransformPage({ passKey, title } = {}) {
     // ------------------------------------------------------------------
 
     /**
-     * Fires a pass run. Progress arrives over the task event stream and
-     * re-renders this page; completion settings are resolved at click time.
+     * Fires a pass run. Pending output/hint commits are awaited FIRST so the
+     * server records the edits before the run starts (a regeneration must
+     * not race the hint save). Progress arrives over the task event stream
+     * and re-renders this page; completion settings are resolved at click
+     * time.
      *
      * @param {object} [options] Run options (`scope` / `itemKeys`).
-     * @returns {void}
+     * @returns {Promise<void>}
      */
-    function fireRunPass(options = {}) {
+    async function fireRunPass(options = {}) {
+        await Promise.all([...pendingCommits]).catch(() => {});
         let result;
         try {
             result = latestActions?.runPass?.(pass, { ...options, completionSettings: resolvedCompletion() });
@@ -359,11 +384,13 @@ export function createTransformPage({ passKey, title } = {}) {
     }
 
     /**
-     * Fires a pass resume (interrupted pass).
+     * Fires a pass resume (interrupted pass), awaiting pending commits
+     * first (see {@link fireRunPass}).
      *
-     * @returns {void}
+     * @returns {Promise<void>}
      */
-    function fireResume() {
+    async function fireResume() {
+        await Promise.all([...pendingCommits]).catch(() => {});
         let result;
         try {
             result = latestActions?.resumePass?.(pass);
@@ -419,6 +446,7 @@ export function createTransformPage({ passKey, title } = {}) {
         textarea.rows = rows;
         textarea.setAttribute('data-field-key', fieldKey);
         textarea.setAttribute('aria-label', ariaLabel);
+        textarea.readOnly = readOnlyMode === true;
         textarea.value = drafts.has(fieldKey) ? drafts.get(fieldKey) : value;
         textarea.addEventListener('input', () => {
             drafts.set(fieldKey, String(textarea.value ?? ''));
@@ -445,11 +473,16 @@ export function createTransformPage({ passKey, title } = {}) {
      * @returns {void}
      */
     function commitItemField(key, field, fieldKey, text) {
-        void applyPatch(latestActions, pass, { passes: { [pass]: { items: { [key]: { [field]: text } } } } }).then((ok) => {
+        const commit = applyPatch(latestActions, pass, { passes: { [pass]: { items: { [key]: { [field]: text } } } } }).then((ok) => {
             if (ok && drafts.get(fieldKey) === text) {
                 drafts.delete(fieldKey);
             }
+        }).finally(() => {
+            pendingCommits.delete(commit);
         });
+        // Tracked: Run/Regenerate await outstanding commits so the server
+        // records the edit before the pass starts.
+        pendingCommits.add(commit);
     }
 
     /**
@@ -481,8 +514,8 @@ export function createTransformPage({ passKey, title } = {}) {
         const running = isRunning();
         const model = hasModel();
         const interrupted = passStatus() === 'interrupted';
-        const runLocked = running || !model;
-        const runTitle = !model ? NO_MODEL_TITLE : (running ? RUNNING_TITLE : (interrupted ? RESUME_TITLE : RUN_TITLE));
+        const runLocked = running || !model || readOnlyMode;
+        const runTitle = readOnlyMode ? READ_ONLY_NOTE : (!model ? NO_MODEL_TITLE : (running ? RUNNING_TITLE : (interrupted ? RESUME_TITLE : RUN_TITLE)));
         const { succeeded, total } = queueTotals();
 
         const bar = document.createElement('div');
@@ -495,9 +528,9 @@ export function createTransformPage({ passKey, title } = {}) {
             disabled: runLocked,
             onClick: () => {
                 if (interrupted) {
-                    fireResume();
+                    void fireResume();
                 } else {
-                    fireRunPass();
+                    void fireRunPass();
                 }
             },
         }));
@@ -505,16 +538,16 @@ export function createTransformPage({ passKey, title } = {}) {
         bar.append(buildButton({
             className: 'bc-task-transform-regen-all',
             label: 'Regenerate all',
-            title: !model ? NO_MODEL_TITLE : (running ? RUNNING_TITLE : REGEN_ALL_TITLE),
+            title: readOnlyMode ? READ_ONLY_NOTE : (!model ? NO_MODEL_TITLE : (running ? RUNNING_TITLE : REGEN_ALL_TITLE)),
             disabled: runLocked,
-            onClick: () => fireRunPass({ scope: 'all' }),
+            onClick: () => void fireRunPass({ scope: 'all' }),
         }));
 
         bar.append(buildButton({
             className: 'bc-task-transform-cancel',
             label: 'Cancel',
             title: running ? CANCEL_TITLE : 'Nothing is running.',
-            disabled: !running,
+            disabled: !running || readOnlyMode,
             onClick: fireCancel,
         }));
 
@@ -777,9 +810,9 @@ export function createTransformPage({ passKey, title } = {}) {
         actions.append(buildButton({
             className: 'bc-task-transform-regen',
             label: 'Regenerate',
-            title: !model ? NO_MODEL_TITLE : (running ? RUNNING_TITLE : `Re-run only ${name} with the current settings.`),
-            disabled: running || !model,
-            onClick: () => fireRunPass({ itemKeys: [key] }),
+            title: readOnlyMode ? READ_ONLY_NOTE : (!model ? NO_MODEL_TITLE : (running ? RUNNING_TITLE : `Re-run only ${name} with the current settings.`)),
+            disabled: running || !model || readOnlyMode,
+            onClick: () => void fireRunPass({ itemKeys: [key] }),
         }));
         section.append(actions);
 
@@ -792,20 +825,35 @@ export function createTransformPage({ passKey, title } = {}) {
 
     /**
      * Builds the footer with the Continue button (next non-disabled page,
-     * Review fallback).
+     * Review fallback). Continue requires a SETTLED, NON-STALE pass:
+     * pending/failed/interrupted/running passes — and stale results — must
+     * be (re-)run first, so downstream pages never consume invalid output.
      *
      * @returns {Element} Footer element.
      */
     function buildFooter() {
         const target = continueTarget();
+        const settled = ['succeeded', 'partial'].includes(passStatus());
+        const staleness = recordOf(latestSnapshot?.derivedStaleness ?? taskOf().derivedStaleness);
+        const stale = recordOf(staleness[pass]).stale === true;
+        const running = isRunning();
+        const canContinue = settled && !stale && !running;
+        const title = running
+            ? CONTINUE_RUNNING_TITLE
+            : (!settled ? CONTINUE_UNSETTLED_TITLE : (stale ? CONTINUE_STALE_TITLE : `Go to ${target.title}.`));
 
         const footer = document.createElement('footer');
         footer.className = 'bc-task-transform-footer';
         footer.append(buildButton({
             className: 'bc-task-continue',
             label: `Continue to ${target.title}`,
-            title: `Go to ${target.title}.`,
-            onClick: () => latestActions?.goToPage?.(target.index),
+            title,
+            disabled: !canContinue,
+            onClick: () => {
+                if (canContinue) {
+                    latestActions?.goToPage?.(target.index);
+                }
+            },
         }));
         return footer;
     }
@@ -823,6 +871,8 @@ export function createTransformPage({ passKey, title } = {}) {
      * @returns {Element} The page heading (focus target).
      */
     function renderPage() {
+        readOnlyMode = taskOf().status === 'completed';
+
         // Selection persistence: fall back to the first available key when
         // the selected source disappeared (e.g. removed on the Cards page).
         selectedKey = effectiveSelectedKey();
@@ -846,6 +896,14 @@ export function createTransformPage({ passKey, title } = {}) {
         guidance.textContent = 'Select a card on the left to inspect, edit, or regenerate its result. Editing an output or hint saves on commit; running the queue never overwrites your uncommitted text.';
 
         root.append(heading, guidance, buildToolbar());
+
+        if (readOnlyMode) {
+            const readOnly = document.createElement('p');
+            readOnly.className = 'bc-task-readonly-note';
+            readOnly.setAttribute('role', 'status');
+            readOnly.textContent = READ_ONLY_NOTE;
+            root.append(readOnly);
+        }
 
         if (!hasModel()) {
             const warning = document.createElement('p');
@@ -927,6 +985,8 @@ export function createTransformPage({ passKey, title } = {}) {
             selectedKey = null;
             filterQuery = '';
             fieldRefs = new Map();
+            pendingCommits.clear();
+            readOnlyMode = false;
         },
     };
 }

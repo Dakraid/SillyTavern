@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { BulkCombineTaskRepository } from '../../src/util/bulk-combine/task-repository.js';
-import { createTaskRunner, TaskAlreadyRunningError } from '../../src/util/bulk-combine/task-runner.js';
+import {
+    createTaskRunner,
+    TaskAlreadyRunningError,
+    TaskNotResumableError,
+} from '../../src/util/bulk-combine/task-runner.js';
 
 const tempRoots = [];
 let repo;
@@ -191,6 +195,23 @@ describe('bulk combine task runner', () => {
         expect(executeCompletion).toHaveBeenCalledTimes(5);
     });
 
+    test('fails an individual item whose completion output is blank', async () => {
+        const task = await createTask({ count: 1 });
+        const executeCompletion = jest.fn(async () => completion('   \n'));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const result = await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        const stored = await repo.getTask(task.id);
+
+        expect(result).toMatchObject({ status: 'failed', items: { a: 'failed' } });
+        expect(stored.passes.transform1.items.a).toMatchObject({
+            status: 'failed',
+            output: '',
+            error: 'Error: Completion returned empty content',
+            attempts: 3,
+        });
+    });
+
     test('blocks only overflowing individual prompts before execution', async () => {
         const task = await createTask();
         await repo.checkpoint(task.id, draft => {
@@ -274,13 +295,33 @@ describe('bulk combine task runner', () => {
         const executeCompletion = jest.fn(async ({ body }) => completion(`<character>${keyFromPrompt(body.messages[0].content)}</character>`));
         const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
 
-        const result = await runner.resume({ taskId: task.id, repo, userDirectories: {} });
+        const result = await runner.resume({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
         const stored = await repo.getTask(task.id);
 
-        expect(result.items).toEqual({ b: 'succeeded' });
+        expect(result).toMatchObject({ status: 'partial', items: { b: 'succeeded' } });
         expect(executeCompletion).toHaveBeenCalledTimes(1);
+        expect(stored.passes.transform1.status).toBe('partial');
         expect(stored.passes.transform1.items.a.output).toBe('kept');
         expect(stored.passes.transform1.items.c.status).toBe('running');
+    });
+
+    test('rejects resume when the named pass is not resumable', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.passes.transform1.status = 'interrupted';
+            draft.passes.transform1.items.a = { status: 'interrupted' };
+        });
+        const runner = createTaskRunner({
+            executeCompletion: jest.fn(),
+            countTokens: async () => 1,
+        });
+
+        await expect(runner.resume({
+            taskId: task.id,
+            passKey: 'summary',
+            repo,
+            userDirectories: {},
+        })).rejects.toBeInstanceOf(TaskNotResumableError);
     });
 
     test('rejects a second concurrent pass for the same task', async () => {
@@ -372,6 +413,29 @@ describe('bulk combine task runner', () => {
         expect(prompts[1]).toContain('Transform two output');
         expect(stored.passes.summary.items.a.output).toBe('Summary text');
         expect(summary.items).toEqual({ a: 'succeeded', b: 'skipped' });
+    });
+
+    test('blocks prompt assistance when its prompt exceeds the token window', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.prompts.main.assistant.request = 'Rewrite it';
+            draft.settings.totalContextTokens = 10;
+            draft.settings.outputTokens = null;
+        });
+        const executeCompletion = jest.fn();
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 11 });
+
+        await expect(runner.runPromptAssist({
+            taskId: task.id,
+            promptKey: 'main',
+            repo,
+            userDirectories: {},
+        })).rejects.toThrow('Token limit exceeded (needs 11, context 10)');
+
+        expect(executeCompletion).not.toHaveBeenCalled();
+        await expect(repo.getTask(task.id)).resolves.toMatchObject({
+            prompts: { main: { assistant: { error: 'Error: Token limit exceeded (needs 11, context 10)' } } },
+        });
     });
 
     test('stores a prompt-assist proposal and patch without changing the prompt', async () => {
@@ -518,6 +582,24 @@ describe('bulk combine task runner', () => {
         await runner.runPromptAssist({ taskId: task.id, promptKey: 'post', repo, userDirectories: {} });
 
         expect((await repo.getTask(task.id)).prompts.post.assistant.proposal).toBe('Improved prompt');
+    });
+
+    test('blocks post processing when the merged payload exceeds the token window', async () => {
+        const task = await preparePostTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.totalContextTokens = 5;
+            draft.settings.outputTokens = null;
+        });
+        const executeCompletion = jest.fn();
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 6 });
+
+        await expect(runner.runPostProcess({ taskId: task.id, repo, userDirectories: {} }))
+            .rejects.toThrow('Token limit exceeded (needs 6, context 5)');
+
+        expect(executeCompletion).not.toHaveBeenCalled();
+        await expect(repo.getTask(task.id)).resolves.toMatchObject({
+            post: { status: 'failed', error: 'Error: Token limit exceeded (needs 6, context 5)' },
+        });
     });
 
     test('runs one post-process completion and checkpoints the applied mode output', async () => {

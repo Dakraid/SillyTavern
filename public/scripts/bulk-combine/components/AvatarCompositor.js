@@ -27,6 +27,8 @@
  *       onChange,                  // (offsets, finalized) => void — fired on
  *                                  // every mutation; `finalized` is true on
  *                                  // gesture end / discrete changes only
+ *       onSettle,                  // () => void — fired once when every
+ *                                  // source image has settled (load|error)
  *   }) → {
  *       root,                      // the mounted root element
  *       getOffsets(),              // normalized per-source offsets (copies)
@@ -40,6 +42,11 @@
  *
  * Images load asynchronously; the preview redraws as each arrives. Cells
  * whose image failed (or has no avatar ref) render as an empty themed cell.
+ *
+ * Accessibility: the canvas is an interactive editor (`role="application"`)
+ * with full keyboard control — Tab / Shift+Tab switch the edited cell,
+ * arrow keys pan it, +/- zoom it, Escape leaves the editor. The active
+ * cell is announced via a visually-hidden live region.
  */
 
 import {
@@ -116,6 +123,7 @@ export function createAvatarCompositor(options = {}) {
         ? options.resolveSourceUrl
         : defaultResolveSourceUrl;
     const onChange = typeof options.onChange === 'function' ? options.onChange : null;
+    const onSettle = typeof options.onSettle === 'function' ? options.onSettle : null;
     const outputSize = Number.isFinite(Number(options.outputSize)) && Number(options.outputSize) > 0
         ? Math.round(Number(options.outputSize))
         : COMPOSITOR_DEFAULT_OUTPUT_SIZE;
@@ -152,18 +160,21 @@ export function createAvatarCompositor(options = {}) {
     canvas.width = outputSize;
     canvas.height = outputSize;
     canvas.tabIndex = 0;
-    canvas.setAttribute('role', 'img');
-    canvas.setAttribute(
-        'aria-label',
-        'Group avatar preview. Click a cell, then drag to pan or scroll to zoom. Arrow keys pan the focused cell; plus and minus zoom it.',
-    );
+    canvas.setAttribute('role', 'application');
+    canvas.setAttribute('aria-roledescription', 'avatar editor');
 
     const hint = document.createElement('p');
     hint.className = 'bc-compositor-hint';
-    hint.textContent = 'Drag a cell to pan · scroll or pinch to zoom · arrow keys / + − adjust the focused cell.';
+    hint.textContent = 'Drag a cell to pan · scroll or pinch to zoom · Tab switches cell · arrow keys / + − adjust the current cell · Escape leaves the editor.';
+
+    // Visually-hidden live region announcing the active cell.
+    const status = document.createElement('p');
+    status.className = 'bc-compositor-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
 
     canvasWrap.append(canvas);
-    root.append(canvasWrap, hint);
+    root.append(canvasWrap, hint, status);
     container.replaceChildren(root);
 
     // --- Images --------------------------------------------------------------
@@ -189,6 +200,7 @@ export function createAvatarCompositor(options = {}) {
             }
             entry.loaded = true;
             redraw();
+            notifySettleIfReady();
         };
         image.onerror = () => {
             if (disposed) {
@@ -196,10 +208,82 @@ export function createAvatarCompositor(options = {}) {
             }
             entry.failed = true;
             redraw();
+            notifySettleIfReady();
         };
         image.src = entry.url;
         return entry;
     });
+
+    /** @type {boolean} Whether onSettle already fired (fires exactly once). */
+    let settleNotified = false;
+
+    /**
+     * Fires `onSettle` once every source image has settled (load|error) —
+     * the page uses it to ungate image-dependent actions.
+     *
+     * @returns {void}
+     */
+    function notifySettleIfReady() {
+        if (!settleNotified && !disposed && isReady()) {
+            settleNotified = true;
+            try {
+                onSettle?.();
+            } catch (error) {
+                console.error('AvatarCompositor: onSettle callback failed.', error);
+            }
+        }
+    }
+
+    // Everything settled synchronously (no URLs / no Image constructor):
+    // notify on a microtask so callers finish wiring first.
+    Promise.resolve().then(notifySettleIfReady);
+
+    // --- Accessibility ------------------------------------------------------------
+
+    /**
+     * Human description of the active cell (`cell 2 of 4: Bob`).
+     *
+     * @returns {string} Description.
+     */
+    function describeActiveCell() {
+        const total = sources.length;
+        if (activeCellIndex < 0 || total === 0) {
+            return 'no cells';
+        }
+        const name = String(sources[activeCellIndex]?.name ?? '').trim() || `cell ${activeCellIndex + 1}`;
+        return `cell ${activeCellIndex + 1} of ${total}: ${name}`;
+    }
+
+    /**
+     * Syncs the canvas accessible name and the live region with the active
+     * cell (keyboard users need to know which cell arrow keys will move).
+     *
+     * @returns {void}
+     */
+    function updateAria() {
+        canvas.setAttribute(
+            'aria-label',
+            `Group avatar editor, ${describeActiveCell()}. Drag to pan; scroll or pinch to zoom. Arrow keys pan the current cell; plus and minus zoom it; Tab and Shift Tab switch cells; Escape leaves the editor.`,
+        );
+        status.textContent = `Editing ${describeActiveCell()}.`;
+    }
+
+    /**
+     * Selects the active cell (pointer/keyboard), keeping the highlight and
+     * the accessible description in sync.
+     *
+     * @param {number} index Cell index.
+     * @returns {void}
+     */
+    function setActiveCell(index) {
+        if (index < 0 || index >= sources.length || index === activeCellIndex) {
+            return;
+        }
+        activeCellIndex = index;
+        updateAria();
+    }
+
+    updateAria();
 
     // --- Painting ------------------------------------------------------------
 
@@ -352,7 +436,7 @@ export function createAvatarCompositor(options = {}) {
             // Second finger: switch the drag into a pinch on the active cell.
             const pinchIndex = index >= 0 ? index : activeCellIndex;
             if (pinchIndex >= 0) {
-                activeCellIndex = pinchIndex;
+                setActiveCell(pinchIndex);
                 dragState = null;
                 pinchState = {
                     index: pinchIndex,
@@ -361,7 +445,7 @@ export function createAvatarCompositor(options = {}) {
                 };
             }
         } else if (index >= 0) {
-            activeCellIndex = index;
+            setActiveCell(index);
             dragState = {
                 index,
                 startX: point.x,
@@ -451,16 +535,37 @@ export function createAvatarCompositor(options = {}) {
         if (index < 0) {
             return;
         }
-        activeCellIndex = index;
+        setActiveCell(index);
         const delta = Number(event.deltaY) > 0 ? -COMPOSITOR_WHEEL_ZOOM_STEP : COMPOSITOR_WHEEL_ZOOM_STEP;
         setCellOffset(index, zoomCompositorOffset(offsets[index], delta), true);
     }, { passive: false, signal });
 
     canvas.addEventListener('keydown', (event) => {
-        if (disposed || activeCellIndex < 0 || activeCellIndex >= offsets.length) {
+        if (disposed) {
             return;
         }
         const key = String(event.key ?? '');
+
+        // Cell selection: Tab / Shift+Tab cycle through the cells (the
+        // editor is a self-contained widget — Escape hands focus back).
+        if (key === 'Tab') {
+            if (offsets.length > 1 && activeCellIndex >= 0) {
+                event.preventDefault?.();
+                const delta = event.shiftKey ? -1 : 1;
+                setActiveCell((activeCellIndex + delta + offsets.length) % offsets.length);
+                redraw();
+            }
+            // Single-cell (or empty) editors let Tab move focus out naturally.
+            return;
+        }
+        if (key === 'Escape') {
+            canvas.blur?.();
+            return;
+        }
+
+        if (activeCellIndex < 0 || activeCellIndex >= offsets.length) {
+            return;
+        }
         const panDeltas = {
             ArrowLeft: [-KEYBOARD_PAN_STEP, 0],
             ArrowRight: [KEYBOARD_PAN_STEP, 0],

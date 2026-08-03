@@ -310,6 +310,11 @@ function makeActions() {
 let createTransformPage;
 let container;
 
+/** @returns {Promise<void>} Flushes microtasks and short timers (async fire handlers). */
+function flush() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 /**
  * Creates a page, renders it, and returns the pieces under test.
  *
@@ -448,12 +453,13 @@ describe('transformPage', () => {
         expect(findOne(container, hasClass('bc-task-transform-inspector-name')).textContent).toBe('Alice');
     });
 
-    test('Run calls runPass with resolved completionSettings (default scope omitted)', () => {
+    test('Run calls runPass with resolved completionSettings (default scope omitted)', async () => {
         const { root, actions } = renderTransformPage();
         const run = findOne(root, hasClass('bc-task-transform-run'));
         expect(run.textContent).toBe('Run');
         expect(run.disabled).toBe(false);
         run.click();
+        await flush();
         expect(actions.runPass).toHaveBeenCalledTimes(1);
         expect(actions.runPass).toHaveBeenCalledWith('transform1', { completionSettings: { model: 'x', stream: false } });
     });
@@ -479,14 +485,66 @@ describe('transformPage', () => {
         expect(actions.resumePass).not.toHaveBeenCalled();
     });
 
-    test('Regenerate all calls runPass with scope: all', () => {
+    test('Regenerate all calls runPass with scope: all', async () => {
         const { root, actions } = renderTransformPage();
         findOne(root, hasClass('bc-task-transform-regen-all')).click();
+        await flush();
         expect(actions.runPass).toHaveBeenCalledTimes(1);
         expect(actions.runPass).toHaveBeenCalledWith('transform1', { scope: 'all', completionSettings: { model: 'x', stream: false } });
     });
 
-    test('Regenerate one calls runPass with itemKeys: [selected key]', () => {
+    test('Regenerate awaits a pending hint commit before starting the pass (no stale-hint race)', async () => {
+        let resolveUpdate;
+        const actions = makeActions();
+        actions.update = jest.fn(() => new Promise((resolve) => {
+            resolveUpdate = resolve;
+        }));
+        const { root } = renderTransformPage(makeSnapshot({
+            task: { passes: { transform1: { items: { 'a.png': makeItem({ output: 'AAA' }) } } } },
+        }), actions);
+
+        // Commit a hint change: the PATCH is now in flight (never resolves yet).
+        const hint = findOne(root, hasClass('bc-task-transform-hint'));
+        hint.value = 'Focus on the betrayal';
+        hint.fire('change');
+        expect(actions.update).toHaveBeenCalledWith({ passes: { transform1: { items: { 'a.png': { regenHint: 'Focus on the betrayal' } } } } });
+
+        // Regenerate while the hint PATCH is still in flight → the run waits.
+        findOne(container, hasClass('bc-task-transform-regen')).click();
+        await flush();
+        expect(actions.runPass).not.toHaveBeenCalled();
+
+        // Once the hint save settles, the pass starts.
+        resolveUpdate();
+        await flush();
+        expect(actions.runPass).toHaveBeenCalledTimes(1);
+        expect(actions.runPass).toHaveBeenCalledWith('transform1', { itemKeys: ['a.png'], completionSettings: { model: 'x', stream: false } });
+    });
+
+    test('Run awaits a pending output commit before starting the pass', async () => {
+        let resolveUpdate;
+        const actions = makeActions();
+        actions.update = jest.fn(() => new Promise((resolve) => {
+            resolveUpdate = resolve;
+        }));
+        const { root } = renderTransformPage(makeSnapshot({
+            task: { passes: { transform1: { items: { 'a.png': makeItem({ output: 'AAA' }) } } } },
+        }), actions);
+
+        const output = findOne(root, hasClass('bc-task-transform-output'));
+        output.value = 'AAA edited';
+        output.fire('change');
+
+        findOne(root, hasClass('bc-task-transform-run')).click();
+        await flush();
+        expect(actions.runPass).not.toHaveBeenCalled();
+
+        resolveUpdate();
+        await flush();
+        expect(actions.runPass).toHaveBeenCalledTimes(1);
+    });
+
+    test('Regenerate one calls runPass with itemKeys: [selected key]', async () => {
         const { root, actions } = renderTransformPage(makeSnapshot({
             task: {
                 passes: {
@@ -503,11 +561,12 @@ describe('transformPage', () => {
         // Select Bob, then regenerate only him.
         findAll(root, hasClass('bc-task-transform-item'))[1].click();
         findOne(container, hasClass('bc-task-transform-regen')).click();
+        await flush();
         expect(actions.runPass).toHaveBeenCalledTimes(1);
         expect(actions.runPass).toHaveBeenCalledWith('transform1', { itemKeys: ['b.png'], completionSettings: { model: 'x', stream: false } });
     });
 
-    test('interrupted pass relabels Run to Resume and calls resumePass', () => {
+    test('interrupted pass relabels Run to Resume and calls resumePass', async () => {
         const { root, actions } = renderTransformPage(makeSnapshot({
             task: { passes: { transform1: { status: 'interrupted' } } },
         }));
@@ -515,6 +574,7 @@ describe('transformPage', () => {
         expect(run.textContent).toBe('Resume');
         expect(run.disabled).toBe(false);
         run.click();
+        await flush();
         expect(actions.resumePass).toHaveBeenCalledTimes(1);
         expect(actions.resumePass).toHaveBeenCalledWith('transform1');
         expect(actions.runPass).not.toHaveBeenCalled();
@@ -679,26 +739,62 @@ describe('transformPage', () => {
         expect(stale.title).toBe('Sources changed');
     });
 
-    test('Continue goes to the next non-disabled page from pageStates', () => {
-        const { root, actions } = renderTransformPage();
-        const continueButton = findOne(root, hasClass('bc-task-continue'));
-        // transform2/summary are disabled → next is Post Processing (index 6).
+    test('Continue is gated on a settled, non-stale pass and goes to the next non-disabled page', () => {
+        // Pending pass: Continue is disabled with an explanation.
+        const pending = renderTransformPage();
+        const pendingContinue = findOne(pending.root, hasClass('bc-task-continue'));
+        expect(pendingContinue.disabled).toBe(true);
+        expect(pendingContinue.title).toContain('Run this pass');
+        pendingContinue.click();
+        expect(pending.actions.goToPage).not.toHaveBeenCalled();
+
+        // Failed pass: still locked.
+        const failed = renderTransformPage(makeSnapshot({
+            task: { passes: { transform1: { status: 'failed' } } },
+        }));
+        expect(findOne(failed.root, hasClass('bc-task-continue')).disabled).toBe(true);
+
+        // Settled (succeeded): enabled → next non-disabled page (Post Processing, 6).
+        const settled = renderTransformPage(makeSnapshot({
+            task: { passes: { transform1: { status: 'succeeded', items: { 'a.png': makeItem({ status: 'succeeded' }) } } } },
+        }));
+        const continueButton = findOne(settled.root, hasClass('bc-task-continue'));
         expect(continueButton.textContent).toBe('Continue to Post Processing');
+        expect(continueButton.disabled).toBe(false);
         continueButton.click();
-        expect(actions.goToPage).toHaveBeenCalledTimes(1);
-        expect(actions.goToPage).toHaveBeenCalledWith(6);
+        expect(settled.actions.goToPage).toHaveBeenCalledTimes(1);
+        expect(settled.actions.goToPage).toHaveBeenCalledWith(6);
+
+        // Settled but stale: locked with a re-run explanation.
+        const stale = renderTransformPage(makeSnapshot({
+            derivedStaleness: { transform1: { stale: true, reasons: ['Sources changed'] } },
+            task: { passes: { transform1: { status: 'succeeded', items: { 'a.png': makeItem({ status: 'succeeded' }) } } } },
+        }));
+        const staleContinue = findOne(stale.root, hasClass('bc-task-continue'));
+        expect(staleContinue.disabled).toBe(true);
+        expect(staleContinue.title).toContain('re-run');
+
+        // Partial counts as settled; running locks it again.
+        const running = renderTransformPage(makeSnapshot({
+            task: { passes: { transform1: { status: 'running' } } },
+        }));
+        expect(findOne(running.root, hasClass('bc-task-continue')).disabled).toBe(true);
     });
 
     test('Continue falls back to Review (page 7) when every later page is disabled', () => {
         const pageStates = defaultPageStates().map((state) => state.index > 3 ? { ...state, status: 'disabled' } : state);
-        const { root, actions } = renderTransformPage(makeSnapshot({ pageStates }));
+        const { root, actions } = renderTransformPage(makeSnapshot({
+            pageStates,
+            task: { passes: { transform1: { status: 'succeeded', items: { 'a.png': makeItem({ status: 'succeeded' }) } } } },
+        }));
         const continueButton = findOne(root, hasClass('bc-task-continue'));
         expect(continueButton.textContent).toBe('Continue to Review');
+        expect(continueButton.disabled).toBe(false);
         continueButton.click();
         expect(actions.goToPage).toHaveBeenCalledWith(7);
     });
 
-    test('serves the summary pass key (factory parameterization)', () => {
+    test('serves the summary pass key (factory parameterization)', async () => {
         const { heading, root, actions } = renderTransformPage(makeSnapshot({
             currentPage: 5,
             task: { passes: { summary: { items: { 'a.png': makeItem({ output: 'SUM' }) } } } },
@@ -707,7 +803,56 @@ describe('transformPage', () => {
         expect(heading.textContent).toBe('Lorebook Summary');
         expect(findOne(root, hasClass('bc-task-transform-output')).value).toBe('SUM');
         findOne(root, hasClass('bc-task-transform-run')).click();
+        await flush();
         expect(actions.runPass).toHaveBeenCalledWith('summary', { completionSettings: { model: 'x', stream: false } });
+    });
+
+    test('queued/skipped/interrupted item statuses render as their own badges (not pending)', () => {
+        const { root } = renderTransformPage(makeSnapshot({
+            task: {
+                sources: [
+                    makeSource(),
+                    makeSource({ key: 'b.png', name: 'Bob', avatar: 'b.png' }),
+                    makeSource({ key: 'c.png', name: 'Carol', avatar: 'c.png' }),
+                ],
+                passes: {
+                    transform1: {
+                        items: {
+                            'a.png': makeItem({ status: 'queued' }),
+                            'b.png': makeItem({ status: 'skipped' }),
+                            'c.png': makeItem({ status: 'interrupted' }),
+                        },
+                    },
+                },
+            },
+        }));
+
+        const badges = findAll(root, hasClass('bc-task-status')).map((badge) => badge.textContent);
+        expect(badges).toContain('queued');
+        expect(badges).toContain('skipped');
+        expect(badges).toContain('interrupted');
+        expect(badges).not.toContain('pending');
+    });
+
+    test('completed tasks render read-only: runs disabled, outputs read-only, Continue stays navigable', () => {
+        const { root, actions } = renderTransformPage(makeSnapshot({
+            task: {
+                status: 'completed',
+                passes: { transform1: { status: 'succeeded', items: { 'a.png': makeItem({ status: 'succeeded', output: 'AAA' }) } } },
+            },
+        }));
+
+        expect(root.textContent).toContain('read-only');
+        expect(findOne(root, hasClass('bc-task-transform-run')).disabled).toBe(true);
+        expect(findOne(root, hasClass('bc-task-transform-regen-all')).disabled).toBe(true);
+        expect(findOne(root, hasClass('bc-task-transform-regen')).disabled).toBe(true);
+        expect(findOne(root, hasClass('bc-task-transform-output')).readOnly).toBe(true);
+        expect(findOne(root, hasClass('bc-task-transform-hint')).readOnly).toBe(true);
+
+        const continueButton = findOne(root, hasClass('bc-task-continue'));
+        expect(continueButton.disabled).toBe(false);
+        continueButton.click();
+        expect(actions.goToPage).toHaveBeenCalled();
     });
 
     test('re-render is idempotent and dispose clears without throwing', () => {

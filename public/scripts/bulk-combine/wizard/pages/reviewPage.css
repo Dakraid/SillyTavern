@@ -17,9 +17,9 @@
 	align-items: flex-start;
 	gap: 0.6em;
 	padding: 0.6em 0.8em;
-	border: 1px solid color-mix(in srgb, #d33 45%, var(--SmartThemeBorderColor));
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
 	border-radius: 10px;
-	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, #d33 10%);
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 10%);
 }
 
 .bc-task-review-stale > i {
@@ -80,13 +80,13 @@
 	flex-direction: column;
 	gap: 0.4em;
 	padding: 0.6em 0.8em;
-	border: 1px solid color-mix(in srgb, #d33 45%, var(--SmartThemeBorderColor));
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
 	border-radius: 10px;
 }
 
 .bc-task-review-error-text {
 	margin: 0;
-	color: color-mix(in srgb, #d33 75%, currentColor);
+	color: color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 75%, currentColor);
 	overflow-wrap: break-word;
 }
 

@@ -48,6 +48,11 @@ const SUGGEST_TITLE = 'Ask the assistant to revise the combine prompt. Runs in t
 const SAVE_TITLE = 'Save the combine prompt to the task.';
 const APPLY_TITLE = 'Replace the combine prompt with the proposal.';
 const DISMISS_TITLE = 'Discard the proposal and the assistant request.';
+const DISCARD_REQUEST_TITLE = 'Discard the pending assistant request.';
+const CONTINUE_TITLE = 'Continue to Transform 1.';
+const CONTINUE_SAVE_TITLE = 'Save the combine prompt first, then continue.';
+const CONTINUE_EMPTY_TITLE = 'Enter and save a combine prompt first.';
+const READ_ONLY_NOTE = 'This task is completed — it is read-only. Duplicate it from Task History to keep iterating.';
 const UNRESOLVED_READOUT = 'Unresolved — select a connection profile or a chat completion preset.';
 const TOAST_TITLE = 'Combine into Group Card';
 const PRESET_LOAD_OPTION = '— Load preset —';
@@ -125,11 +130,30 @@ export function createPromptSettingsPage() {
     const openGroups = new Set(['connection']);
     /**
      * Page-owned assist in-flight flag: set on Suggest click, cleared when a
-     * proposal/error lands in the snapshot (or the request is cleared).
+     * proposal/error lands in the snapshot (or the request is cleared). The
+     * persistent waiting state is DERIVED from the snapshot (a non-empty
+     * `assistant.request` with no proposal/error yet), so re-opening the
+     * page while an assist run is outstanding still shows the waiting state
+     * — this flag only covers the launch window before the snapshot catches
+     * up.
      *
      * @type {boolean}
      */
     let assistInFlight = false;
+    /**
+     * Last assist LAUNCH failure (runPromptAssist rejected): surfaced
+     * inline, cleared on the next attempt or dismiss.
+     *
+     * @type {string}
+     */
+    let assistLaunchError = '';
+    /**
+     * Whether the task is completed (read-only rendering): set on every
+     * render from the snapshot.
+     *
+     * @type {boolean}
+     */
+    let readOnlyMode = false;
     /**
      * Elements built this render, keyed by `data-field-key` — used to
      * restore focus/selection after a rebuild (the fake DOM has no
@@ -176,6 +200,29 @@ export function createPromptSettingsPage() {
         return draftValues.has(ASSIST_REQUEST_FIELD)
             ? draftValues.get(ASSIST_REQUEST_FIELD)
             : stringOf(promptOf('main').assistant.request);
+    }
+
+    /**
+     * Snapshot-derived assist waiting state: the server persisted a request
+     * that has no proposal/error yet. Durable across page re-opens (unlike
+     * the closure-only launch flag).
+     *
+     * @returns {boolean} True while an assist run is outstanding.
+     */
+    function assistWaitingFromSnapshot() {
+        const assistant = promptOf('main').assistant;
+        return stringOf(assistant.request).trim().length > 0
+            && !stringOf(assistant.proposal)
+            && !stringOf(assistant.error);
+    }
+
+    /**
+     * Whether an assist proposal is outstanding (launch window or durable).
+     *
+     * @returns {boolean} True while waiting for a proposal.
+     */
+    function assistWaiting() {
+        return assistInFlight || assistWaitingFromSnapshot();
     }
 
     /**
@@ -234,6 +281,7 @@ export function createPromptSettingsPage() {
         textarea.rows = rows;
         textarea.setAttribute('data-field-key', fieldKey);
         textarea.setAttribute('aria-label', ariaLabel);
+        textarea.readOnly = readOnlyMode === true;
         textarea.value = draftValues.has(fieldKey) ? draftValues.get(fieldKey) : value;
         textarea.addEventListener('input', () => {
             draftValues.set(fieldKey, String(textarea.value ?? ''));
@@ -312,6 +360,7 @@ export function createPromptSettingsPage() {
             select.append(option);
         });
         select.value = selected === '' ? '' : String(selected);
+        select.disabled = readOnlyMode === true;
         fieldRefs.set(`preset:${field}`, select);
 
         const applyButton = document.createElement('button');
@@ -320,7 +369,7 @@ export function createPromptSettingsPage() {
         applyButton.textContent = 'Apply';
         applyButton.title = PRESET_APPLY_TITLE;
         applyButton.setAttribute('aria-label', `Apply the selected ${label} preset`);
-        applyButton.disabled = select.value === '';
+        applyButton.disabled = select.value === '' || readOnlyMode === true;
 
         const saveButton = document.createElement('button');
         saveButton.type = 'button';
@@ -328,6 +377,7 @@ export function createPromptSettingsPage() {
         saveButton.textContent = 'Save';
         saveButton.title = PRESET_SAVE_TITLE;
         saveButton.setAttribute('aria-label', `Save the ${label} as a preset`);
+        saveButton.disabled = readOnlyMode === true;
 
         const deleteButton = document.createElement('button');
         deleteButton.type = 'button';
@@ -335,13 +385,13 @@ export function createPromptSettingsPage() {
         deleteButton.textContent = 'Delete';
         deleteButton.title = PRESET_DELETE_TITLE;
         deleteButton.setAttribute('aria-label', `Delete the selected ${label} preset`);
-        deleteButton.disabled = select.value === '';
+        deleteButton.disabled = select.value === '' || readOnlyMode === true;
 
         select.addEventListener('change', () => {
             const value = String(select.value ?? '');
             selectedPresets.set(field, value === '' ? '' : Number(value));
-            applyButton.disabled = value === '';
-            deleteButton.disabled = value === '';
+            applyButton.disabled = value === '' || readOnlyMode === true;
+            deleteButton.disabled = value === '' || readOnlyMode === true;
         });
 
         applyButton.addEventListener('click', () => {
@@ -415,6 +465,7 @@ export function createPromptSettingsPage() {
             select.append(option);
         }
         select.value = value;
+        select.disabled = readOnlyMode === true;
         select.addEventListener('change', () => onChange(String(select.value ?? '')));
         return select;
     }
@@ -435,6 +486,7 @@ export function createPromptSettingsPage() {
         input.type = 'checkbox';
         input.checked = checked === true;
         input.setAttribute('aria-label', label);
+        input.disabled = readOnlyMode === true;
         input.addEventListener('change', () => onChange(input.checked === true));
         const text = document.createElement('span');
         text.className = 'bc-task-checkbox-label';
@@ -461,7 +513,7 @@ export function createPromptSettingsPage() {
         input.setAttribute('aria-label', ariaLabel);
         input.setAttribute('min', String(min));
         input.value = value === null || value === undefined ? '' : String(value);
-        input.disabled = disabled === true;
+        input.disabled = disabled === true || readOnlyMode === true;
         input.addEventListener('change', () => onChange(String(input.value ?? '')));
         return input;
     }
@@ -549,7 +601,7 @@ export function createPromptSettingsPage() {
         saveButton.className = 'bc-task-save-prompt';
         saveButton.textContent = 'Save prompt';
         saveButton.title = SAVE_TITLE;
-        saveButton.disabled = !draftValues.has(MAIN_TEXT_FIELD);
+        saveButton.disabled = !draftValues.has(MAIN_TEXT_FIELD) || readOnlyMode === true;
 
         const textarea = buildTextarea({
             fieldKey: MAIN_TEXT_FIELD,
@@ -672,6 +724,7 @@ export function createPromptSettingsPage() {
         applyButton.className = 'bc-task-apply-proposal';
         applyButton.textContent = 'Apply';
         applyButton.title = APPLY_TITLE;
+        applyButton.disabled = readOnlyMode === true;
         applyButton.addEventListener('click', () => {
             applyPatch(latestActions, {
                 prompts: {
@@ -688,6 +741,7 @@ export function createPromptSettingsPage() {
         dismissButton.className = 'bc-task-dismiss-proposal';
         dismissButton.textContent = 'Dismiss';
         dismissButton.title = DISMISS_TITLE;
+        dismissButton.disabled = readOnlyMode === true;
         dismissButton.addEventListener('click', () => {
             draftValues.delete(ASSIST_REQUEST_FIELD);
             applyPatch(latestActions, {
@@ -710,15 +764,17 @@ export function createPromptSettingsPage() {
     /**
      * Starts a background prompt-assist run. The proposal arrives through
      * later snapshot re-renders; the page only tracks its in-flight flag.
+     * Launch failures are surfaced inline (never console-only).
      *
      * @returns {void}
      */
     function startAssist() {
         const request = effectiveAssistRequest().trim();
-        if (!request || assistInFlight) {
+        if (!request || assistWaiting()) {
             return;
         }
         assistInFlight = true;
+        assistLaunchError = '';
         let result;
         try {
             result = latestActions?.runPromptAssist?.('main', {
@@ -727,12 +783,16 @@ export function createPromptSettingsPage() {
             });
         } catch (error) {
             assistInFlight = false;
+            assistLaunchError = String(error?.message ?? error) || 'Failed to start the prompt assist.';
             console.error('promptSettingsPage: failed to start the prompt assist.', error);
+            renderPage();
             return;
         }
         Promise.resolve(result).catch((error) => {
             assistInFlight = false;
+            assistLaunchError = String(error?.message ?? error) || 'Failed to start the prompt assist.';
             console.error('promptSettingsPage: failed to start the prompt assist.', error);
+            renderPage();
         });
         // Re-render from the latest snapshot to surface the in-flight state.
         renderPage();
@@ -748,6 +808,7 @@ export function createPromptSettingsPage() {
         const assistant = promptOf('main').assistant;
         const proposal = stringOf(assistant.proposal);
         const error = stringOf(assistant.error);
+        const waiting = assistWaiting();
 
         const section = document.createElement('section');
         section.className = 'bc-task-workspace bc-task-workspace-assist';
@@ -766,7 +827,7 @@ export function createPromptSettingsPage() {
         suggestButton.className = 'bc-task-suggest';
         suggestButton.textContent = 'Suggest revision';
         suggestButton.title = SUGGEST_TITLE;
-        suggestButton.disabled = assistInFlight || effectiveAssistRequest().trim().length === 0;
+        suggestButton.disabled = waiting || readOnlyMode === true || effectiveAssistRequest().trim().length === 0;
         suggestButton.addEventListener('click', startAssist);
 
         const requestArea = buildTextarea({
@@ -779,7 +840,7 @@ export function createPromptSettingsPage() {
                 applyPatch(latestActions, { prompts: { main: { assistant: { request: text } } } });
             },
             onInput: () => {
-                suggestButton.disabled = assistInFlight || String(requestArea.value ?? '').trim().length === 0;
+                suggestButton.disabled = waiting || readOnlyMode === true || String(requestArea.value ?? '').trim().length === 0;
             },
         });
 
@@ -789,12 +850,42 @@ export function createPromptSettingsPage() {
 
         section.append(title, note, requestArea, controls);
 
-        if (assistInFlight) {
+        if (assistLaunchError) {
+            const launchError = document.createElement('p');
+            launchError.className = 'bc-task-assist-error';
+            launchError.setAttribute('role', 'alert');
+            launchError.textContent = `Prompt assist could not start: ${assistLaunchError}`;
+            section.append(launchError);
+        }
+
+        if (waiting) {
             const status = document.createElement('p');
             status.className = 'bc-task-assist-status';
             status.setAttribute('role', 'status');
             status.textContent = ASSIST_IN_FLIGHT_TEXT;
             section.append(status);
+
+            // A durable pending request (e.g. the server never finished) can
+            // be discarded so Suggest becomes available again.
+            if (!assistInFlight && !readOnlyMode) {
+                const discard = document.createElement('button');
+                discard.type = 'button';
+                discard.className = 'bc-task-discard-request';
+                discard.textContent = 'Discard request';
+                discard.title = DISCARD_REQUEST_TITLE;
+                discard.addEventListener('click', () => {
+                    draftValues.delete(ASSIST_REQUEST_FIELD);
+                    assistLaunchError = '';
+                    applyPatch(latestActions, {
+                        prompts: {
+                            main: {
+                                assistant: { request: '', proposal: '', diff: '', applied: false, error: '' },
+                            },
+                        },
+                    });
+                });
+                section.append(discard);
+            }
         }
 
         if (error) {
@@ -1193,6 +1284,51 @@ export function createPromptSettingsPage() {
     }
 
     // ------------------------------------------------------------------
+    // Footer (Continue to Transform 1)
+    // ------------------------------------------------------------------
+
+    /**
+     * Builds the footer with a validated Continue button: enabled when the
+     * main prompt has text (an unsaved draft counts — it is committed
+     * first), and always allowed for a completed task (pure navigation).
+     *
+     * @returns {Element} Footer element.
+     */
+    function buildFooter() {
+        const savedText = promptOf('main').text;
+        const draftText = draftValues.has(MAIN_TEXT_FIELD) ? draftValues.get(MAIN_TEXT_FIELD) : null;
+        const effectiveText = (draftText ?? savedText).trim();
+        const hasText = effectiveText.length > 0;
+        const hasUnsavedDraft = draftText !== null && draftText !== savedText;
+
+        const footer = document.createElement('footer');
+        footer.className = 'bc-task-prompt-footer';
+
+        const continueButton = document.createElement('button');
+        continueButton.type = 'button';
+        continueButton.className = 'bc-task-continue';
+        continueButton.textContent = 'Continue to Transform 1';
+        continueButton.disabled = !hasText;
+        continueButton.title = !hasText
+            ? CONTINUE_EMPTY_TITLE
+            : (hasUnsavedDraft && !readOnlyMode ? CONTINUE_SAVE_TITLE : CONTINUE_TITLE);
+        continueButton.addEventListener('click', () => {
+            void (async () => {
+                // Commit an unsaved prompt draft first so Transform 1 runs
+                // against the text the user actually sees.
+                if (!readOnlyMode && draftValues.has(MAIN_TEXT_FIELD)) {
+                    const text = draftValues.get(MAIN_TEXT_FIELD);
+                    draftValues.delete(MAIN_TEXT_FIELD);
+                    await applyPatch(latestActions, { prompts: { main: { text } } });
+                }
+                latestActions?.goToPage?.(3);
+            })();
+        });
+        footer.append(continueButton);
+        return footer;
+    }
+
+    // ------------------------------------------------------------------
     // Render
     // ------------------------------------------------------------------
 
@@ -1205,11 +1341,21 @@ export function createPromptSettingsPage() {
      * @returns {Element} The page heading (focus target).
      */
     function renderPage() {
+        readOnlyMode = latestSnapshot?.task?.status === 'completed';
+
         const assistant = promptOf('main').assistant;
         // The assist run is done (or abandoned) once a proposal/error lands
-        // or the request is cleared.
-        if (assistInFlight && (stringOf(assistant.proposal) || stringOf(assistant.error) || !effectiveAssistRequest().trim())) {
+        // or the request is cleared; the launch window hands off to the
+        // durable snapshot-derived waiting state.
+        if (assistInFlight && (stringOf(assistant.proposal) || stringOf(assistant.error) || !effectiveAssistRequest().trim() || assistWaitingFromSnapshot())) {
             assistInFlight = false;
+        }
+        if (!assistWaitingFromSnapshot()) {
+            // The server-side assist cycle settled (proposal/error/dismiss):
+            // any stale launch error is superseded by the snapshot state.
+            if (stringOf(assistant.proposal) || stringOf(assistant.error)) {
+                assistLaunchError = '';
+            }
         }
 
         const activeElement = typeof document !== 'undefined' ? document.activeElement : null;
@@ -1234,7 +1380,15 @@ export function createPromptSettingsPage() {
         workspaces.className = 'bc-task-prompt-workspaces';
         workspaces.append(buildMainWorkspace(), buildAssistWorkspace());
 
-        root.append(heading, guidance, workspaces, buildSettings());
+        root.append(heading, guidance);
+        if (readOnlyMode) {
+            const readOnly = document.createElement('p');
+            readOnly.className = 'bc-task-readonly-note';
+            readOnly.setAttribute('role', 'status');
+            readOnly.textContent = READ_ONLY_NOTE;
+            root.append(readOnly);
+        }
+        root.append(workspaces, buildSettings(), buildFooter());
         host.replaceChildren(root);
 
         if (activeKey && fieldRefs.has(activeKey)) {
@@ -1290,6 +1444,8 @@ export function createPromptSettingsPage() {
             openGroups.clear();
             openGroups.add('connection');
             assistInFlight = false;
+            assistLaunchError = '';
+            readOnlyMode = false;
             fieldRefs = new Map();
         },
     };

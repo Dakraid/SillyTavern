@@ -19,9 +19,9 @@
 	align-items: flex-start;
 	gap: 0.6em;
 	padding: 0.6em 0.8em;
-	border: 1px solid color-mix(in srgb, #d33 45%, var(--SmartThemeBorderColor));
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
 	border-radius: 10px;
-	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, #d33 10%);
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 90%, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 10%);
 }
 
 .bc-task-avatar-stale > i {
@@ -47,13 +47,13 @@
 	flex-direction: column;
 	gap: 0.4em;
 	padding: 0.6em 0.8em;
-	border: 1px solid color-mix(in srgb, #d33 45%, var(--SmartThemeBorderColor));
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
 	border-radius: 10px;
 }
 
 .bc-task-avatar-error-text {
 	margin: 0;
-	color: color-mix(in srgb, #d33 75%, currentColor);
+	color: color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 75%, currentColor);
 	overflow-wrap: break-word;
 }
 
@@ -103,7 +103,7 @@
 }
 
 .bc-task-avatar-created .bc-task-avatar-section-title > i {
-	color: color-mix(in srgb, #7fd37f 80%, currentColor);
+	color: color-mix(in srgb, var(--bc-task-tone-success, var(--SmartThemeUnderlineColor)) 80%, currentColor);
 }
 
 /* --- Summary rows --- */
@@ -204,26 +204,26 @@
 	flex-direction: column;
 	gap: 0.4em;
 	padding: 0.5em 0.7em;
-	border: 1px solid color-mix(in srgb, #d33 45%, var(--SmartThemeBorderColor));
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
 	border-radius: 8px;
 }
 
 .bc-task-avatar-create-error-text {
 	margin: 0;
-	color: color-mix(in srgb, #d33 75%, currentColor);
+	color: color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 75%, currentColor);
 	overflow-wrap: break-word;
 }
 
 /* --- Created panel --- */
 
 .bc-task-avatar-created {
-	border-color: color-mix(in srgb, #7fd37f 45%, var(--SmartThemeBorderColor));
+	border-color: color-mix(in srgb, var(--bc-task-tone-success, var(--SmartThemeUnderlineColor)) 45%, var(--SmartThemeBorderColor));
 }
 
 .bc-task-avatar-created-warning {
 	margin: 0;
 	padding: 0.5em 0.7em;
-	border: 1px solid color-mix(in srgb, #d33 45%, var(--SmartThemeBorderColor));
+	border: 1px solid color-mix(in srgb, var(--bc-task-tone-danger, var(--SmartThemeEmColor)) 45%, var(--SmartThemeBorderColor));
 	border-radius: 8px;
 	font-size: 0.9em;
 	overflow-wrap: break-word;

@@ -50,7 +50,11 @@ import { router as minimaxRouter } from './endpoints/minimax.js';
 import { router as dataMaidRouter } from './endpoints/data-maid.js';
 import { router as backupsRouter } from './endpoints/backups.js';
 import { router as imageMetadataRouter } from './endpoints/image-metadata.js';
-import { recoverAllUsers, router as bulkCombineRouter } from './endpoints/bulk-combine.js';
+import {
+    recoverAllUsers,
+    router as bulkCombineRouter,
+    scheduleBulkCombineCleanup,
+} from './endpoints/bulk-combine.js';
 import { router as volcengineRouter } from './endpoints/volcengine.js';
 
 /**
@@ -201,6 +205,7 @@ export class ServerStartup {
     constructor(app, cliArgs) {
         this.app = app;
         this.cliArgs = cliArgs;
+        this.bulkCombineCleanupTimer = null;
     }
 
     /**
@@ -403,6 +408,8 @@ export class ServerStartup {
      */
     async start() {
         await recoverAllUsers().catch(error => console.error('Bulk Combine startup recovery failed:', error));
+        if (this.bulkCombineCleanupTimer) clearInterval(this.bulkCombineCleanupTimer);
+        this.bulkCombineCleanupTimer = scheduleBulkCombineCleanup();
 
         let useIPv6 = (this.cliArgs.enableIPv6 === true);
         let useIPv4 = (this.cliArgs.enableIPv4 === true);

@@ -318,6 +318,83 @@ describe('computePageStates', () => {
         expect(statusOf(computePageStates(task), 'review')).toBe('stale');
     });
 
+    test('an enabled Transform 2 does not fall back to Transform 1 results for downstream gating', () => {
+        const task = makeReadyTask();
+        task.settings.secondPassEnabled = true;
+        task.settings.postProcessingEnabled = true;
+        task.passes.transform1 = { status: 'succeeded', inputRevision: 'r1', items: { 'a.png': { status: 'succeeded' } } };
+
+        const states = computePageStates(task);
+        expect(statusOf(states, 'transform1')).toBe('complete');
+        expect(statusOf(states, 'transform2')).toBe('ready'); // t1 valid → t2 can run
+        // …but downstream pages must NOT treat t1 results as final.
+        expect(statusOf(states, 'post')).toBe('not_started');
+        expect(statusOf(states, 'review')).toBe('not_started');
+        expect(statusOf(states, 'avatar')).toBe('not_started');
+
+        // Once Transform 2 has valid results, downstream unlocks.
+        task.passes.transform2 = { status: 'succeeded', inputRevision: 'r2', items: { 'a.png': { status: 'succeeded' } } };
+        const after = computePageStates(task);
+        expect(statusOf(after, 'post')).toBe('ready');
+        // Review still waits for the enabled post pass to settle.
+        expect(statusOf(after, 'review')).toBe('not_started');
+        task.post = { status: 'skipped' };
+        expect(statusOf(computePageStates(task), 'review')).toBe('ready');
+    });
+
+    test('review readiness requires the summary pass for a lorebook destination', () => {
+        const task = makeReadyTask();
+        task.settings.destination = 'lorebook';
+        task.passes.transform1 = { status: 'succeeded', inputRevision: 'r1', items: { 'a.png': { status: 'succeeded' } } };
+
+        // Transforms succeeded but the mandatory summary pass has not run.
+        expect(statusOf(computePageStates(task), 'review')).toBe('not_started');
+        expect(statusOf(computePageStates(task), 'avatar')).toBe('not_started');
+
+        task.passes.summary = { status: 'succeeded', inputRevision: 'r2', items: { 'a.png': { status: 'succeeded' } } };
+        expect(statusOf(computePageStates(task), 'review')).toBe('ready');
+        expect(statusOf(computePageStates(task), 'avatar')).toBe('ready');
+    });
+
+    test('a skipped post pass counts as settled for review readiness; stale required passes do not unlock downstream', () => {
+        const task = makeReadyTask();
+        task.settings.postProcessingEnabled = true;
+        task.passes.transform1 = { status: 'succeeded', inputRevision: 'r1', items: { 'a.png': { status: 'succeeded' } } };
+
+        // Skipped post + valid transform results → review ready (postPage
+        // allows continuing after Skip, so the rail must agree).
+        task.post = { status: 'skipped' };
+        expect(statusOf(computePageStates(task), 'review')).toBe('ready');
+
+        // Stale required results no longer unlock transform2/post.
+        const staleTask = makeReadyTask();
+        staleTask.settings.secondPassEnabled = true;
+        staleTask.settings.postProcessingEnabled = true;
+        staleTask.passes.transform1 = { status: 'succeeded', inputRevision: 'r1', items: { 'a.png': { status: 'succeeded' } } };
+        staleTask.derivedStaleness.transform1 = { stale: true, reason: 'input_changed' };
+        const staleStates = computePageStates(staleTask);
+        expect(statusOf(staleStates, 'transform1')).toBe('stale');
+        expect(statusOf(staleStates, 'transform2')).toBe('not_started');
+        expect(statusOf(staleStates, 'post')).toBe('not_started');
+        // Stale outputs stay inspectable (review shows stale, not not_started,
+        // when a settled pipeline output exists).
+        staleTask.post = { status: 'succeeded' };
+        expect(statusOf(computePageStates(staleTask), 'review')).toBe('stale');
+    });
+
+    test('post readiness requires the summary pass when the destination is a lorebook', () => {
+        const task = makeReadyTask();
+        task.settings.destination = 'lorebook';
+        task.settings.postProcessingEnabled = true;
+        task.passes.transform1 = { status: 'succeeded', inputRevision: 'r1', items: { 'a.png': { status: 'succeeded' } } };
+
+        // Summaries feed post-processing for a lorebook destination.
+        expect(statusOf(computePageStates(task), 'post')).toBe('not_started');
+
+        task.passes.summary = { status: 'succeeded', inputRevision: 'r2', items: { 'a.png': { status: 'succeeded' } } };
+        expect(statusOf(computePageStates(task), 'post')).toBe('ready');
+    });
+
     test('avatar: ready once review inputs exist, complete once artifacts recorded', () => {
         const task = makeReadyTask();
         expect(statusOf(computePageStates(task), 'avatar')).toBe('not_started');
@@ -402,16 +479,26 @@ describe('TaskWizardState', () => {
         expect(received).toHaveLength(countAfterUnsubscribe);
     });
 
-    test('revision conflict refreshes from currentTask and surfaces the conflict flag', async () => {
+    test('a revision conflict rebases the pending patch and retries once with the fresh revision', async () => {
         const task = makeReadyTask();
-        const serverTask = makeReadyTask({ revision: 7, name: 'Server wins', currentPage: 5, furthestPage: 5 });
+        // The server moved on: someone else renamed + navigated (revision 5).
+        const serverTask = makeReadyTask({ revision: 5, name: 'Server wins', currentPage: 5, furthestPage: 5 });
         delete serverTask.derivedStaleness; // 409 currentTask omits derivedStaleness.
+        const finalTask = { ...serverTask, revision: 6, name: 'Local edit', derivedStaleness: task.derivedStaleness };
+
+        let patchCalls = 0;
+        let getCount = 0;
         fetchMock.mockImplementation(async (url, options = {}) => {
             const method = options.method ?? 'GET';
             if (method === 'PATCH') {
-                return jsonResponse({ error: 'revision_conflict', currentTask: serverTask }, { status: 409 });
+                patchCalls++;
+                if (patchCalls === 1) {
+                    return jsonResponse({ error: 'revision_conflict', currentTask: serverTask }, { status: 409 });
+                }
+                return jsonResponse({ ...finalTask, derivedStaleness: undefined });
             }
-            return jsonResponse(task);
+            getCount++;
+            return jsonResponse(getCount === 1 ? task : finalTask);
         });
 
         const state = new TaskWizardState();
@@ -422,13 +509,137 @@ describe('TaskWizardState', () => {
 
         await state.update({ name: 'Local edit' });
 
+        // Two PATCHes: the first conflicts, the retry carries the fresh revision.
+        expect(patchCalls).toBe(2);
+        const bodies = fetchMock.mock.calls
+            .filter((call) => (call[1]?.method ?? 'GET') === 'PATCH')
+            .map((call) => JSON.parse(call[1].body));
+        expect(bodies[0]).toEqual({ expectedRevision: 1, patch: { name: 'Local edit' } });
+        expect(bodies[1]).toEqual({ expectedRevision: 5, patch: { name: 'Local edit' } });
+
+        // Resolved as saved: the edit WAS applied on top of the server's task.
+        const last = received.at(-1);
+        expect(last.conflict).toBe(false);
+        expect(last.syncState).toBe('saved');
+        expect(last.task.name).toBe('Local edit');
+        expect(last.currentPage).toBe(5); // the server's navigation survived the rebase
+        expect(last.derivedStaleness).toEqual(task.derivedStaleness); // fresh GET re-synced it
+    });
+
+    test('a persistent revision conflict rejects, surfaces the conflict flag, and keeps the server state', async () => {
+        const task = makeReadyTask();
+        const serverTask = makeReadyTask({ revision: 7, name: 'Server wins', currentPage: 5, furthestPage: 5 });
+        delete serverTask.derivedStaleness; // 409 currentTask omits derivedStaleness.
+        const authoritative = { ...serverTask, derivedStaleness: task.derivedStaleness };
+
+        let getCount = 0;
+        fetchMock.mockImplementation(async (url, options = {}) => {
+            const method = options.method ?? 'GET';
+            if (method === 'PATCH') {
+                return jsonResponse({ error: 'revision_conflict', currentTask: serverTask }, { status: 409 });
+            }
+            getCount++;
+            return jsonResponse(getCount === 1 ? task : authoritative);
+        });
+
+        const state = new TaskWizardState();
+        await state.init('task-1');
+
+        const received = [];
+        state.subscribe((snapshot) => received.push(snapshot));
+
+        // Both the initial PATCH and the single retry conflict → the update
+        // rejects so callers do NOT treat the edit as saved.
+        await expect(state.update({ name: 'Local edit' })).rejects.toThrow('revision conflict');
+
         const last = received.at(-1);
         expect(last.conflict).toBe(true);
         expect(last.syncState).toBe('conflict');
         expect(last.task.name).toBe('Server wins');
         expect(last.currentPage).toBe(5);
-        // derivedStaleness is preserved when the conflict payload omits it.
+        // derivedStaleness comes from the authoritative re-fetch, not the 409 payload.
         expect(last.derivedStaleness).toEqual(task.derivedStaleness);
+
+        const patchCount = fetchMock.mock.calls.filter((call) => (call[1]?.method ?? 'GET') === 'PATCH').length;
+        expect(patchCount).toBe(2); // exactly one retry
+    });
+
+    test('concurrent updates are serialized: each PATCH carries the revision of the previous response', async () => {
+        const task = makeReadyTask();
+        let serverState = task;
+        fetchMock.mockImplementation(async (url, options = {}) => {
+            const method = options.method ?? 'GET';
+            if (method === 'PATCH') {
+                const { patch } = JSON.parse(options.body);
+                serverState = { ...serverState, ...patch, revision: serverState.revision + 1 };
+                const response = { ...serverState };
+                delete response.derivedStaleness;
+                return jsonResponse(response);
+            }
+            return jsonResponse(serverState);
+        });
+
+        const state = new TaskWizardState();
+        await state.init('task-1');
+
+        // Fire both updates without awaiting the first: without a write
+        // queue, both PATCHes would race with expectedRevision 1.
+        const first = state.update({ name: 'First' });
+        const second = state.update({ name: 'Second' });
+        await Promise.all([first, second]);
+
+        const bodies = fetchMock.mock.calls
+            .filter((call) => (call[1]?.method ?? 'GET') === 'PATCH')
+            .map((call) => JSON.parse(call[1].body));
+        expect(bodies).toHaveLength(2);
+        expect(bodies[0]).toEqual({ expectedRevision: 1, patch: { name: 'First' } });
+        expect(bodies[1]).toEqual({ expectedRevision: 2, patch: { name: 'Second' } });
+
+        expect(state.task.name).toBe('Second');
+        expect(state.syncState).toBe('saved');
+    });
+
+    test('a non-conflict failure rejects and rolls the optimistic merge back to the server state', async () => {
+        const task = makeReadyTask();
+        let serverState = structuredClone(task);
+        let failNextPatch = true;
+        fetchMock.mockImplementation(async (url, options = {}) => {
+            const method = options.method ?? 'GET';
+            if (method === 'PATCH') {
+                if (failNextPatch) {
+                    failNextPatch = false;
+                    return jsonResponse('boom', { status: 500 });
+                }
+                const { patch } = JSON.parse(options.body);
+                serverState = { ...serverState, ...patch, revision: serverState.revision + 1 };
+                const response = structuredClone(serverState);
+                delete response.derivedStaleness;
+                return jsonResponse(response);
+            }
+            // Fresh copy per GET: the optimistic merge mutates the live
+            // snapshot, and the rollback must restore the pristine state.
+            return jsonResponse(structuredClone(serverState));
+        });
+
+        const state = new TaskWizardState();
+        await state.init('task-1');
+
+        const received = [];
+        state.subscribe((snapshot) => received.push(snapshot));
+
+        await expect(state.update({ name: 'Lost edit' })).rejects.toThrow('boom');
+
+        const last = received.at(-1);
+        expect(last.conflict).toBe(false);
+        expect(last.syncState).toBe('error');
+        // The optimistic mutation was neutralized by the authoritative re-fetch.
+        expect(last.task.name).toBe('Test task');
+        expect(state.task.name).toBe('Test task');
+
+        // The write chain survives a rejection: a later update still saves.
+        await state.update({ name: 'After failure' });
+        expect(state.task.name).toBe('After failure');
+        expect(state.syncState).toBe('saved');
     });
 
     test('connectEvents re-syncs the authoritative snapshot on every event and notifies', async () => {

@@ -24,13 +24,18 @@
  *
  * Defensive by contract: a missing layer falls through to the next one,
  * unresolvable keys are omitted, and plaintext secrets / proxy passwords /
- * reverse-proxy settings are NEVER emitted (the object is built key-by-key
- * from an allowlist, so nothing leaks by accident). `stream` is always
- * pinned to `false` — task runs are not streamed.
+ * profile-carried reverse-proxy settings are NEVER emitted (the object is
+ * built key-by-key from an allowlist, so nothing leaks by accident). Proxy
+ * support mirrors the Connection Manager: the profile's `proxy` field names
+ * a proxy PRESET whose `url` is emitted as `reverse_proxy`. The preset's
+ * `password` is deliberately NOT emitted — the backend sanitizer strips
+ * `/password/` keys (`src/endpoints/bulk-combine.js`) before checkpointing,
+ * so a plaintext proxy password could never reach the executor anyway.
+ * `stream` is always pinned to `false` — task runs are not streamed.
  */
 
 import { extension_settings } from '../../extensions.js';
-import { openai_setting_names, openai_settings } from '../../openai.js';
+import { openai_setting_names, openai_settings, proxies } from '../../openai.js';
 
 /**
  * Fallback api map used when the caller does not inject `CONNECT_API_MAP`
@@ -47,7 +52,10 @@ const DEFAULT_API_MAP = Object.freeze({
 
 /**
  * Sampling keys copied verbatim from a resolved Chat Completion preset.
- * Same key name on both sides of the mapping.
+ * Same key name on both sides of the mapping. This is the full generation
+ * set the chat-completions executor honors (`src/endpoints/backends/
+ * chat-completions.js` reads each from the request body); `seed` is handled
+ * separately because ST's "unset" sentinel (-1) must not be forwarded.
  *
  * @type {ReadonlyArray<string>}
  */
@@ -57,6 +65,26 @@ const SAMPLING_KEYS = Object.freeze([
     'presence_penalty',
     'top_p',
     'top_k',
+    'top_a',
+    'min_p',
+    'repetition_penalty',
+]);
+
+/**
+ * Profile endpoint fields mirrored from `ConnectionManagerRequestService
+ * .sendRequest` (public/scripts/extensions/shared.js): every chat-completion
+ * profile carries its `api-url` into all provider-specific endpoint slots;
+ * the executor uses only the slot matching the resolved source.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+const PROFILE_ENDPOINT_KEYS = Object.freeze([
+    'custom_url',
+    'vertexai_region',
+    'zai_endpoint',
+    'siliconflow_endpoint',
+    'minimax_endpoint',
+    'pollinations_endpoint',
 ]);
 
 /**
@@ -171,6 +199,21 @@ function profileList(deps) {
 }
 
 /**
+ * Reads the injected or live proxy-preset list (`{ name, url, password }`,
+ * same shape as `proxies` in openai.js). Tolerates the live export being
+ * unloaded (unit tests, early boot).
+ *
+ * @param {object} deps Injected dependencies.
+ * @returns {object[]} Proxy preset records.
+ */
+function proxyList(deps) {
+    if (Array.isArray(deps?.proxies)) {
+        return deps.proxies;
+    }
+    return Array.isArray(proxies) ? proxies : [];
+}
+
+/**
  * Resolves a task's completion settings into a sanitized generate body.
  * Pure and total: never throws, never returns secret material, and always
  * includes `stream: false`.
@@ -246,20 +289,114 @@ export function resolveCompletionSettings(task, deps = {}) {
                 result[key] = value;
             }
         }
+        // Seed: ST's sentinel for "unset" is -1; only forward real seeds.
+        const seed = finiteNumber(preset.seed);
+        if (seed !== null && seed >= 0) {
+            result.seed = Math.trunc(seed);
+        }
     }
 
-    // Profile transport: only the secret REFERENCE and custom URL — never
-    // plaintext keys, proxy passwords, or reverse-proxy settings.
+    // Profile transport, mirroring `ConnectionManagerRequestService
+    // .sendRequest` (chat-completion branch): the secret REFERENCE, all
+    // provider endpoint slots (fed from the profile's `api-url`), the named
+    // proxy preset's URL, and the prompt post-processing mode. NEVER
+    // plaintext keys or proxy passwords (the backend sanitizer would strip
+    // those before checkpointing anyway).
     if (profileActive) {
         const secretId = nonEmptyString(profile['secret-id']);
         if (secretId) {
             result.secret_id = secretId;
         }
-        const customUrl = nonEmptyString(profile['api-url']);
-        if (customUrl) {
-            result.custom_url = customUrl;
+        const apiUrl = nonEmptyString(profile['api-url']);
+        if (apiUrl) {
+            for (const key of PROFILE_ENDPOINT_KEYS) {
+                result[key] = apiUrl;
+            }
+        }
+        const proxyName = nonEmptyString(profile.proxy);
+        const proxyPreset = proxyName
+            ? proxyList(deps).find((candidate) => candidate?.name === proxyName)
+            : null;
+        const reverseProxy = nonEmptyString(proxyPreset?.url);
+        if (reverseProxy) {
+            result.reverse_proxy = reverseProxy;
+        }
+        const postProcessing = nonEmptyString(profile['prompt-post-processing']);
+        if (postProcessing) {
+            result.custom_prompt_post_processing = postProcessing;
         }
     }
 
     return result;
+}
+
+/**
+ * Maps resolved completion settings back onto the task SETTINGS keys the
+ * server preflight reads (`task.settings.outputTokens` /
+ * `task.settings.totalContextTokens`, src/util/bulk-combine/task-runner.js).
+ *
+ * The resolver already applies the "blank/0 means inherit the preset"
+ * contract, so `max_tokens`/`max_context` in the resolved body ARE the
+ * effective windows the generation runs with — persisting them keeps the
+ * preflight context-overflow block in lockstep with the actual generation
+ * windows instead of silently running unguarded on preset-inherited values.
+ *
+ * @param {unknown} completionSettings Resolved body from {@link resolveCompletionSettings}.
+ * @returns {{outputTokens?: number, totalContextTokens?: number}|null} Sparse settings patch, or null when nothing is resolvable.
+ */
+export function windowSettingsPatchFromCompletion(completionSettings) {
+    if (!completionSettings || typeof completionSettings !== 'object') {
+        return null;
+    }
+    const patch = {};
+    const outputTokens = positiveInteger(completionSettings.max_tokens);
+    if (outputTokens !== null) {
+        patch.outputTokens = outputTokens;
+    }
+    const totalContextTokens = positiveInteger(completionSettings.max_context);
+    if (totalContextTokens !== null) {
+        patch.totalContextTokens = totalContextTokens;
+    }
+    return Object.keys(patch).length > 0 ? patch : null;
+}
+
+/** Marker preventing double-decoration of the same client. */
+const WINDOW_PERSISTENCE_MARKER = Symbol('resolvedWindowPersistence');
+
+/**
+ * Decorates a TaskClient so every pass run first persists the resolved
+ * token windows to `task.settings` via the client's own `patchTask` (the
+ * existing update mechanism). Without this, workflows that inherit their
+ * windows from the preset leave `task.settings.outputTokens` /
+ * `totalContextTokens` null, and the server preflight runs with NO
+ * context-overflow block — violating "block, never silently truncate".
+ *
+ * The persist fails closed: when the PATCH rejects, the run is aborted
+ * rather than executed without a guard. Idempotent per client instance.
+ *
+ * @param {import('./TaskClient.js').TaskClient} client Task client to decorate.
+ * @returns {import('./TaskClient.js').TaskClient} The same client, decorated.
+ */
+export function withResolvedWindowPersistence(client) {
+    if (
+        !client ||
+        typeof client.runPass !== 'function' ||
+        typeof client.patchTask !== 'function' ||
+        client.runPass[WINDOW_PERSISTENCE_MARKER]
+    ) {
+        return client;
+    }
+    const innerRunPass = client.runPass.bind(client);
+    const decoratedRunPass = async (id, passKey, options = {}) => {
+        const patch = windowSettingsPatchFromCompletion(options?.completionSettings);
+        if (patch) {
+            await client.patchTask(id, { settings: patch });
+        }
+        return innerRunPass(id, passKey, options);
+    };
+    decoratedRunPass[WINDOW_PERSISTENCE_MARKER] = true;
+    // Own-property shadow: keeps the instance (and its private fields)
+    // intact, unlike a prototype clone.
+    client.runPass = decoratedRunPass;
+    return client;
 }

@@ -447,4 +447,83 @@ describe('TaskHistoryPanel', () => {
         expect(findOne(container, hasClass('bc-task-history-loading'))).not.toBe(null);
         expect(rows()).toHaveLength(0);
     });
+
+    test('completed tasks render a Completed status pill', async () => {
+        const client = makeClient([makeTask({ id: 'task-1', status: 'completed' })]);
+        renderPanel({ client });
+        await flush();
+
+        const pill = buttonIn(rowById('task-1'), 'bc-task-history-pill');
+        expect(pill.textContent).toBe('Completed');
+        expect(pill.getAttribute('data-status')).toBe('completed');
+    });
+
+    test('Rename edits the name inline and PATCHes it through the client', async () => {
+        const client = makeClient([makeTask({ id: 'task-1', name: 'Old name' })]);
+        client.patchTask = jest.fn(async (id, patch) => makeTask({ id, name: patch.name }));
+        renderPanel({ client });
+        await flush();
+
+        // Open the inline rename editor.
+        buttonIn(rowById('task-1'), 'bc-task-history-rename').click();
+        const input = findOne(rowById('task-1'), hasClass('bc-task-history-rename-input'));
+        expect(input).not.toBe(null);
+        expect(input.value).toBe('Old name');
+
+        input.value = 'New name';
+        input.fire('input');
+        buttonIn(rowById('task-1'), 'bc-task-history-rename-save').click();
+        await flush();
+
+        expect(client.patchTask).toHaveBeenCalledTimes(1);
+        expect(client.patchTask).toHaveBeenCalledWith('task-1', { name: 'New name' });
+        // The list refreshed after the rename.
+        expect(client.listTasks).toHaveBeenCalledTimes(2);
+        // The editor closed.
+        expect(findOne(rowById('task-1'), hasClass('bc-task-history-rename-input'))).toBe(null);
+    });
+
+    test('an unchanged or blank rename closes the editor without patching', async () => {
+        const client = makeClient([makeTask({ id: 'task-1', name: 'Old name' })]);
+        client.patchTask = jest.fn(async (id, patch) => makeTask({ id, name: patch.name }));
+        renderPanel({ client });
+        await flush();
+
+        buttonIn(rowById('task-1'), 'bc-task-history-rename').click();
+        const input = findOne(rowById('task-1'), hasClass('bc-task-history-rename-input'));
+        input.value = '   ';
+        input.fire('input');
+        buttonIn(rowById('task-1'), 'bc-task-history-rename-save').click();
+        await flush();
+
+        expect(client.patchTask).not.toHaveBeenCalled();
+        expect(findOne(rowById('task-1'), hasClass('bc-task-history-rename-input'))).toBe(null);
+    });
+
+    test('polls the visible list only while the panel is open; dispose stops polling', async () => {
+        jest.useFakeTimers();
+        try {
+            const client = makeClient([makeTask({ id: 'task-1' })]);
+            const panel = createTaskHistoryPanel({ client, pollIntervalMs: 1000 });
+            panel.render(container);
+            await Promise.resolve();
+            expect(client.listTasks).toHaveBeenCalledTimes(1);
+
+            // Advance in steps so each poll's fetch settles before the next.
+            for (let tick = 0; tick < 2; tick++) {
+                jest.advanceTimersByTime(1000);
+                await Promise.resolve();
+                await Promise.resolve();
+            }
+            expect(client.listTasks.mock.calls.length).toBeGreaterThanOrEqual(3);
+
+            const callsBeforeDispose = client.listTasks.mock.calls.length;
+            panel.dispose();
+            jest.advanceTimersByTime(5000);
+            await Promise.resolve();
+            expect(client.listTasks).toHaveBeenCalledTimes(callsBeforeDispose);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
 });

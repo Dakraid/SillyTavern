@@ -8,18 +8,23 @@ import { executeChatCompletion } from './backends/chat-completions.js';
 import { countOpenAIMessageTokens } from './tokenizers.js';
 import { assembleReviewPayload } from '../util/bulk-combine/artifact-assembler.js';
 import { createTaskEventBus } from '../util/bulk-combine/task-events.js';
-import { createTaskRunner } from '../util/bulk-combine/task-runner.js';
+import {
+    createTaskRunner,
+    TaskAlreadyRunningError,
+    TaskNotResumableError,
+} from '../util/bulk-combine/task-runner.js';
 import { deriveStaleness } from '../util/bulk-combine/task-state.js';
 import {
     BulkCombineTaskRepository,
-    InvalidSidecarFilenameError,
     InvalidTaskIdError,
+    TaskCorruptError,
     TaskNotFoundError,
     TaskRevisionConflictError,
     TaskValidationError,
 } from '../util/bulk-combine/task-repository.js';
 
 const TASKS_DIRECTORY = 'bulk-combine-tasks';
+export const BULK_COMBINE_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
 const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -80,15 +85,22 @@ function sendError(response, error) {
     if (error instanceof TaskNotFoundError) {
         return response.status(404).send({ error: 'task_not_found' });
     }
+    if (error instanceof TaskCorruptError) {
+        return response.status(500).send({ error: 'task_corrupt' });
+    }
+    if (error instanceof TaskAlreadyRunningError) {
+        return response.status(409).send({ error: 'task_already_running' });
+    }
+    if (error instanceof TaskNotResumableError) {
+        return response.status(409).send({ error: 'pass_not_resumable' });
+    }
     if (error instanceof TaskRevisionConflictError) {
         return response.status(409).send({
             error: 'revision_conflict',
             currentTask: error.currentTask,
         });
     }
-    if (error instanceof InvalidTaskIdError
-        || error instanceof InvalidSidecarFilenameError
-        || error instanceof TaskValidationError) {
+    if (error instanceof InvalidTaskIdError || error instanceof TaskValidationError) {
         return response.status(400).send({ error: 'invalid_request' });
     }
     console.error('Bulk Combine task request failed:', error);
@@ -103,6 +115,31 @@ function route(handler) {
             return sendError(response, error);
         }
     };
+}
+
+function scheduleBackground(start, failureMessage) {
+    return new Promise((resolve, reject) => {
+        let scheduled = false;
+        let operation;
+        try {
+            operation = start(task => {
+                scheduled = true;
+                resolve(task);
+            });
+        } catch (error) {
+            reject(error);
+            return;
+        }
+        Promise.resolve(operation).then(() => {
+            if (!scheduled) reject(new Error('Bulk Combine runner completed without scheduling'));
+        }).catch(error => {
+            if (!scheduled) {
+                reject(error);
+            } else {
+                console.error(failureMessage, error);
+            }
+        });
+    });
 }
 
 export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus: taskEventBus = eventBus } = {}) {
@@ -136,10 +173,14 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
         if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !isRecord(patch)) {
             throw new TaskValidationError('PATCH requires expectedRevision and an object patch');
         }
+        const sanitizedPatch = structuredClone(patch);
+        if (Object.hasOwn(sanitizedPatch, 'completion')) {
+            sanitizedPatch.completion = sanitizeCompletionSettings(sanitizedPatch.completion);
+        }
         const repo = await getRepo(request);
         const task = await repo.updateTask(
             request.params.id,
-            current => deepMergeInto(current, patch),
+            current => deepMergeInto(current, sanitizedPatch),
             { expectedRevision },
         );
         return response.send(task);
@@ -180,20 +221,21 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
         const completion = hasCompletionSettings
             ? sanitizeCompletionSettings(request.body.completionSettings)
             : null;
-        const task = await repo.checkpoint(request.params.id, draft => {
-            draft.prompts[promptKey].assistant = {
-                ...draft.prompts[promptKey].assistant,
-                request: request.body.request,
-                applied: false,
-            };
-            if (hasCompletionSettings) draft.completion = completion;
-        });
-        taskRunner.runPromptAssist({
+        const task = await scheduleBackground(onScheduled => taskRunner.runPromptAssist({
             taskId: request.params.id,
             promptKey,
             repo,
             userDirectories: request.user.directories,
-        }).catch(error => console.error('Bulk Combine prompt assistance failed:', error));
+            prepareTask: () => repo.checkpoint(request.params.id, draft => {
+                draft.prompts[promptKey].assistant = {
+                    ...draft.prompts[promptKey].assistant,
+                    request: request.body.request,
+                    applied: false,
+                };
+                if (hasCompletionSettings) draft.completion = completion;
+            }),
+            onScheduled,
+        }), 'Bulk Combine prompt assistance failed:');
         return response.status(202).send(task);
     }));
 
@@ -201,33 +243,38 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
         const passKey = request.params.pass;
         if (!PASS_KEYS.includes(passKey)) throw new TaskValidationError('Invalid pass key');
         const repo = await getRepo(request);
-        let task = await repo.getTask(request.params.id);
-        if (Object.hasOwn(request.body || {}, 'completionSettings')) {
-            const completion = sanitizeCompletionSettings(request.body.completionSettings);
-            task = await repo.checkpoint(request.params.id, draft => {
-                draft.completion = completion;
-            });
-        }
-        taskRunner.runPass({
+        await repo.getTask(request.params.id);
+        const hasCompletionSettings = Object.hasOwn(request.body || {}, 'completionSettings');
+        const completion = hasCompletionSettings
+            ? sanitizeCompletionSettings(request.body.completionSettings)
+            : null;
+        const task = await scheduleBackground(onScheduled => taskRunner.runPass({
             taskId: request.params.id,
             passKey,
             repo,
             userDirectories: request.user.directories,
             scope: request.body?.scope ?? 'missing',
             itemKeys: request.body?.itemKeys ?? null,
-        }).catch(error => console.error('Bulk Combine pass failed:', error));
+            prepareTask: () => hasCompletionSettings
+                ? repo.checkpoint(request.params.id, draft => {
+                    draft.completion = completion;
+                })
+                : repo.getTask(request.params.id),
+            onScheduled,
+        }), 'Bulk Combine pass failed:');
         return response.status(202).send(task);
     }));
 
     taskRouter.post('/tasks/:id/passes/:pass/resume', route(async (request, response) => {
         if (!PASS_KEYS.includes(request.params.pass)) throw new TaskValidationError('Invalid pass key');
         const repo = await getRepo(request);
-        const task = await repo.getTask(request.params.id);
-        taskRunner.resume({
+        const task = await scheduleBackground(onScheduled => taskRunner.resume({
             taskId: request.params.id,
+            passKey: request.params.pass,
             repo,
             userDirectories: request.user.directories,
-        }).catch(error => console.error('Bulk Combine pass failed:', error));
+            onScheduled,
+        }), 'Bulk Combine pass failed:');
         return response.status(202).send(task);
     }));
 
@@ -248,8 +295,16 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
     }));
 
     taskRouter.get('/tasks/:id/events', route(async (request, response) => {
-        taskEventBus.subscribe(request.params.id, response);
-        request.on('close', () => taskEventBus.unsubscribe(request.params.id, response));
+        const repo = await getRepo(request);
+        await repo.getTask(request.params.id);
+        const unsubscribe = taskEventBus.subscribe(request.params.id, response);
+        request.on('close', () => {
+            if (typeof unsubscribe === 'function') {
+                unsubscribe();
+            } else {
+                taskEventBus.unsubscribe(request.params.id, response);
+            }
+        });
     }));
 
     return taskRouter;
@@ -279,4 +334,27 @@ export async function recoverAllUsers() {
             console.error(`Bulk Combine startup recovery failed for user ${handle}:`, error);
         }
     }
+}
+
+export async function cleanupExpiredForAllUsers() {
+    const handles = await getAllUserHandles();
+    for (const handle of handles) {
+        const tasksRoot = path.join(getUserDirectories(handle).root, TASKS_DIRECTORY);
+        try {
+            await new BulkCombineTaskRepository(tasksRoot).cleanupExpired();
+        } catch (error) {
+            console.error(`Bulk Combine cleanup failed for user ${handle}:`, error);
+        }
+    }
+}
+
+export function scheduleBulkCombineCleanup({
+    cleanup = cleanupExpiredForAllUsers,
+    intervalMs = BULK_COMBINE_CLEANUP_INTERVAL_MS,
+} = {}) {
+    const timer = setInterval(() => {
+        Promise.resolve(cleanup()).catch(error => console.error('Bulk Combine cleanup failed:', error));
+    }, intervalMs);
+    timer.unref?.();
+    return timer;
 }

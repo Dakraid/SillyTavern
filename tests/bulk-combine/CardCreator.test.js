@@ -51,7 +51,15 @@ jest.unstable_mockModule('../../public/script.js', () => ({
 }));
 
 jest.unstable_mockModule('../../public/scripts/utils.js', () => ({
-    escapeHtml: (value) => String(value ?? ''),
+    // Faithful mirror of public/scripts/utils.js escapeHtml (XSS assertions
+    // depend on real escaping behavior).
+    escapeHtml: (value) =>
+        String(value ?? '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll('\'', '&#39;'),
 }));
 
 jest.unstable_mockModule('../../public/scripts/world-info.js', () => ({
@@ -226,7 +234,7 @@ describe('createGeneratedGroupCard', () => {
     test('renames automatically on collision when the user declines overwrite', async () => {
         mockCharacters.push({ name: 'Group', avatar: 'existing.png' });
         mockWorldNames.push('Group');
-        mockCallGenericPopup.mockResolvedValueOnce(null); // "Rename Automatically"
+        mockCallGenericPopup.mockResolvedValueOnce(0); // POPUP_RESULT.NEGATIVE = "Rename Automatically"
         mockSendJsonRequest
             .mockResolvedValueOnce(okResponse())
             .mockResolvedValueOnce(okResponse('renamed.png'))
@@ -240,6 +248,101 @@ describe('createGeneratedGroupCard', () => {
         expect(callUrl(0)).toBe('/api/worldinfo/edit');
         expect(callBody(0).name).toBe('Group (1)');
         expect(callBody(1).name).toBe('Group (1)');
+    });
+
+    test('escapes the user-editable group name in the collision popup (XSS)', async () => {
+        const evilName = 'Group <img src=x onerror="globalThis.__pwned=(globalThis.__pwned||0)+1">';
+        mockCharacters.push({ name: evilName, avatar: 'existing.png' });
+        mockCallGenericPopup.mockResolvedValueOnce(1); // AFFIRMATIVE keeps the (escaped) name path short.
+        mockSendJsonRequest.mockResolvedValueOnce(okResponse());
+
+        await expect(
+            createGeneratedGroupCard(evilName, 'desc', [{ name: 'Alice' }, { name: 'Bob' }], false),
+        ).resolves.toEqual({ avatar: 'existing.png', world: '' });
+
+        const popupText = mockCallGenericPopup.mock.calls[0]?.[0];
+        expect(typeof popupText).toBe('string');
+        expect(popupText).not.toContain('<img');
+        expect(popupText).toContain('&lt;img src=x onerror=&quot;');
+    });
+
+    test('cancels the creation when the collision popup is dismissed (Escape/X)', async () => {
+        mockCharacters.push({ name: 'Group', avatar: 'existing.png' });
+        mockWorldNames.push('Group');
+        mockCallGenericPopup.mockResolvedValueOnce(null); // POPUP_RESULT.CANCELLED = dismissal.
+
+        await expect(
+            createGeneratedGroupCard('Group', 'desc', [{ name: 'Alice' }, { name: 'Bob' }]),
+        ).rejects.toThrow('cancelled');
+
+        // No rename, no creation: dismissal must not fall through to any mutation.
+        expect(mockSendJsonRequest).not.toHaveBeenCalled();
+    });
+
+    test('restores the pre-overwrite lorebook snapshot when character creation fails', async () => {
+        const existingLorebook = { entries: { '0': { comment: 'Original', key: ['a'], content: 'Original body' } } };
+        mockCharacters.push({ name: 'Group', avatar: 'existing.png' });
+        mockWorldNames.push('Group');
+        mockCallGenericPopup.mockResolvedValueOnce(1); // AFFIRMATIVE = overwrite both.
+        mockSendJsonRequest
+            .mockResolvedValueOnce(okResponse(JSON.stringify(existingLorebook))) // snapshot /worldinfo/get
+            .mockResolvedValueOnce(okResponse()) // overwrite /worldinfo/edit
+            .mockResolvedValueOnce({ ok: false, text: async () => 'db exploded' }) // merge-attributes fails
+            .mockResolvedValueOnce(okResponse()); // restore /worldinfo/edit
+
+        await expect(
+            createGeneratedGroupCard('Group', 'desc', [{ name: 'Alice' }, { name: 'Bob' }]),
+        ).rejects.toThrow('db exploded');
+
+        const urls = mockSendJsonRequest.mock.calls.map((call) => call[0]);
+        expect(urls).toEqual([
+            '/api/worldinfo/get',
+            '/api/worldinfo/edit',
+            '/api/characters/merge-attributes',
+            '/api/worldinfo/edit',
+        ]);
+        // The pre-existing lorebook is restored verbatim — never deleted, never left replaced.
+        expect(callBody(3)).toEqual({ name: 'Group', data: existingLorebook });
+        expect(urls).not.toContain('/api/worldinfo/delete');
+    });
+
+    test('restores the pre-overwrite lorebook snapshot when the lorebook link fails', async () => {
+        const existingLorebook = { entries: { '0': { comment: 'Original', key: ['a'], content: 'Original body' } } };
+        mockCharacters.push({ name: 'Group', avatar: 'existing.png' });
+        mockWorldNames.push('Group');
+        mockCallGenericPopup.mockResolvedValueOnce(1); // overwrite.
+        mockSendJsonRequest
+            .mockResolvedValueOnce(okResponse(JSON.stringify(existingLorebook))) // snapshot
+            .mockResolvedValueOnce(okResponse()) // overwrite edit
+            .mockResolvedValueOnce(okResponse()) // merge-attributes (character update) ok
+            .mockResolvedValueOnce({ ok: false, text: async () => 'link boom' }) // link fails
+            .mockResolvedValueOnce(okResponse()); // restore edit
+
+        await expect(
+            createGeneratedGroupCard('Group', 'desc', [{ name: 'Alice' }, { name: 'Bob' }]),
+        ).rejects.toThrow('link boom');
+
+        const urls = mockSendJsonRequest.mock.calls.map((call) => call[0]);
+        expect(urls[4]).toBe('/api/worldinfo/edit');
+        expect(callBody(4)).toEqual({ name: 'Group', data: existingLorebook });
+        expect(urls).not.toContain('/api/worldinfo/delete');
+        // Overwritten character is not deleted either (it pre-existed).
+        expect(urls).not.toContain('/api/characters/delete');
+    });
+
+    test('aborts before any mutation when the pre-overwrite snapshot cannot be captured', async () => {
+        mockCharacters.push({ name: 'Group', avatar: 'existing.png' });
+        mockWorldNames.push('Group');
+        mockCallGenericPopup.mockResolvedValueOnce(1); // overwrite.
+        mockSendJsonRequest.mockResolvedValueOnce({ ok: false, text: async () => 'read denied' }); // snapshot fails
+
+        await expect(
+            createGeneratedGroupCard('Group', 'desc', [{ name: 'Alice' }, { name: 'Bob' }]),
+        ).rejects.toThrow('aborting to avoid data loss');
+
+        // Only the snapshot attempt happened; the existing lorebook is untouched.
+        expect(mockSendJsonRequest).toHaveBeenCalledTimes(1);
+        expect(callUrl(0)).toBe('/api/worldinfo/get');
     });
 
     test('overwrites on collision when the user confirms', async () => {

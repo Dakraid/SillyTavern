@@ -59,6 +59,7 @@ const RUN_RUNNING_TITLE = 'Post-processing is already running.';
 const SKIP_TITLE = 'Record post-processing as skipped and keep the assembled text unchanged.';
 const UNSKIP_TITLE = 'Return post-processing to pending.';
 const CONTINUE_LOCKED_TITLE = 'Run post-processing to completion or Skip it first.';
+const READ_ONLY_NOTE = 'This task is completed — it is read-only. Duplicate it from Task History to keep iterating.';
 const STALE_NOTE = 'Upstream results changed since this run — the output below may no longer match the latest transforms.';
 
 /**
@@ -87,7 +88,9 @@ function postStatusOf(post) {
 
 /**
  * Fingerprint of the post record used to detect that a fire-and-forget run
- * settled (a later snapshot carries a different record).
+ * settled (a later snapshot carries a different record). Includes `ranAt`:
+ * an identical rerun that reproduces the same output still changes `ranAt`,
+ * so the optimistic running state clears.
  *
  * @param {object} post Post record.
  * @returns {string} Stable signature.
@@ -98,6 +101,7 @@ function postSignature(post) {
         input: typeof post?.input === 'string' ? post.input : '',
         output: typeof post?.output === 'string' ? post.output : '',
         error: typeof post?.error === 'string' ? post.error : null,
+        ranAt: typeof post?.ranAt === 'string' ? post.ranAt : null,
     });
 }
 
@@ -203,6 +207,13 @@ export function createPostPage() {
      * @type {{signature: string}|null}
      */
     let pendingRun = null;
+    /**
+     * Whether the task is completed (read-only rendering): set on every
+     * render from the snapshot.
+     *
+     * @type {boolean}
+     */
+    let readOnlyMode = false;
 
     /**
      * Effective prompt text: the uncommitted draft wins over the server.
@@ -258,7 +269,7 @@ export function createPostPage() {
      * @returns {void}
      */
     function handleRun() {
-        if (isRunning() || !effectivePromptText().trim()) {
+        if (isRunning() || readOnlyMode || !effectivePromptText().trim()) {
             return;
         }
         const draft = drafts.get('text');
@@ -364,10 +375,10 @@ export function createPostPage() {
             className: 'bc-task-assist-suggest',
             label: 'Suggest',
             title: 'Ask the LLM to propose a revised post-processing prompt.',
-            disabled: !String(request.value ?? '').trim(),
+            disabled: readOnlyMode || !String(request.value ?? '').trim(),
             onClick: () => {
                 const text = (drafts.has('assistRequest') ? drafts.get('assistRequest') : String(request.value ?? '')).trim();
-                if (!text) {
+                if (!text || readOnlyMode) {
                     return;
                 }
                 drafts.delete('assistRequest');
@@ -385,7 +396,7 @@ export function createPostPage() {
         });
         // Keep Suggest's disabled state in sync while typing.
         request.addEventListener('input', () => {
-            suggest.disabled = !String(request.value ?? '').trim();
+            suggest.disabled = readOnlyMode || !String(request.value ?? '').trim();
         });
 
         row.append(request, suggest);
@@ -417,6 +428,7 @@ export function createPostPage() {
                     className: 'bc-task-assist-apply',
                     label: 'Apply',
                     title: 'Replace the prompt with the proposal. Marks dependent results stale.',
+                    disabled: readOnlyMode,
                     onClick: () => {
                         const current = promptOf(latestSnapshot).assistant;
                         drafts.delete('text');
@@ -430,6 +442,7 @@ export function createPostPage() {
                 className: 'bc-task-assist-dismiss',
                 label: 'Dismiss',
                 title: 'Discard the proposal and keep the current prompt.',
+                disabled: readOnlyMode,
                 onClick: () => {
                     void applyPatch(latestActions, { prompts: { post: { assistant: { ...EMPTY_ASSISTANT } } } });
                 },
@@ -478,6 +491,7 @@ export function createPostPage() {
         textarea.id = 'bc-task-post-prompt';
         textarea.className = 'bc-task-post-prompt';
         textarea.setAttribute('rows', '6');
+        textarea.readOnly = readOnlyMode === true;
         textarea.value = effectivePromptText();
         textarea.addEventListener('input', () => {
             drafts.set('text', String(textarea.value ?? ''));
@@ -509,6 +523,7 @@ export function createPostPage() {
             select.append(option);
         }
         select.value = POST_MODES.some(([value]) => value === mode) ? mode : 'replace';
+        select.disabled = readOnlyMode === true;
         modeRow.append(modeLabel, select);
 
         const modeNote = document.createElement('p');
@@ -607,8 +622,8 @@ export function createPostPage() {
             footer.append(buildButton({
                 className: 'bc-task-post-run',
                 label: 'Run',
-                title: running ? RUN_RUNNING_TITLE : (hasText ? RUN_TITLE : RUN_NO_TEXT_TITLE),
-                disabled: running || !hasText,
+                title: readOnlyMode ? READ_ONLY_NOTE : (running ? RUN_RUNNING_TITLE : (hasText ? RUN_TITLE : RUN_NO_TEXT_TITLE)),
+                disabled: running || !hasText || readOnlyMode,
                 onClick: handleRun,
             }));
 
@@ -617,7 +632,7 @@ export function createPostPage() {
                 className: 'bc-task-post-skip',
                 label: skipped ? 'Unskip' : 'Skip',
                 title: skipped ? UNSKIP_TITLE : SKIP_TITLE,
-                disabled: running,
+                disabled: running || readOnlyMode,
                 onClick: () => {
                     void applyPatch(latestActions, { post: { status: skipped ? 'pending' : 'skipped' } });
                 },
@@ -647,6 +662,7 @@ export function createPostPage() {
      * @returns {Element} The page heading (focus target).
      */
     function renderPage() {
+        readOnlyMode = latestSnapshot?.task?.status === 'completed';
         const post = postOf(latestSnapshot);
         if (pendingRun && postSignature(post) !== pendingRun.signature) {
             pendingRun = null;
@@ -667,6 +683,13 @@ export function createPostPage() {
         guidance.textContent = 'Post-processing runs one extra LLM pass over the assembled card description. Run it, or explicitly Skip to keep the assembled text unchanged.';
 
         root.append(heading, guidance, buildBanner(postEnabled, status, post));
+        if (readOnlyMode) {
+            const readOnly = document.createElement('p');
+            readOnly.className = 'bc-task-readonly-note';
+            readOnly.setAttribute('role', 'status');
+            readOnly.textContent = READ_ONLY_NOTE;
+            root.append(readOnly);
+        }
         if (postEnabled) {
             root.append(buildWorkspace());
             const beforeAfter = buildBeforeAfter(post, status);
@@ -716,6 +739,7 @@ export function createPostPage() {
             latestActions = null;
             drafts.clear();
             pendingRun = null;
+            readOnlyMode = false;
         },
     };
 }

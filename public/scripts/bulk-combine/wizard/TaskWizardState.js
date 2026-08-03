@@ -129,10 +129,10 @@ function passPageStatus(task, passKey, upstreamReady) {
  * Computes the rail status of the Post Processing page.
  *
  * @param {object} task Task snapshot.
- * @param {boolean} latestTransformHasResults Whether a final transform output exists.
+ * @param {boolean} upstreamReady Whether the page's inputs have valid (non-stale) results.
  * @returns {string} Page status.
  */
-function postPageStatus(task, latestTransformHasResults) {
+function postPageStatus(task, upstreamReady) {
     const post = task?.post ?? {};
 
     if (post.status === 'failed') {
@@ -144,7 +144,7 @@ function postPageStatus(task, latestTransformHasResults) {
     if (post.status === 'skipped') {
         return 'skipped';
     }
-    return latestTransformHasResults ? 'ready' : 'not_started';
+    return upstreamReady ? 'ready' : 'not_started';
 }
 
 /**
@@ -159,13 +159,20 @@ function postPageStatus(task, latestTransformHasResults) {
  *   (or `execution`), `stale` when `derivedStaleness.transform1.stale`,
  *   `complete` on succeeded/partial, else ready/not_started from upstream.
  * - transform2: `disabled` when `!settings.secondPassEnabled`, else like
- *   transform1 with Transform 1 results as upstream.
+ *   transform1 with VALID (non-stale) Transform 1 results as upstream.
  * - summary: `disabled` when `settings.destination !== 'lorebook'`, else
- *   like transform1 with the latest enabled transform as upstream.
+ *   like transform1 with valid results from the latest ENABLED transform as
+ *   upstream (an enabled Transform 2 is required — there is no fallback to
+ *   Transform 1 results).
  * - post: `disabled` when `!settings.postProcessingEnabled`, else from
- *   `task.post.status` (failed/complete/skipped) or upstream readiness.
- * - review: `stale` when any upstream pass is stale, `ready` when a final
- *   assembled source exists, else `not_started`.
+ *   `task.post.status` (failed/complete/skipped) or upstream readiness
+ *   (summary results when the destination is a lorebook — summaries feed
+ *   post-processing — else latest-transform results).
+ * - review: `stale` when any upstream pass is stale, `ready` when the
+ *   required pipeline output exists (post succeeded/skipped when enabled —
+ *   a skip still requires the mandatory passes — else summary results for a
+ *   lorebook destination, else latest-transform results), else
+ *   `not_started`.
  * - avatar: `complete` once artifacts were created, `ready` when review
  *   inputs exist, else `not_started`.
  *
@@ -186,14 +193,34 @@ export function computePageStates(task) {
 
     const t1HasResults = passHasResults(task?.passes?.transform1);
     const t2HasResults = passHasResults(task?.passes?.transform2);
-    const latestTransformHasResults = (secondPassEnabled && t2HasResults) || t1HasResults;
+    const summaryHasResults = passHasResults(task?.passes?.summary);
+
+    // Valid = has results AND not stale. Downstream pages unlock only on
+    // valid required-pass results (stale outputs stay inspectable via the
+    // `stale` rail status, they just don't unlock anything).
+    const t1Usable = t1HasResults && stale.transform1?.stale !== true;
+    const t2Usable = t2HasResults && stale.transform2?.stale !== true;
+    const summaryUsable = summaryHasResults && stale.summary?.stale !== true;
+
+    // An ENABLED second pass is required: no falling back to Transform 1.
+    const latestTransformHasResults = secondPassEnabled ? t2HasResults : t1HasResults;
+    const latestTransformUsable = secondPassEnabled ? t2Usable : t1Usable;
+
+    // Required pipeline output: the summary pass is mandatory for a lorebook
+    // destination; otherwise the latest enabled transform is required.
+    const requiredResultsExist = lorebookDestination ? summaryHasResults : latestTransformHasResults;
+    const requiredResultsUsable = lorebookDestination ? summaryUsable : latestTransformUsable;
 
     const upstreamStale = [stale.transform1, stale.transform2, stale.summary]
         .some((entry) => entry?.stale === true);
 
+    // A skipped post pass is a deliberate bypass (postPage allows continuing
+    // after Skip) and counts as settled — but the mandatory passes still
+    // need results. A succeeded post pass implies its inputs existed.
+    const postStatus = task?.post?.status;
     const reviewInputsExist = postEnabled
-        ? task?.post?.status === 'succeeded'
-        : latestTransformHasResults;
+        ? (postStatus === 'succeeded' || (postStatus === 'skipped' && requiredResultsExist))
+        : requiredResultsExist;
 
     const statuses = {
         cards: cardsReady ? 'complete' : (sources.length === 1 ? 'ready' : 'not_started'),
@@ -201,13 +228,13 @@ export function computePageStates(task) {
         transform1: passPageStatus(task, 'transform1', cardsReady && promptReady),
         transform2: !secondPassEnabled
             ? 'disabled'
-            : passPageStatus(task, 'transform2', t1HasResults),
+            : passPageStatus(task, 'transform2', t1Usable),
         summary: !lorebookDestination
             ? 'disabled'
-            : passPageStatus(task, 'summary', latestTransformHasResults),
+            : passPageStatus(task, 'summary', latestTransformUsable),
         post: !postEnabled
             ? 'disabled'
-            : postPageStatus(task, latestTransformHasResults),
+            : postPageStatus(task, requiredResultsUsable),
         review: !reviewInputsExist
             ? 'not_started'
             : (upstreamStale ? 'stale' : 'ready'),
@@ -312,6 +339,19 @@ export class TaskWizardState {
 
     /** @type {boolean} Whether the last update hit a revision conflict. */
     #conflict = false;
+
+    /** @type {Promise<void>} Serialized write chain — updates never overlap on the wire. */
+    #writeChain = Promise.resolve();
+
+    /**
+     * Patches merged into the local snapshot optimistically but not yet
+     * acknowledged by the server. Re-applied after every authoritative
+     * re-fetch (and after a conflict rebase) so in-flight edits are never
+     * clobbered by a sync.
+     *
+     * @type {Array<object>}
+     */
+    #pendingPatches = [];
 
     /**
      * @param {object} [options] Options.
@@ -420,13 +460,21 @@ export class TaskWizardState {
      * Optimistically applies a patch: merges it into the local snapshot and
      * notifies immediately, then PATCHes the server (TaskClient attaches the
      * cached revision as `expectedRevision`) and re-syncs the authoritative
-     * snapshot. On a revision conflict the local snapshot is replaced with
-     * the server's current task and subscribers are notified with
-     * `conflict: true`.
+     * snapshot.
+     *
+     * Writes are SERIALIZED through {@link #writeChain}: concurrent `update`
+     * calls never overlap, so each PATCH carries the revision produced by
+     * the previous one. On a revision conflict the pending patches (this one
+     * plus any still queued) are rebased onto the server's current task and
+     * the PATCH is retried exactly once with the fresh revision. If the
+     * retry also conflicts — or the request fails for any other reason —
+     * the returned promise REJECTS and the local snapshot is re-fetched so
+     * the failed optimistic mutation is rolled back: callers must treat a
+     * rejection as "the edit was not saved" (page helpers keep their
+     * drafts).
      *
      * @param {object} patch Partial task patch (deep-merged server-side).
-     * @returns {Promise<void>}
-     * @throws {Error} Non-conflict request failures (after an error notify).
+     * @returns {Promise<void>} Resolves once THIS patch is server-acknowledged; rejects when it was not saved.
      */
     async update(patch) {
         if (!this.#task) {
@@ -435,29 +483,106 @@ export class TaskWizardState {
 
         this.#conflict = false;
         deepMergeTask(this.#task, patch);
+        this.#pendingPatches.push(patch);
         this.#syncState = 'saving';
         this.#notify();
 
+        const write = this.#writeChain.then(() => this.#writeNow(patch));
+        // Keep the chain alive across failures: a rejected write must not
+        // reject every later update.
+        this.#writeChain = write.catch(() => {});
+        return write;
+    }
+
+    /**
+     * Executes one serialized write: PATCH, one conflict rebase+retry, then
+     * an authoritative re-sync. Rejects (after restoring the authoritative
+     * snapshot) when the patch could not be saved.
+     *
+     * @param {object} patch The patch being written.
+     * @returns {Promise<void>}
+     */
+    async #writeNow(patch) {
+        const dropPending = () => {
+            const index = this.#pendingPatches.indexOf(patch);
+            if (index >= 0) {
+                this.#pendingPatches.splice(index, 1);
+            }
+        };
+
         try {
             await this.#client.patchTask(this.#task.id, patch);
-            await this.#syncNow();
-            this.#syncState = 'saved';
         } catch (error) {
-            if (error instanceof RevisionConflictError || error?.name === 'RevisionConflictError') {
-                this.#conflict = true;
-                this.#syncState = 'conflict';
-                if (error.currentTask) {
-                    this.#applyTask(error.currentTask);
-                } else {
-                    await this.#syncNow().catch(() => {});
+            if (this.#isRevisionConflict(error)) {
+                // Rebase every pending patch (this one plus any queued
+                // behind it) onto the server's current task, then retry once
+                // — TaskClient cached the conflicting revision, so the
+                // retry carries the fresh `expectedRevision`.
+                await this.#rebasePending(error.currentTask ?? null);
+                try {
+                    await this.#client.patchTask(this.#task.id, patch);
+                } catch (retryError) {
+                    dropPending();
+                    await this.#restoreAfterFailure(retryError);
+                    throw retryError;
                 }
             } else {
-                this.#syncState = 'error';
-                this.#notify();
+                dropPending();
+                await this.#restoreAfterFailure(error);
                 throw error;
             }
         }
 
+        dropPending();
+        await this.#syncNow();
+        this.#syncState = this.#pendingPatches.length === 0 ? 'saved' : 'saving';
+        this.#notify();
+    }
+
+    /**
+     * Whether an error is a revision conflict (TaskClient error class, or a
+     * duck-typed equivalent from a mocked client).
+     *
+     * @param {unknown} error Caught error.
+     * @returns {boolean} True for revision conflicts.
+     */
+    #isRevisionConflict(error) {
+        return error instanceof RevisionConflictError || error?.name === 'RevisionConflictError';
+    }
+
+    /**
+     * Resets the local snapshot to the server's current task and re-applies
+     * every still-pending optimistic patch on top of it.
+     *
+     * @param {object|null} serverTask `currentTask` from the conflict payload (null → re-fetch).
+     * @returns {Promise<void>}
+     */
+    async #rebasePending(serverTask) {
+        if (serverTask) {
+            this.#applyTask(serverTask);
+            for (const pending of this.#pendingPatches) {
+                deepMergeTask(this.#task, pending);
+            }
+            return;
+        }
+        // No snapshot in the conflict payload: a full re-sync already
+        // re-applies the pending patches on top of the fresh GET.
+        await this.#syncNow().catch(() => {});
+    }
+
+    /**
+     * Restores the authoritative snapshot after a failed write and surfaces
+     * the failure state (conflict vs error) before the caller's rejection.
+     *
+     * @param {unknown} error The failure.
+     * @returns {Promise<void>}
+     */
+    async #restoreAfterFailure(error) {
+        this.#conflict = this.#isRevisionConflict(error);
+        this.#syncState = this.#conflict ? 'conflict' : 'error';
+        // Authoritative rollback of the failed optimistic mutation (the
+        // re-sync re-applies any OTHER still-pending patches on top).
+        await this.#syncNow().catch(() => {});
         this.#notify();
     }
 
@@ -569,7 +694,9 @@ export class TaskWizardState {
 
     /**
      * Re-fetches the authoritative snapshot. Re-syncs are serialized through
-     * a promise chain so bursts of SSE events cannot overlap.
+     * a promise chain so bursts of SSE events cannot overlap. Still-pending
+     * optimistic patches are re-applied on top of the fresh snapshot (they
+     * have not been server-acknowledged yet).
      *
      * @returns {Promise<object|null>} The applied task snapshot.
      */
@@ -580,6 +707,9 @@ export class TaskWizardState {
             }
             const task = await this.#client.getTask(this.#task.id);
             this.#applyTask(task);
+            for (const pending of this.#pendingPatches) {
+                deepMergeTask(this.#task, pending);
+            }
             return this.#task;
         };
         this.#syncChain = this.#syncChain.then(run, run);

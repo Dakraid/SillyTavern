@@ -397,9 +397,10 @@ describe('avatarPage', () => {
                 characterAvatar: 'alice-bob.png',
                 lorebookName: '',
             }),
+            status: 'completed',
         });
-        const artifactsPatch = actions.update.mock.calls.find((call) => call[0]?.artifacts)?.[0]?.artifacts;
-        expect(typeof artifactsPatch.createdAt).toBe('string');
+        const completionPatch = actions.update.mock.calls.find((call) => call[0]?.artifacts)?.[0];
+        expect(typeof completionPatch.artifacts.createdAt).toBe('string');
         expect(mockGetCharacters).toHaveBeenCalledTimes(1);
     });
 
@@ -537,5 +538,98 @@ describe('avatarPage', () => {
         page.dispose();
         expect(instance.dispose).toHaveBeenCalledTimes(1);
         expect(() => page.render(container, makeSnapshot(), actions)).not.toThrow();
+    });
+
+    test('a revision bump mid-flight refetches for the new revision and discards the stale response', async () => {
+        const actions = makeActions();
+        let call = 0;
+        actions.getReview = jest.fn(() => {
+            call++;
+            return Promise.resolve(call === 1
+                ? makePayload({ mergedDescription: 'STALE PAYLOAD' })
+                : makePayload({ mergedDescription: 'FRESH PAYLOAD' }));
+        });
+        const page = createAvatarPage();
+        page.render(container, makeSnapshot({ task: { revision: 1 } }), actions);
+
+        // Before the first fetch settles, advance the revision: a NEW fetch
+        // must start even while the old one is in flight (no stuck loading).
+        page.render(container, makeSnapshot({ task: { revision: 2 } }), actions);
+        expect(actions.getReview).toHaveBeenCalledTimes(2);
+        await flush();
+
+        expect(container.textContent).not.toContain('STALE PAYLOAD');
+        expect(container.textContent).toContain('FRESH PAYLOAD');
+    });
+
+    test('Create is gated until the compositor images settle; onSettle ungates it', async () => {
+        /** @type {boolean} */
+        let ready = false;
+        const actions = makeActions();
+        const page = createAvatarPage();
+        page.render(container, makeSnapshot(), actions);
+        await flush();
+
+        const { options, instance } = compositorCalls.at(-1);
+        instance.isReady = jest.fn(() => ready);
+        page.render(container, makeSnapshot(), actions);
+
+        let createButton = findOne(container, hasClass('bc-task-avatar-create-button'));
+        expect(createButton.disabled).toBe(true);
+        expect(createButton.title).toContain('Waiting for avatar images');
+        expect(findOne(container, hasClass('bc-task-avatar-waiting'))).not.toBe(null);
+        createButton.click();
+        await flush();
+        expect(mockCreateGroupCardFromTask).not.toHaveBeenCalled();
+
+        // Images settle → the compositor notifies → Create ungates.
+        ready = true;
+        options.onSettle();
+        createButton = findOne(container, hasClass('bc-task-avatar-create-button'));
+        expect(createButton.disabled).toBe(false);
+        expect(findOne(container, hasClass('bc-task-avatar-waiting'))).toBe(null);
+    });
+
+    test('Create re-checks server artifacts first: a recorded create is never redone', async () => {
+        const actions = makeActions();
+        // The server already recorded artifacts (an earlier create whose
+        // PATCH the local snapshot never saw).
+        actions.refresh = jest.fn(async () => ({
+            ...makeSnapshot().task,
+            artifacts: { characterName: 'Alice + Bob', characterAvatar: 'alice-bob.png', createdAt: '2026-01-01T00:00:00.000Z' },
+        }));
+        const { root } = await renderSettled(makeSnapshot(), actions);
+
+        findOne(root, hasClass('bc-task-avatar-create-button')).click();
+        await flush();
+        await flush();
+
+        expect(actions.refresh).toHaveBeenCalled();
+        expect(mockCreateGroupCardFromTask).not.toHaveBeenCalled();
+        expect(actions.update).not.toHaveBeenCalledWith(expect.objectContaining({ artifacts: expect.anything() }));
+    });
+
+    test('a failed artifacts patch is retried once so a created card is not silently unrecorded', async () => {
+        const actions = makeActions();
+        let updateCalls = 0;
+        actions.update = jest.fn(async () => {
+            updateCalls++;
+            if (updateCalls === 1) {
+                throw new Error('network gone');
+            }
+        });
+        const { root } = await renderSettled(makeSnapshot(), actions);
+
+        findOne(root, hasClass('bc-task-avatar-create-button')).click();
+        await flush();
+        await flush();
+
+        expect(mockCreateGroupCardFromTask).toHaveBeenCalledTimes(1);
+        const artifactPatches = actions.update.mock.calls
+            .map((call) => call[0])
+            .filter((patch) => patch?.artifacts);
+        expect(artifactPatches).toHaveLength(2);
+        expect(artifactPatches[1]).toEqual(artifactPatches[0]);
+        expect(findOne(container, hasClass('bc-task-avatar-created'))).not.toBe(null);
     });
 });

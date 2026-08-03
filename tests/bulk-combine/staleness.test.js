@@ -44,7 +44,7 @@ function source(key, name) {
     };
 }
 
-function settingsSubset(settings) {
+function settingsSubset(settings, completion) {
     return {
         mode: settings.mode,
         totalContextTokens: settings.totalContextTokens,
@@ -52,7 +52,7 @@ function settingsSubset(settings) {
         destination: settings.destination,
         connectionProfile: settings.connectionProfile,
         preset: settings.preset,
-        completion: settings.completion,
+        completion,
     };
 }
 
@@ -85,7 +85,7 @@ function setCurrentRevision(task, passKey) {
     task.passes[passKey].inputRevision = hashInputs({
         sources,
         prompts,
-        settings: settingsSubset(task.settings),
+        settings: settingsSubset(task.settings, task.completion),
     });
 }
 
@@ -100,7 +100,7 @@ function successfulTask({ secondPassEnabled = true } = {}) {
     task.settings.outputTokens = 512;
     task.settings.connectionProfile = 'profile-a';
     task.settings.preset = 'preset-a';
-    task.settings.completion = { model: 'model-a', temperature: 0.5 };
+    task.completion = { model: 'model-a', temperature: 0.5 };
     task.prompts.main.text = 'Transform';
     task.prompts.secondPass.text = 'Improve';
     task.prompts.summary.text = 'Summarize';
@@ -165,11 +165,32 @@ describe('Bulk Combine pass staleness', () => {
         expect(deriveStaleness(concurrencyTask).transform1).toEqual({ stale: false, reason: 'current' });
     });
 
-    test('stales transform1 when completion settings change', () => {
-        const task = successfulTask();
-        task.settings.completion.temperature = 0.8;
+    test('stales a real normalized transform when model or temperature changes', async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'st-bulk-staleness-completion-'));
+        tempRoots.push(root);
+        const repo = new BulkCombineTaskRepository(root);
+        const created = await repo.createTask({ name: 'Completion staleness' });
+        const task = await repo.updateTask(created.id, draft => {
+            draft.sources = [source('a', 'Alpha')];
+            draft.prompts.main.text = 'Transform';
+            draft.completion = { model: 'model-a', temperature: 0.5, top_p: 0.9 };
+        }, { expectedRevision: created.revision });
+        const runner = createTaskRunner({
+            executeCompletion: async () => ({ status: 200, data: {}, content: 'Transformed' }),
+            countTokens: async () => 1,
+        });
+        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
 
-        expect(deriveStaleness(task).transform1).toEqual({ stale: true, reason: 'input_changed' });
+        const current = await repo.getTask(task.id);
+        expect(deriveStaleness(current).transform1).toEqual({ stale: false, reason: 'current' });
+
+        await repo.checkpoint(task.id, draft => {
+            draft.completion.model = 'model-b';
+            draft.completion.temperature = 0.8;
+        });
+        const changed = await repo.getTask(task.id);
+        expect(changed.completion).toMatchObject({ model: 'model-b', temperature: 0.8, top_p: 0.9 });
+        expect(deriveStaleness(changed).transform1).toEqual({ stale: true, reason: 'input_changed' });
     });
 
     test('reports transform2 as disabled regardless of retained outputs', () => {
@@ -227,7 +248,7 @@ describe('Bulk Combine pass staleness', () => {
 
         expect(stored.passes.transform1.inputRevision).toMatch(/^[0-9a-f]{64}$/);
         expect(deriveStaleness(stored).transform1).toEqual({ stale: false, reason: 'current' });
-        expect(relevantSettings(stored.settings)).not.toHaveProperty('concurrency');
+        expect(relevantSettings(stored.settings, stored.completion)).not.toHaveProperty('concurrency');
     });
 
     test('matches a real runner transform2 and summary success checkpoint', async () => {
