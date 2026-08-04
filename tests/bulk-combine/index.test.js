@@ -17,6 +17,7 @@
  */
 
 import {
+    afterEach,
     beforeAll,
     beforeEach,
     describe,
@@ -33,6 +34,9 @@ const mockUnshallowCharacter = jest.fn(async () => {});
 
 /** @type {jest.Mock} Mocked `openTaskWizard` (TaskWizardController.js). */
 const mockOpenTaskWizard = jest.fn(async () => {});
+
+/** @type {jest.Mock} Mocked `openTaskHistoryPopup` (TaskWizardController.js). */
+const mockOpenTaskHistoryPopup = jest.fn(async () => {});
 
 /**
  * Fake TaskClient instance returned by `createTaskClient`. Rebuilt per test:
@@ -122,6 +126,7 @@ jest.unstable_mockModule('../../public/scripts/bulk-combine/services/TaskClient.
 
 jest.unstable_mockModule('../../public/scripts/bulk-combine/wizard/TaskWizardController.js', () => ({
     openTaskWizard: mockOpenTaskWizard,
+    openTaskHistoryPopup: mockOpenTaskHistoryPopup,
     TaskWizardController: class {},
 }));
 
@@ -132,9 +137,10 @@ jest.unstable_mockModule('../../public/scripts/bulk-combine/wizard/TaskWizardSta
 }));
 
 let openCombineWizard;
+let initBulkCombine;
 
 beforeAll(async () => {
-    ({ openCombineWizard } = await import('../../public/scripts/bulk-combine/index.js'));
+    ({ openCombineWizard, initBulkCombine } = await import('../../public/scripts/bulk-combine/index.js'));
 });
 
 beforeEach(() => {
@@ -260,5 +266,41 @@ describe('openCombineWizard task creation', () => {
         });
         expect(mockClient.patchTask.mock.invocationCallOrder[callIndex])
             .toBeLessThan(innerRunPass.mock.invocationCallOrder[0]);
+    });
+});
+
+describe('initBulkCombine', () => {
+    const originalDocument = global.document;
+
+    afterEach(() => {
+        delete global.document;
+        if (originalDocument) {
+            global.document = originalDocument;
+        }
+    });
+
+    test('binds the button-bar history button to the standalone history popup', () => {
+        const listeners = new Map();
+        const button = {
+            addEventListener: jest.fn((type, fn) => listeners.set(type, fn)),
+        };
+        global.document = {
+            getElementById: jest.fn((id) => (id === 'rm_button_combine_history' ? button : null)),
+        };
+
+        initBulkCombine();
+
+        expect(document.getElementById).toHaveBeenCalledWith('rm_button_combine_history');
+        expect(button.addEventListener).toHaveBeenCalledWith('click', expect.any(Function));
+
+        listeners.get('click')();
+        expect(mockOpenTaskHistoryPopup).toHaveBeenCalledTimes(1);
+    });
+
+    test('missing button is a safe no-op', () => {
+        global.document = { getElementById: jest.fn(() => null) };
+
+        expect(() => initBulkCombine()).not.toThrow();
+        expect(mockOpenTaskHistoryPopup).not.toHaveBeenCalled();
     });
 });

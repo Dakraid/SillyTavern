@@ -324,6 +324,7 @@ import {
 } from './scripts/backgrounds.js';
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
+import { initBulkCombine } from './scripts/bulk-combine/index.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import {
     appendFileContent,
@@ -15124,6 +15125,7 @@ jQuery(async function () {
         selected_button = 'create';
         select_rm_create();
     });
+    initBulkCombine();
     $('#rm_button_selected_ch').on('click', function () {
         if (selected_group) {
             select_group_chats(selected_group, false);

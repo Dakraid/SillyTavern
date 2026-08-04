@@ -25,6 +25,7 @@
 
 import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 import { createTaskClient } from '../services/TaskClient.js';
+import { withResolvedWindowPersistence } from '../services/resolveCompletionSettings.js';
 import {
     TASK_WIZARD_PAGES,
     TaskWizardState,
@@ -418,23 +419,21 @@ export class TaskWizardController {
 }
 
 /**
- * Convenience entry point: opens the guided task wizard for a task.
+ * Opens the Task History panel in a popup. Open/New close the popup (and
+ * run `onReopen`, e.g. to close the wizard behind it) before opening the
+ * chosen (or a freshly created) task in the wizard — closing NEVER cancels
+ * running server-side execution, so background work keeps going across the
+ * switch.
  *
- * Wires the header Task History button: it opens the durable-task panel in a
- * nested popup, and its Open/New actions close this wizard and reopen it for
- * the chosen (or a freshly created) task — closing NEVER cancels running
- * server-side execution, so background work keeps going across the switch.
- *
- * @param {string|object} taskOrId Task id or freshly created task object.
- * @param {object} [options] Options forwarded to the controller.
- * @param {import('../services/TaskClient.js').TaskClient} [options.client] Task client.
- * @param {Object<string, {render: Function, dispose?: Function}>} [options.pages] Page module overrides keyed by page key.
- * @returns {Promise<TaskWizardController>} The controller (after the popup closes).
+ * @param {object} options Options.
+ * @param {import('../services/TaskClient.js').TaskClient} options.client Task client.
+ * @param {string|number|null} [options.currentTaskId] Task marked as Current in the list.
+ * @param {Object<string, {render: Function, dispose?: Function}>} [options.pages] Page overrides forwarded to the reopened wizard.
+ * @param {() => void} [options.onReopen] Runs after the popup closes, before the wizard reopens.
+ * @param {() => void} [options.onClosed] Runs when the history popup closes for any reason.
+ * @returns {Promise<*>} The popup's result promise (settles on close).
  */
-export async function openTaskWizard(taskOrId, { client, pages } = {}) {
-    const resolvedClient = client ?? createTaskClient();
-    /** @type {TaskWizardController} */
-    let controller;
+function openHistoryPopup({ client, currentTaskId = null, pages, onReopen, onClosed }) {
     /** @type {object|null} Open Task History panel instance. */
     let historyPanel = null;
     /** @type {object|null} Open Task History popup instance. */
@@ -457,6 +456,65 @@ export async function openTaskWizard(taskOrId, { client, pages } = {}) {
         }
     }
 
+    historyPanel = createTaskHistoryPanel({
+        client,
+        currentTaskId,
+        onOpenTask: (id) => {
+            closeHistoryPanel();
+            onReopen?.();
+            void openTaskWizard(id, { client, pages });
+        },
+        onNewTask: () => {
+            closeHistoryPanel();
+            onReopen?.();
+            void (async () => {
+                let fresh;
+                try {
+                    fresh = await client.createTask({ name: 'New Combine Task' });
+                } catch (error) {
+                    reportError('Failed to create a new task.', error);
+                    return;
+                }
+                void openTaskWizard(fresh, { client, pages });
+            })();
+        },
+    });
+    const host = document.createElement('div');
+    historyPanel.render(host);
+    return callGenericPopup(host, POPUP_TYPE.DISPLAY, 'Task History', {
+        wide: true,
+        allowVerticalScrolling: true,
+        onOpen: (popup) => { historyPopup = popup; },
+        onClose: () => {
+            historyPanel?.dispose?.();
+            historyPanel = null;
+            historyPopup = null;
+            onClosed?.();
+        },
+    });
+}
+
+/**
+ * Convenience entry point: opens the guided task wizard for a task.
+ *
+ * Wires the header Task History button: it opens the durable-task panel in a
+ * nested popup, and its Open/New actions close this wizard and reopen it for
+ * the chosen (or a freshly created) task — closing NEVER cancels running
+ * server-side execution, so background work keeps going across the switch.
+ *
+ * @param {string|object} taskOrId Task id or freshly created task object.
+ * @param {object} [options] Options forwarded to the controller.
+ * @param {import('../services/TaskClient.js').TaskClient} [options.client] Task client.
+ * @param {Object<string, {render: Function, dispose?: Function}>} [options.pages] Page module overrides keyed by page key.
+ * @returns {Promise<TaskWizardController>} The controller (after the popup closes).
+ */
+export async function openTaskWizard(taskOrId, { client, pages } = {}) {
+    const resolvedClient = client ?? createTaskClient();
+    /** @type {TaskWizardController} */
+    let controller;
+    /** @type {boolean} Re-entry guard while the history popup is open. */
+    let historyOpen = false;
+
     /**
      * Opens the Task History panel in a nested popup. Open/New close this
      * wizard and reopen it for the chosen (or a fresh) task.
@@ -464,43 +522,16 @@ export async function openTaskWizard(taskOrId, { client, pages } = {}) {
      * @returns {void}
      */
     function openHistoryPanel() {
-        if (historyPanel) {
+        if (historyOpen) {
             return;
         }
-        historyPanel = createTaskHistoryPanel({
+        historyOpen = true;
+        void openHistoryPopup({
             client: resolvedClient,
             currentTaskId: controller?.state?.taskId ?? null,
-            onOpenTask: (id) => {
-                closeHistoryPanel();
-                void controller.close();
-                void openTaskWizard(id, { client: resolvedClient, pages });
-            },
-            onNewTask: () => {
-                closeHistoryPanel();
-                void controller.close();
-                void (async () => {
-                    let fresh;
-                    try {
-                        fresh = await resolvedClient.createTask({ name: 'New Combine Task' });
-                    } catch (error) {
-                        reportError('Failed to create a new task.', error);
-                        return;
-                    }
-                    void openTaskWizard(fresh, { client: resolvedClient, pages });
-                })();
-            },
-        });
-        const host = document.createElement('div');
-        historyPanel.render(host);
-        void callGenericPopup(host, POPUP_TYPE.DISPLAY, 'Task History', {
-            wide: true,
-            allowVerticalScrolling: true,
-            onOpen: (popup) => { historyPopup = popup; },
-            onClose: () => {
-                historyPanel?.dispose?.();
-                historyPanel = null;
-                historyPopup = null;
-            },
+            pages,
+            onReopen: () => { void controller.close(); },
+            onClosed: () => { historyOpen = false; },
         });
     }
 
@@ -511,4 +542,18 @@ export async function openTaskWizard(taskOrId, { client, pages } = {}) {
     });
     await controller.open(taskOrId);
     return controller;
+}
+
+/**
+ * Standalone entry point: opens the Task History panel popup without a
+ * wizard behind it (e.g. from the character-list button bar). Open/New
+ * close the popup and open the chosen (or a fresh) task in the wizard.
+ *
+ * @param {object} [options] Options.
+ * @param {import('../services/TaskClient.js').TaskClient} [options.client] Task client (defaults to a window-persistence-resolved one).
+ * @returns {Promise<*>} Resolves when the history popup closes.
+ */
+export function openTaskHistoryPopup({ client } = {}) {
+    const resolvedClient = client ?? withResolvedWindowPersistence(createTaskClient());
+    return openHistoryPopup({ client: resolvedClient });
 }

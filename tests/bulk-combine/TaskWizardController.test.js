@@ -38,6 +38,17 @@ jest.unstable_mockModule('../../public/scripts/popup.js', () => ({
 jest.unstable_mockModule('../../public/scripts/bulk-combine/wizard/pages/index.js', () => ({
     createWizardPageOverrides: () => ({}),
 }));
+// resolveCompletionSettings.js loads for real via the controller module; its
+// openai.js/extensions.js imports are browser-chain modules, so they are
+// mocked to bare bones here (same minimal shape as index.test.js).
+jest.unstable_mockModule('../../public/scripts/extensions.js', () => ({
+    extension_settings: {},
+}));
+jest.unstable_mockModule('../../public/scripts/openai.js', () => ({
+    openai_setting_names: {},
+    openai_settings: [],
+    proxies: [],
+}));
 
 // ---------------------------------------------------------------------------
 // Minimal fake DOM
@@ -254,6 +265,7 @@ function flush() {
 }
 
 let TaskWizardController;
+let openTaskHistoryPopup;
 let createTaskClient;
 let fetchMock;
 let taskFixture;
@@ -310,6 +322,7 @@ const originalEventSource = global.EventSource;
 beforeAll(async () => {
     const controllerModule = await import('../../public/scripts/bulk-combine/wizard/TaskWizardController.js');
     TaskWizardController = controllerModule.TaskWizardController;
+    openTaskHistoryPopup = controllerModule.openTaskHistoryPopup;
     const clientModule = await import('../../public/scripts/bulk-combine/services/TaskClient.js');
     createTaskClient = clientModule.createTaskClient;
 });
@@ -577,5 +590,103 @@ describe('TaskWizardController', () => {
         expect(FakeEventSource.instances[0].closed).toBe(true);
         // The popup initiated the close; the controller does not re-complete it.
         expect(lastPopup.completeCancelled).not.toHaveBeenCalled();
+    });
+});
+
+describe('openTaskHistoryPopup (standalone entry)', () => {
+    /**
+     * Routes fetchMock like a tiny Bulk Combine API: list, get, create.
+     *
+     * @param {object} [options] Options.
+     * @param {object[]} [options.summaries] listTasks() response.
+     * @param {Object<string, object>} [options.tasksById] getTask() fixtures by id.
+     * @param {object} [options.created] createTask() response.
+     * @returns {void}
+     */
+    function mockHistoryFetch({ summaries = [], tasksById = {}, created } = {}) {
+        fetchMock.mockImplementation(async (url, options = {}) => {
+            const method = options.method ?? 'GET';
+            const path = String(url);
+            if (method === 'GET' && path.endsWith('/tasks')) {
+                return jsonResponse(summaries);
+            }
+            if (method === 'POST' && path.endsWith('/tasks')) {
+                const body = JSON.parse(options.body);
+                return jsonResponse(created ?? makeTask({ id: 'task-new', name: body.name }));
+            }
+            const getMatch = path.match(/\/tasks\/([^/]+)$/);
+            if (method === 'GET' && getMatch) {
+                return jsonResponse(tasksById[getMatch[1]] ?? makeTask({ id: getMatch[1] }));
+            }
+            return jsonResponse(taskFixture);
+        });
+    }
+
+    /** @returns {Element} Task History panel root inside the captured popup. */
+    function historyRoot() {
+        return lastPopup.content.children[0];
+    }
+
+    test('lists tasks; Open closes the popup and opens that task in the wizard', async () => {
+        mockHistoryFetch({
+            summaries: [{ id: 'task-9', name: 'Old task', status: 'draft', updatedAt: '' }],
+            tasksById: { 'task-9': makeTask({ id: 'task-9', name: 'Old task' }) },
+        });
+
+        const popupPromise = openTaskHistoryPopup({ client: createTaskClient() });
+        await flush();
+
+        expect(mockCallGenericPopup).toHaveBeenCalledTimes(1);
+        expect(lastPopupOptions.wide).toBe(true);
+        expect(historyRoot().className).toBe('bc-task-history');
+
+        const list = historyRoot().children[2];
+        expect(list.className).toBe('bc-task-history-list');
+        const row = list.children[0];
+        expect(row.textContent).toContain('Old task');
+        const openButton = row.children[1].children[0];
+        expect(openButton.textContent).toBe('Open');
+
+        const historyPopup = lastPopup;
+        openButton.click();
+        await flush();
+
+        // History popup closed; the wizard opened for task-9.
+        expect(historyPopup.completeCancelled).toHaveBeenCalledTimes(1);
+        expect(mockCallGenericPopup).toHaveBeenCalledTimes(2);
+        expect(lastPopup.dlg.className).toBe('bc-task');
+        expect(header().children[1].value).toBe('Old task');
+
+        await popupPromise;
+        await lastPopup.completeCancelled(); // close the wizard
+        await flush();
+    });
+
+    test('New task creates a fresh task and opens it in the wizard', async () => {
+        mockHistoryFetch({
+            summaries: [],
+            created: makeTask({ id: 'task-new', name: 'New Combine Task' }),
+            tasksById: { 'task-new': makeTask({ id: 'task-new', name: 'New Combine Task' }) },
+        });
+
+        const popupPromise = openTaskHistoryPopup({ client: createTaskClient() });
+        await flush();
+
+        expect(historyRoot().children[2].className).toBe('bc-task-history-empty');
+
+        const newButton = historyRoot().children[0].children[1];
+        expect(newButton.textContent).toBe('New task');
+        newButton.click();
+        await flush();
+
+        expect(fetchMock.mock.calls.some((call) =>
+            (call[1]?.method ?? 'GET') === 'POST' && String(call[0]).endsWith('/tasks'),
+        )).toBe(true);
+        expect(mockCallGenericPopup).toHaveBeenCalledTimes(2);
+        expect(header().children[1].value).toBe('New Combine Task');
+
+        await popupPromise;
+        await lastPopup.completeCancelled(); // close the wizard
+        await flush();
     });
 });

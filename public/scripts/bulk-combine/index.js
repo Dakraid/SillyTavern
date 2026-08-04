@@ -11,7 +11,7 @@ import {
 } from './helpers.js';
 import { createTaskClient } from './services/TaskClient.js';
 import { withResolvedWindowPersistence } from './services/resolveCompletionSettings.js';
-import { openTaskWizard } from './wizard/TaskWizardController.js';
+import { openTaskWizard, openTaskHistoryPopup } from './wizard/TaskWizardController.js';
 
 // Re-export helpers --------------------------------------------------
 
@@ -52,15 +52,21 @@ export {
     readCreatedCharacterAvatar,
 } from './services/CardCreator.js';
 
-export { TaskWizardController } from './wizard/TaskWizardController.js';
+export { TaskWizardController, openTaskHistoryPopup } from './wizard/TaskWizardController.js';
 export { TaskWizardState, computePageStates, TASK_WIZARD_PAGES } from './wizard/TaskWizardState.js';
 
 /**
- * Initialize bulk-combine wiring.
+ * Initialize bulk-combine wiring: binds the character-list button bar's
+ * Task History button to the standalone history popup. Idempotent per
+ * document — call once at startup; a missing button is a safe no-op.
  *
  * @returns {void}
  */
-export function initBulkCombine() {}
+export function initBulkCombine() {
+    document
+        .getElementById('rm_button_combine_history')
+        ?.addEventListener('click', () => void openTaskHistoryPopup());
+}
 
 /**
  * Builds a display name for a new durable task.
