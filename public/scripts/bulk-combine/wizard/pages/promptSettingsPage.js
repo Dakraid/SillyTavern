@@ -1104,7 +1104,7 @@ export function createPromptSettingsPage() {
             buildModeOption({
                 value: 'combined',
                 title: 'Combined',
-                description: 'Generate all cards together in a single request.',
+                description: 'Generate one merged result for all cards in a single request.',
                 checked: mode === 'combined',
             }),
             buildField('Concurrency', concurrencyInput, 'Parallel requests in individual mode.'),

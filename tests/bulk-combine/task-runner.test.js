@@ -229,11 +229,12 @@ describe('bulk combine task runner', () => {
         expect(executeCompletion).toHaveBeenCalledTimes(2);
     });
 
-    test('maps one combined response and fails a missing source', async () => {
+    test('runs combined mode as one merged item holding the whole response', async () => {
         const task = await createTask({ mode: 'combined' });
         const output = [
             '<character><name>Character 1</name><description>First</description></character>',
             '<character><name>Character 2</name><description>Second</description></character>',
+            '<character><name>Character 3</name><description>Third</description></character>',
         ].join('\n');
         const executeCompletion = jest.fn(async () => completion(output));
         const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
@@ -242,9 +243,55 @@ describe('bulk combine task runner', () => {
         const stored = await repo.getTask(task.id);
 
         expect(executeCompletion).toHaveBeenCalledTimes(1);
-        expect(result).toMatchObject({ status: 'partial', items: { a: 'succeeded', b: 'succeeded', c: 'failed' } });
-        expect(stored.passes.transform1.items.a.output).toContain('<description>First</description>');
-        expect(stored.passes.transform1.items.c.error).toBe('No output returned for this character');
+        expect(result).toMatchObject({ status: 'succeeded', items: { __combined__: 'succeeded' } });
+        expect(stored.passes.transform1.items.__combined__.output).toBe(output);
+        expect(stored.passes.transform1.items.__combined__.error).toBe(null);
+        expect(stored.passes.transform1.status).toBe('succeeded');
+    });
+
+    test('feeds the merged transform1 output into combined transform2 and summary', async () => {
+        const task = await createTask({ mode: 'combined' });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.secondPassEnabled = true;
+        });
+        const prompts = [];
+        const executeCompletion = jest.fn(async ({ body }) => {
+            prompts.push(body.messages[0].content);
+            return completion(`<character><name>Merged pass ${prompts.length}</name></character>`);
+        });
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        const transform2 = await runner.runPass({ taskId: task.id, passKey: 'transform2', repo, userDirectories: {} });
+        const summary = await runner.runPass({ taskId: task.id, passKey: 'summary', repo, userDirectories: {} });
+        const stored = await repo.getTask(task.id);
+
+        // Transform 1 embeds every source block; follow-ups consume the
+        // upstream merged document, not per-source blocks.
+        expect(prompts[0]).toContain('Character 1 description');
+        expect(prompts[0]).toContain('Character 3 description');
+        expect(prompts[1]).toContain('Merged pass 1');
+        expect(prompts[1]).toContain('Improve the transformed description');
+        expect(prompts[2]).toContain('Merged pass 2');
+        expect(transform2.items).toEqual({ __combined__: 'succeeded' });
+        expect(summary.items).toEqual({ __combined__: 'succeeded' });
+        expect(stored.passes.summary.items.__combined__.output).toContain('Merged pass 3');
+    });
+
+    test('resumes an interrupted combined pass through its merged item', async () => {
+        const task = await createTask({ mode: 'combined' });
+        await repo.checkpoint(task.id, draft => {
+            draft.passes.transform1.status = 'interrupted';
+            draft.passes.transform1.items.__combined__ = { status: 'interrupted' };
+        });
+        const executeCompletion = jest.fn(async () => completion('<character><name>Merged</name></character>'));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const result = await runner.resume({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+
+        expect(result.status).toBe('succeeded');
+        expect(executeCompletion).toHaveBeenCalledTimes(1);
+        expect((await repo.getTask(task.id)).passes.transform1.items.__combined__.status).toBe('succeeded');
     });
 
     test('cancels running work, retaining queued items for resume', async () => {
@@ -743,20 +790,25 @@ describe('bulk combine task runner', () => {
         }
     }
 
-    async function waitFor(condition, tries = 200) {
-        for (let index = 0; index < tries && !condition(); index++) {
+    async function waitFor(condition, timeoutMs = 5000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (await condition()) return;
             await new Promise(resolve => setImmediate(resolve));
         }
-        if (!condition()) throw new Error('waitFor timed out');
+        if (!(await condition())) throw new Error('waitFor timed out');
     }
 
     function gatedExecutor(started, gates) {
-        return jest.fn(({ body }) => {
+        return jest.fn(({ body, signal }) => {
             const key = keyFromPrompt(body.messages[0].content);
             started.push(key);
             const gate = deferred();
             gates.set(key, gate);
-            return gate.promise.then(() => completion(`<character><name>${key}</name><description>new ${key}</description></character>`));
+            return new Promise((resolve, reject) => {
+                gate.promise.then(() => resolve(completion(`<character><name>${key}</name><description>new ${key}</description></character>`)));
+                signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+            });
         });
     }
 
@@ -948,5 +1000,57 @@ describe('bulk combine task runner', () => {
             .rejects.toBeInstanceOf(TaskAlreadyRunningError);
         gates.get('a').resolve();
         await regen;
+    });
+
+    test('cancels one in-flight item without disturbing its siblings', async () => {
+        const task = await createTask({ count: 2, concurrency: 2 });
+        const started = [];
+        const gates = new Map();
+        const executeCompletion = gatedExecutor(started, gates);
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const regenA = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] });
+        const regenB = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['b'] });
+        await waitFor(() => started.length === 2);
+
+        await expect(runner.cancel(task.id, { passKey: 'transform1', itemKey: 'a' })).resolves.toBe(true);
+        const [resultA] = await Promise.all([regenA]);
+        expect(resultA.items).toEqual({ a: 'interrupted' });
+        // Cancelling the same item again finds nothing in flight.
+        await expect(runner.cancel(task.id, { passKey: 'transform1', itemKey: 'a' })).resolves.toBe(false);
+
+        gates.get('b').resolve();
+        const resultB = await regenB;
+        expect(resultB.items).toEqual({ b: 'succeeded' });
+        const stored = await repo.getTask(task.id);
+        expect(stored.passes.transform1.items.a.status).toBe('interrupted');
+        expect(stored.passes.transform1.items.b.output).toContain('new b');
+    });
+
+    test('cancels a queued item before it starts executing', async () => {
+        const task = await createTask({ count: 2, concurrency: 1 });
+        const started = [];
+        const gates = new Map();
+        const executeCompletion = gatedExecutor(started, gates);
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const regenA = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] });
+        await waitFor(() => started.length === 1);
+        // b is claimed but waits for the shared slot.
+        const regenB = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['b'] });
+        await waitFor(async () => (await repo.getTask(task.id)).passes.transform1.items.b?.status === 'queued');
+
+        await expect(runner.cancel(task.id, { passKey: 'transform1', itemKey: 'b' })).resolves.toBe(true);
+        const resultB = await regenB;
+        expect(resultB.items).toEqual({ b: 'interrupted' });
+        expect(started).toEqual(['a']); // b never executed
+
+        gates.get('a').resolve();
+        await regenA;
+        // Resolve every gate so no completion is left pending.
+        gates.get('b')?.resolve();
+        const stored = await repo.getTask(task.id);
+        expect(stored.passes.transform1.items.b.status).toBe('interrupted');
+        expect(stored.passes.transform1.items.a.status).toBe('succeeded');
     });
 });

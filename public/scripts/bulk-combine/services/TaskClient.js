@@ -344,13 +344,22 @@ export class TaskClient {
     }
 
     /**
-     * Cancels running work for a task.
+     * Cancels running work for a task. Without a scope every live operation is
+     * aborted; with `{passKey, itemKey}` only that card's in-flight
+     * generation is cancelled (the rest of the run keeps going).
      *
      * @param {string|number} id Task id.
+     * @param {object} [options] Optional item scope.
+     * @param {string} [options.passKey] Pass key.
+     * @param {string} [options.itemKey] Item (source) key.
      * @returns {Promise<object>} Cancellation acknowledgement (`{ cancelled }`).
      */
-    async cancelTask(id) {
-        return this.#request(`${this.#taskUrl(id)}/cancel`, { method: 'POST' });
+    async cancelTask(id, { passKey, itemKey } = {}) {
+        const scoped = typeof passKey === 'string' && typeof itemKey === 'string';
+        return this.#request(`${this.#taskUrl(id)}/cancel`, {
+            method: 'POST',
+            ...(scoped ? { body: { passKey, itemKey } } : {}),
+        });
     }
 
     /**

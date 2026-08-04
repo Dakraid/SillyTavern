@@ -7,8 +7,9 @@
  *
  * Layout: a toolbar on top (Run/Resume, Regenerate all, Cancel, queue
  * totals), then two columns. LEFT: a compact item status list — one row per
- * source key with avatar thumbnail, name, and status badge, behind a
- * name/status filter. Clicking a row selects it (closure state, local
+ * source key in individual mode, or ONE merged `__combined__` placeholder
+ * row in combined mode (the pass runs as a single big item) — with avatar
+ * thumbnail, name, and status badge, behind a name/status filter. Clicking a row selects it (closure state, local
  * re-render — NEVER a server PATCH) and updates the RIGHT detail inspector:
  * character avatar left of a large editable output textbox, a read-only
  * character-count validation row (`output.length` only — no token API), the
@@ -26,6 +27,7 @@
  * - Regenerate ALL → `actions.runPass(passKey, { scope: 'all', completionSettings })`.
  * - Resume (pass status `interrupted`) → `actions.resumePass(passKey)`.
  * - Cancel (only while running) → `actions.cancel()`.
+ * - Cancel ONE item (while it is queued/running) → `actions.cancelItem(passKey, key)`.
  * All fire-and-forget (202): progress arrives over the task event stream
  * and re-renders this page; the runner checkpoints `pass.status` and
  * `task.execution`, so "running" is read from the snapshot.
@@ -86,6 +88,8 @@ const RESUME_TITLE = 'Resume the interrupted pass (runs every card without a suc
 const RUNNING_TITLE = 'This pass is already running.';
 const REGEN_ALL_TITLE = 'Re-run every card, including cards with a successful result.';
 const ITEM_BUSY_TITLE = 'This card is already queued or regenerating.';
+const ITEM_CANCEL_TITLE = 'Cancel this card\u2019s in-flight generation.';
+const ITEM_CANCEL_IDLE_TITLE = 'This card has no queued or running generation.';
 const CANCEL_TITLE = 'Cancel the running pass.';
 const NO_MODEL_TITLE = 'Select a connection profile or preset on the Prompt & Settings page first.';
 const NO_MODEL_NOTE = 'No chat completion model is resolved for this task — select a connection profile or preset on the Prompt & Settings page.';
@@ -97,6 +101,9 @@ const READ_ONLY_NOTE = 'This task is completed — it is read-only. Duplicate it
 const HINT_NOTE = 'A note attached to this item. Recorded as applied when a single-item regeneration runs with it.';
 const HINT_APPLIED_TITLE = 'Set server-side: the last single-item regeneration ran with a non-empty hint.';
 const EMPTY_LIST_NOTE = 'No source cards — add characters on the Cards page.';
+
+/** Item key of the single merged item in combined-mode passes (mirrors the server). */
+const COMBINED_ITEM_KEY = '__combined__';
 
 /**
  * Reads a record defensively (null/array/non-object → empty object).
@@ -234,6 +241,30 @@ export function createTransformPage({ passKey, title } = {}) {
         return Array.isArray(taskOf().sources) ? taskOf().sources : [];
     }
 
+    /** @returns {boolean} Whether the task runs in combined (one merged pass) mode. */
+    function combinedMode() {
+        return recordOf(taskOf().settings).mode === 'combined';
+    }
+
+    /**
+     * Rows shown in the item list: one per source in individual mode; a
+     * single merged placeholder in combined mode (the pass runs as one big
+     * item covering all sources).
+     *
+     * @returns {object[]} Display source records.
+     */
+    function displaySources() {
+        const sources = sourcesOf();
+        if (!combinedMode() || sources.length === 0) {
+            return sources;
+        }
+        return [{
+            key: COMBINED_ITEM_KEY,
+            name: `All characters (${sources.length})`,
+            avatar: stringOf(recordOf(sources[0]).avatar),
+        }];
+    }
+
     /** @returns {object} This pass's record (defensive). */
     function passOf() {
         return recordOf(recordOf(taskOf().passes)[pass]);
@@ -300,7 +331,7 @@ export function createTransformPage({ passKey, title } = {}) {
 
     /** @returns {string[]} Source keys in array order. */
     function sourceKeys() {
-        return sourcesOf().map((source) => stringOf(source?.key));
+        return displaySources().map((source) => stringOf(source?.key));
     }
 
     /**
@@ -335,7 +366,7 @@ export function createTransformPage({ passKey, title } = {}) {
      * @returns {object|null} Source record, or null.
      */
     function sourceFor(key) {
-        return sourcesOf().find((source) => stringOf(source?.key) === key) ?? null;
+        return displaySources().find((source) => stringOf(source?.key) === key) ?? null;
     }
 
     /**
@@ -423,6 +454,25 @@ export function createTransformPage({ passKey, title } = {}) {
         }
         Promise.resolve(result).catch((error) => {
             console.error(`transformPage[${pass}]: cancel request failed.`, error);
+        });
+    }
+
+    /**
+     * Fires an item-scoped cancel (the rest of the run keeps going).
+     *
+     * @param {string} key Source key to cancel.
+     * @returns {void}
+     */
+    function fireCancelItem(key) {
+        let result;
+        try {
+            result = latestActions?.cancelItem?.(pass, key);
+        } catch (error) {
+            console.error(`transformPage[${pass}]: failed to cancel the item.`, error);
+            return;
+        }
+        Promise.resolve(result).catch((error) => {
+            console.error(`transformPage[${pass}]: item cancel request failed.`, error);
         });
     }
 
@@ -632,7 +682,7 @@ export function createTransformPage({ passKey, title } = {}) {
      * @returns {void}
      */
     function renderItemRows(listElement) {
-        const sources = sourcesOf();
+        const sources = displaySources();
         const query = filterQuery.trim().toLowerCase();
         const rows = sources
             .filter((source) => {
@@ -649,7 +699,7 @@ export function createTransformPage({ passKey, title } = {}) {
         if (rows.length === 0) {
             const note = document.createElement('p');
             note.className = 'bc-task-transform-list-empty';
-            note.textContent = sources.length === 0
+            note.textContent = sourcesOf().length === 0
                 ? EMPTY_LIST_NOTE
                 : 'No items match the filter.';
             notes.push(note);
@@ -811,7 +861,9 @@ export function createTransformPage({ passKey, title } = {}) {
             section.append(error);
         }
 
-        // Inspector actions.
+        // Inspector actions: Regenerate (enabled even while the pass runs —
+        // regens overlap server-side) and item-scoped Cancel (enabled while
+        // this card has queued/running work).
         const actions = document.createElement('div');
         actions.className = 'bc-task-transform-inspector-actions';
         actions.append(buildButton({
@@ -820,6 +872,13 @@ export function createTransformPage({ passKey, title } = {}) {
             title: readOnlyMode ? READ_ONLY_NOTE : (!model ? NO_MODEL_TITLE : (itemBusy ? ITEM_BUSY_TITLE : `Re-run only ${name} with the current settings.`)),
             disabled: itemBusy || !model || readOnlyMode,
             onClick: () => void fireRunPass({ itemKeys: [key] }),
+        }));
+        actions.append(buildButton({
+            className: 'bc-task-transform-item-cancel',
+            label: 'Cancel',
+            title: itemBusy ? ITEM_CANCEL_TITLE : ITEM_CANCEL_IDLE_TITLE,
+            disabled: !itemBusy || readOnlyMode,
+            onClick: () => fireCancelItem(key),
         }));
         section.append(actions);
 

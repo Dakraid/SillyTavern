@@ -6,6 +6,9 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
 const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
 
+/** Item key of the single merged item in combined-mode passes. */
+export const COMBINED_KEY = '__combined__';
+
 function isRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -360,6 +363,17 @@ function sourcesWithSucceededOutputs(task, pass) {
         }));
 }
 
+/**
+ * Combined-mode upstream input: the pass's single merged output wrapped as
+ * one synthetic source document, or no sources when it never succeeded.
+ */
+function combinedInputSource(pass) {
+    const item = pass?.items?.[COMBINED_KEY];
+    return item?.status === 'succeeded' && typeof item.output === 'string' && item.output
+        ? [{ key: COMBINED_KEY, name: COMBINED_KEY, fields: { description: item.output } }]
+        : [];
+}
+
 function passStaleness(pass, currentRevision, upstreamStale = false) {
     if (!hasSucceededOutput(pass) || !pass.inputRevision) {
         return { stale: false, reason: 'not_run' };
@@ -384,14 +398,19 @@ function passInputPrompts(task, passKey) {
     return [task.prompts.main.text];
 }
 function passInputSources(task, passKey) {
+    const combined = task.settings.mode === 'combined';
     if (passKey === 'transform1') return task.sources;
     if (passKey === 'transform2') {
-        return task.settings.secondPassEnabled
-            ? sourcesWithSucceededOutputs(task, task.passes.transform1)
-            : [];
+        if (!task.settings.secondPassEnabled) return [];
+        return combined
+            ? combinedInputSource(task.passes.transform1)
+            : sourcesWithSucceededOutputs(task, task.passes.transform1);
     }
     const useTransform2 = task.settings.secondPassEnabled && hasSucceededOutput(task.passes.transform2);
-    return sourcesWithSucceededOutputs(task, useTransform2 ? task.passes.transform2 : task.passes.transform1);
+    const upstream = useTransform2 ? task.passes.transform2 : task.passes.transform1;
+    return combined
+        ? combinedInputSource(upstream)
+        : sourcesWithSucceededOutputs(task, upstream);
 }
 
 /**

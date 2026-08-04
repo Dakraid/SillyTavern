@@ -216,4 +216,31 @@ describe('bulk combine artifact assembler', () => {
             destination: 'lorebook',
         });
     });
+
+    test('combined mode assembles one merged block and extracts lorebook entries from it', () => {
+        const task = makeTask({ destination: 'lorebook' });
+        task.name = 'Merged card';
+        task.settings.mode = 'combined';
+        task.passes.transform1.items = {
+            __combined__: { status: 'succeeded', output: `${firstXml}\n${secondXml}` },
+        };
+
+        expect(getFullDescriptionSources(task)).toEqual([
+            { key: '__combined__', name: 'Merged card', output: `${firstXml}\n${secondXml}` },
+        ]);
+        expect(buildMergedCardDescription(task)).toBe(`${firstXml}\n${secondXml}`);
+        // Lorebook entries come from the character blocks inside the merged output.
+        const entries = Object.values(buildLorebookData(task).entries);
+        expect(entries).toHaveLength(2);
+        expect(entries[0].comment).toBe('A memo');
+        expect(entries[1].key).toEqual(['Bob']);
+
+        // Lorebook destination prefers the merged summary output when it ran.
+        task.passes.summary.items.__combined__ = { status: 'succeeded', output: 'Merged summary' };
+        expect(getCardDescriptionBlocks(task)).toEqual([{
+            key: '__combined__',
+            name: 'Merged card',
+            xml: '<character>\n  <name>Merged card</name>\n  <description>Merged summary</description>\n</character>',
+        }]);
+    });
 });

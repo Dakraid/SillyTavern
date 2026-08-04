@@ -9,7 +9,7 @@ import {
     buildCharacterXmlBlock,
     buildIndividualPrompt,
     buildCombinedPrompt,
-    parseCombinedResponse,
+    buildMergedPassPrompt,
     preflightTokens,
     buildPostProcessPrompt,
 } from '../../src/util/bulk-combine/prompt-builders.js';
@@ -122,102 +122,12 @@ describe('bulk combine prompt builders', () => {
             expect(buildIndividualPrompt(alpha, null, [])).toBe(`\n\n${alphaBlock}`);
             expect(buildCombinedPrompt([alpha], '', [])).toBe(`\n\n${alphaBlock}`);
         });
-    });
 
-    describe('combined response parsing', () => {
-        test('maps clean character blocks to stable source keys and extracts summaries', () => {
-            const sources = [source('a', 'Alpha'), source('b', 'Beta')];
-            const alphaXml = '<character><name>Alpha</name><summary>Alpha summary</summary></character>';
-            const betaXml = '<character><name>Beta</name><summary>Beta summary</summary></character>';
-
-            expect(parseCombinedResponse(`${alphaXml}\n${betaXml}`, sources)).toEqual({
-                results: {
-                    a: { key: 'a', name: 'Alpha', xml: alphaXml, summary: 'Alpha summary' },
-                    b: { key: 'b', name: 'Beta', xml: betaXml, summary: 'Beta summary' },
-                },
-                missing: [],
-                duplicates: [],
-                unknown: [],
-            });
-        });
-
-        test('reports missing source keys while preserving partial valid output', () => {
-            const sources = [source('a', 'Alpha'), source('b', 'Beta')];
-            const alphaXml = '<character><name>Alpha</name><description>Done</description></character>';
-            const parsed = parseCombinedResponse(alphaXml, sources);
-
-            expect(parsed.results.a.xml).toBe(alphaXml);
-            expect(parsed.missing).toEqual(['b']);
-            expect(parsed.duplicates).toEqual([]);
-            expect(parsed.unknown).toEqual([]);
-        });
-
-        test('resolves equal source names positionally and reports excess same-name blocks as duplicates', () => {
-            const sources = [source('a', 'Same'), source('b', 'Same')];
-            const first = '<character><name>Same</name><description>First</description></character>';
-            const second = '<character><name>same</name><description>Second</description></character>';
-            const third = '<character><name>SAME</name><description>Third</description></character>';
-            const parsed = parseCombinedResponse(`${first}${second}${third}`, sources);
-
-            expect(parsed.results.a.xml).toBe(first);
-            expect(parsed.results.b.xml).toBe(second);
-            expect(parsed.missing).toEqual([]);
-            expect(parsed.duplicates).toEqual(['SAME']);
-        });
-
-        test('keeps the first unique-name assignment and reports a later collision as duplicate', () => {
-            const sources = [source('a', 'Alpha')];
-            const first = '<character><name>Alpha</name><description>First</description></character>';
-            const second = '<character><name>Alpha</name><description>Second</description></character>';
-            const parsed = parseCombinedResponse(`${first}${second}`, sources);
-
-            expect(parsed.results.a.xml).toBe(first);
-            expect(parsed.duplicates).toEqual(['Alpha']);
-        });
-
-        test('reports unknown character names without assigning them', () => {
-            const parsed = parseCombinedResponse(
-                '<character><name>Gamma</name><description>Unknown</description></character>',
-                [source('a', 'Alpha')],
+        test('builds a merged follow-up prompt from the upstream document and a nudge', () => {
+            expect(buildMergedPassPrompt('Improve', '<character><name>Merged</name></character>', 'Tighter prose')).toBe(
+                'Improve\n\n<character><name>Merged</name></character>\n\nAdditional guidance: Tighter prose',
             );
-
-            expect(parsed.results).toEqual({});
-            expect(parsed.missing).toEqual(['a']);
-            expect(parsed.unknown).toEqual(['Gamma']);
-        });
-
-        test('returns every source as missing for empty output', () => {
-            expect(parseCombinedResponse('   ', [source('a', 'Alpha'), source('b', 'Beta')])).toEqual({
-                results: {},
-                missing: ['a', 'b'],
-                duplicates: [],
-                unknown: [],
-            });
-        });
-
-        test('does not throw on malformed partial XML and maps complete blocks', () => {
-            const raw = [
-                '<character><name>Alpha</name><description>Done</description></character>',
-                '<character><name>Beta</name><description>Incomplete',
-            ].join('\n');
-            const sources = [source('a', 'Alpha'), source('b', 'Beta')];
-
-            expect(() => parseCombinedResponse(raw, sources)).not.toThrow();
-            const parsed = parseCombinedResponse(raw, sources);
-            expect(parsed.results.a.name).toBe('Alpha');
-            expect(parsed.missing).toEqual(['b']);
-        });
-
-        test('falls back positionally for a nameless character block', () => {
-            const xml = '<character><description>No name</description></character>';
-            const parsed = parseCombinedResponse(xml, [source('a', 'Alpha')]);
-
-            expect(parsed.results.a).toEqual({
-                key: 'a',
-                name: 'Alpha',
-                xml,
-                summary: '',
-            });
+            expect(buildMergedPassPrompt('Summarize', '  <character />  ')).toBe('Summarize\n\n<character />');
         });
     });
 

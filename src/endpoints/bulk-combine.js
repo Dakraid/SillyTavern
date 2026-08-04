@@ -292,7 +292,10 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
     }));
 
     taskRouter.post('/tasks/:id/cancel', route(async (request, response) => {
-        const cancelled = await taskRunner.cancel(request.params.id);
+        const cancelled = await taskRunner.cancel(request.params.id, {
+            passKey: request.body?.passKey,
+            itemKey: request.body?.itemKey,
+        });
         return response.send({ cancelled });
     }));
 

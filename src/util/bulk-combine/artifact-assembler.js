@@ -9,6 +9,8 @@ import {
     validateGeneratedGroupCardDescription,
 } from '../../../public/scripts/group-card-xml-parser.js';
 
+import { COMBINED_KEY } from './task-state.js';
+
 function sourceName(source) {
     return String(source?.name ?? source?.fields?.name ?? source?.key ?? '');
 }
@@ -25,6 +27,13 @@ export function selectFullDescriptionPass(task) {
 
 export function getFullDescriptionSources(task) {
     const pass = task?.passes?.[selectFullDescriptionPass(task)];
+    // Combined mode: the pass holds one merged output for all sources.
+    if (task?.settings?.mode === 'combined') {
+        const item = pass?.items?.[COMBINED_KEY];
+        return item?.status === 'succeeded'
+            ? [{ key: COMBINED_KEY, name: sourceName({ name: task?.name }), output: String(item.output ?? '') }]
+            : [];
+    }
     return (Array.isArray(task?.sources) ? task.sources : [])
         .filter(source => pass?.items?.[source.key]?.status === 'succeeded')
         .map(source => ({
@@ -55,6 +64,18 @@ export function getCardDescriptionBlocks(task) {
             name: source.name,
             xml: source.output,
         }));
+    }
+
+    // Combined mode in lorebook destination: one merged block, summarized
+    // when the combined summary pass succeeded.
+    if (task?.settings?.mode === 'combined') {
+        const name = sourceName({ name: task?.name });
+        const summary = task?.passes?.summary?.items?.[COMBINED_KEY];
+        if (summary?.status === 'succeeded') {
+            return [{ key: COMBINED_KEY, name, xml: buildSummaryBlock(name, summary.output) }];
+        }
+        const full = fullSources.get(COMBINED_KEY);
+        return full ? [{ key: COMBINED_KEY, name, xml: full.output }] : [];
     }
 
     return (Array.isArray(task?.sources) ? task.sources : []).flatMap((source) => {

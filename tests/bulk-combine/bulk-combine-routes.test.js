@@ -562,6 +562,19 @@ describe('/api/bulk-combine task routes', () => {
         expect(inactive.body).toEqual({ cancelled: false });
     });
 
+    test('passes an item scope through to cancellation', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Cancel item' } })).body;
+        fakeRunner.cancel.mockResolvedValueOnce(true);
+
+        const response = await invoke('post', '/tasks/:id/cancel', {
+            params: { id: created.id },
+            body: { passKey: 'transform1', itemKey: 'character-a' },
+        });
+
+        expect(response.body).toEqual({ cancelled: true });
+        expect(fakeRunner.cancel).toHaveBeenCalledWith(created.id, { passKey: 'transform1', itemKey: 'character-a' });
+    });
+
     test('returns 404 instead of subscribing events for an unknown task', async () => {
         const response = await invoke('get', '/tasks/:id/events', {
             params: { id: '00000000-0000-4000-8000-000000000099' },

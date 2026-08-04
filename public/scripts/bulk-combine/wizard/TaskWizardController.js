@@ -273,6 +273,8 @@ export class TaskWizardController {
             resumePass: (passKey) => this.#client.resumePass(this.#state.taskId, passKey),
             /** Cancel running work for the task. */
             cancel: () => this.#client.cancelTask(this.#state.taskId),
+            /** Cancel one card's in-flight generation (rest of the run continues). */
+            cancelItem: (passKey, itemKey) => this.#client.cancelTask(this.#state.taskId, { passKey, itemKey }),
             /** Fire-and-forget post-process run (202). */
             runPostProcess: () => this.#client.runPostProcess(this.#state.taskId),
             /** Fire-and-forget prompt-assist proposal (202). */

@@ -1,9 +1,5 @@
 import {
     escapeXml,
-    extractSummaryFromCharacterBlock,
-    extractTopLevelXmlBlocks,
-    extractXmlBlocksByTag,
-    validateGeneratedGroupCardDescription,
 } from '../../../public/scripts/group-card-xml-parser.js';
 
 export const CORE_FIELDS = Object.freeze([
@@ -56,14 +52,6 @@ export function getSourceField(source, field) {
     }
 }
 
-function getSourceKey(source) {
-    try {
-        return toString(source?.key);
-    } catch {
-        return '';
-    }
-}
-
 export function buildCharacterXmlBlock(source, fields) {
     const fieldXml = normalizeSelectedFields(fields)
         .map((field) => `  <${field}>${escapeXml(getSourceField(source, field))}</${field}>`)
@@ -91,119 +79,18 @@ export function buildCombinedPrompt(sources, promptText, fields, nudge) {
     return appendNudge(prompt, nudge);
 }
 
-function extractCharacterBlocks(text) {
-    try {
-        const characterBlocks = extractXmlBlocksByTag(text, 'character');
-        if (characterBlocks.length > 0) {
-            return characterBlocks;
-        }
-
-        return extractTopLevelXmlBlocks(text).filter((block) => block.tag === 'character');
-    } catch {
-        return [];
-    }
-}
-
-function extractBlockName(block) {
-    try {
-        return toString(extractXmlBlocksByTag(block?.content ?? '', 'name')[0]?.content).trim();
-    } catch {
-        return '';
-    }
-}
-
-function sourceRecords(sources) {
-    return (Array.isArray(sources) ? sources : []).map((source, index) => ({
-        index,
-        key: getSourceKey(source),
-        name: getSourceField(source, 'name'),
-    }));
-}
-
-export function parseCombinedResponse(rawOutput, sources, options) {
-    const records = sourceRecords(sources);
-    const emptyResult = {
-        results: {},
-        missing: records.map((source) => source.key),
-        duplicates: [],
-        unknown: [],
-    };
-    const rawText = toString(rawOutput);
-
-    if (!rawText.trim()) {
-        return emptyResult;
-    }
-
-    let parsedText = rawText;
-    try {
-        parsedText = validateGeneratedGroupCardDescription(rawText, records.length);
-    } catch {
-        // Partial combined responses remain useful when complete character blocks exist.
-    }
-
-    const blocks = extractCharacterBlocks(parsedText);
-    const nameIndex = new Map();
-    const assigned = new Set();
-    const resultEntries = [];
-    const duplicates = [];
-    const unknown = [];
-
-    for (const record of records) {
-        const normalizedName = record.name.trim().toLowerCase();
-        const matches = nameIndex.get(normalizedName) ?? [];
-        matches.push(record);
-        nameIndex.set(normalizedName, matches);
-    }
-
-    blocks.forEach((block, blockIndex) => {
-        const blockName = extractBlockName(block);
-        let record;
-
-        if (blockName) {
-            const matches = nameIndex.get(blockName.toLowerCase());
-            if (!matches?.length) {
-                unknown.push(blockName);
-                return;
-            }
-
-            record = matches.find((candidate) => !assigned.has(candidate.key));
-            if (!record) {
-                duplicates.push(blockName);
-                return;
-            }
-        } else {
-            record = records[blockIndex];
-            if (!record) {
-                unknown.push('');
-                return;
-            }
-            if (assigned.has(record.key)) {
-                duplicates.push(record.name);
-                return;
-            }
-        }
-
-        assigned.add(record.key);
-        let summary = '';
-        try {
-            summary = extractSummaryFromCharacterBlock(block.raw) || '';
-        } catch {
-            summary = '';
-        }
-        resultEntries.push([record.key, {
-            key: record.key,
-            name: record.name,
-            xml: block.raw,
-            summary,
-        }]);
-    });
-
-    return {
-        results: Object.fromEntries(resultEntries),
-        missing: records.filter((source) => !assigned.has(source.key)).map((source) => source.key),
-        duplicates,
-        unknown,
-    };
+/**
+ * Builds a combined-mode follow-up pass prompt (transform2/summary): the
+ * upstream pass's single merged output document is the whole input.
+ *
+ * @param {string} promptText Pass prompt text.
+ * @param {string} inputDocument Upstream merged output.
+ * @param {string} [nudge] Optional regeneration hint.
+ * @returns {string} Prompt text.
+ */
+export function buildMergedPassPrompt(promptText, inputDocument, nudge) {
+    const prompt = `${toString(promptText)}\n\n${toString(inputDocument).trim()}`;
+    return appendNudge(prompt, nudge);
 }
 
 export async function preflightTokens({

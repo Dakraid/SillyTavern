@@ -301,6 +301,7 @@ function makeActions() {
         runPass: jest.fn(async () => {}),
         resumePass: jest.fn(async () => {}),
         cancel: jest.fn(async () => {}),
+cancelItem: jest.fn(async () => {}),
         runPostProcess: jest.fn(async () => {}),
         runPromptAssist: jest.fn(async () => {}),
         getReview: jest.fn(async () => {}),
@@ -622,6 +623,57 @@ describe('transformPage', () => {
             expect(regen.disabled).toBe(true);
             regen.click();
         }
+    });
+
+    test('item Cancel is enabled while the item is busy and calls cancelItem', async () => {
+        const busy = renderTransformPage(makeSnapshot({
+            task: {
+                passes: {
+                    transform1: {
+                        status: 'running',
+                        items: { 'a.png': makeItem({ status: 'running' }) },
+                    },
+                },
+            },
+        }));
+        const cancel = findOne(busy.root, hasClass('bc-task-transform-item-cancel'));
+        expect(cancel.disabled).toBe(false);
+        cancel.click();
+        await flush();
+        expect(busy.actions.cancelItem).toHaveBeenCalledTimes(1);
+        expect(busy.actions.cancelItem).toHaveBeenCalledWith('transform1', 'a.png');
+
+        // Idle item: Cancel disabled and inert.
+        const idle = renderTransformPage();
+        const idleCancel = findOne(idle.root, hasClass('bc-task-transform-item-cancel'));
+        expect(idleCancel.disabled).toBe(true);
+        idleCancel.click();
+        expect(idle.actions.cancelItem).not.toHaveBeenCalled();
+    });
+
+    test('combined mode renders one merged placeholder row and regenerates it', async () => {
+        const { root, actions } = renderTransformPage(makeSnapshot({
+            task: {
+                settings: { mode: 'combined' },
+                passes: {
+                    transform1: {
+                        status: 'succeeded',
+                        items: { __combined__: makeItem({ status: 'succeeded', output: 'MERGED' }) },
+                    },
+                },
+            },
+        }));
+
+        const rows = findAll(root, hasClass('bc-task-transform-item'));
+        expect(rows).toHaveLength(1);
+        expect(rows[0].textContent).toContain('All characters (2)');
+        expect(findOne(root, hasClass('bc-task-transform-output')).value).toBe('MERGED');
+        expect(findOne(root, hasClass('bc-task-transform-totals')).textContent).toBe('1/1 succeeded');
+
+        findOne(root, hasClass('bc-task-transform-regen')).click();
+        await flush();
+        expect(actions.runPass).toHaveBeenCalledTimes(1);
+        expect(actions.runPass).toHaveBeenCalledWith('transform1', { itemKeys: ['__combined__'], completionSettings: { model: 'x', stream: false } });
     });
 
     test('execution record pointing at the pass also counts as running', () => {

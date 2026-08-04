@@ -6,6 +6,8 @@ import path from 'node:path';
 import { BulkCombineTaskRepository } from '../../src/util/bulk-combine/task-repository.js';
 import { createTaskRunner } from '../../src/util/bulk-combine/task-runner.js';
 import {
+    COMBINED_KEY,
+    computePassInputHash,
     createEmptyTask,
     deriveStaleness,
     hashInputs,
@@ -333,5 +335,27 @@ describe('Bulk Combine pass staleness', () => {
             transform2: { stale: false, reason: 'disabled' },
             summary: { stale: false, reason: 'not_run' },
         });
+    });
+
+    test('combined mode hashes the merged upstream item and flags drift', () => {
+        const task = createEmptyTask({ name: 'Combined' });
+        task.settings.mode = 'combined';
+        task.settings.secondPassEnabled = true;
+        task.sources = [source('a', 'Alpha'), source('b', 'Beta')];
+        task.passes.transform1.items[COMBINED_KEY] = { status: 'succeeded', output: '<merged t1 />' };
+        task.passes.transform1.inputRevision = computePassInputHash(task, 'transform1');
+        task.passes.transform2.items[COMBINED_KEY] = { status: 'succeeded', output: '<merged t2 />' };
+        task.passes.transform2.inputRevision = computePassInputHash(task, 'transform2');
+
+        let staleness = deriveStaleness(task);
+        expect(staleness.transform1.stale).toBe(false);
+        expect(staleness.transform2.stale).toBe(false);
+
+        // Regenerating transform1 changes its merged output → transform2 drifts.
+        task.passes.transform1.items[COMBINED_KEY].output = '<merged t1 NEW />';
+        staleness = deriveStaleness(task);
+        expect(staleness.transform1.stale).toBe(false);
+        expect(staleness.transform2.stale).toBe(true);
+        expect(staleness.transform2.reason).toBe('input_changed');
     });
 });

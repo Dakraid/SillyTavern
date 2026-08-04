@@ -2,20 +2,19 @@ import DiffMatchPatch from 'diff-match-patch';
 
 import { runWithConcurrency, throwIfAborted, withRetries } from '../job-manager.js';
 import { applyPostProcess, buildMergedCardDescription } from './artifact-assembler.js';
-import { computePassInputHash, hashInputs } from './task-state.js';
+import { COMBINED_KEY, computePassInputHash, hashInputs } from './task-state.js';
 import {
     CORE_FIELDS,
     buildCombinedPrompt,
     buildIndividualPrompt,
+    buildMergedPassPrompt,
     buildPostProcessPrompt,
-    parseCombinedResponse,
     preflightTokens,
 } from './prompt-builders.js';
 
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
 const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
 const RESUMABLE_STATUSES = new Set(['pending', 'failed', 'interrupted', 'queued']);
-const COMBINED_KEY = '__combined__';
 const dmp = new DiffMatchPatch();
 
 function newItem(existing = {}) {
@@ -70,6 +69,29 @@ function sourceWithOutput(source, output) {
 }
 
 function deriveInputs(task, passKey) {
+    // Combined mode: one merged item per pass. Transform 1 consumes all
+    // sources in one prompt; transform2/summary consume the upstream pass's
+    // single merged output document.
+    if (task.settings.mode === 'combined') {
+        if (passKey === 'transform1') {
+            return task.sources.length > 0
+                ? new Map([[COMBINED_KEY, { sources: task.sources, document: null }]])
+                : new Map();
+        }
+        if (passKey === 'transform2' && !task.settings.secondPassEnabled) return new Map();
+
+        let inputPass = task.passes.transform1;
+        if (passKey === 'summary'
+            && task.settings.secondPassEnabled
+            && task.passes.transform2.items[COMBINED_KEY]?.status === 'succeeded') {
+            inputPass = task.passes.transform2;
+        }
+        const upstream = inputPass.items[COMBINED_KEY];
+        return upstream?.status === 'succeeded' && upstream.output
+            ? new Map([[COMBINED_KEY, { sources: [], document: upstream.output }]])
+            : new Map();
+    }
+
     if (passKey === 'transform1') {
         return new Map(task.sources.map(source => [source.key, source]));
     }
@@ -93,6 +115,16 @@ function deriveInputs(task, passKey) {
 }
 
 function targetKeys(task, passKey, scope, itemKeys) {
+    if (task.settings.mode === 'combined') {
+        if (Array.isArray(itemKeys) && itemKeys.length > 0) {
+            return itemKeys.includes(COMBINED_KEY) ? [COMBINED_KEY] : [];
+        }
+        if (scope === 'all') return [COMBINED_KEY];
+        return RESUMABLE_STATUSES.has(newItem(task.passes[passKey].items[COMBINED_KEY]).status)
+            ? [COMBINED_KEY]
+            : [];
+    }
+
     const knownKeys = new Set(task.sources.map(source => source.key));
     if (Array.isArray(itemKeys) && itemKeys.length > 0) {
         return [...new Set(itemKeys)].filter(key => knownKeys.has(key));
@@ -148,7 +180,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
      * stay mutually exclusive; item-scoped regenerations overlap any of them
      * and each other, sharing the task's concurrency slots.
      *
-     * @type {Map<string, {ops: Set<{kind: string, passKey: string|null, keys: Set<string>, controller: AbortController}>, limit: number, inFlight: number, waiters: Array<{resolve: Function, reject: Function}>}>}
+     * @type {Map<string, {ops: Set<{kind: string, passKey: string|null, keys: Set<string>, controller: AbortController}>, itemControllers: Map<string, AbortController>, limit: number, inFlight: number, waiters: Array<{resolve: Function, reject: Function}>}>}
      */
     const taskOps = new Map();
     const sendEvent = (taskId, passKey, type, payload = {}) => {
@@ -163,7 +195,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
     function opsEntry(taskId) {
         let entry = taskOps.get(taskId);
         if (!entry) {
-            entry = { ops: new Set(), limit: 1, inFlight: 0, waiters: [] };
+            entry = { ops: new Set(), itemControllers: new Map(), limit: 1, inFlight: 0, waiters: [] };
             taskOps.set(taskId, entry);
         }
         return entry;
@@ -276,13 +308,13 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             const prompts = new Map();
 
             if (task.settings.mode === 'combined' && runnableKeys.length > 0) {
-                const nudge = runnableKeys.length === 1 ? hints.get(runnableKeys[0]) : '';
-                prompts.set(COMBINED_KEY, buildCombinedPrompt(
-                    runnableKeys.map(key => inputs.get(key)),
-                    text,
-                    CORE_FIELDS,
-                    nudge,
-                ));
+                // One merged prompt: transform1 embeds every source block,
+                // transform2/summary feed the upstream merged output document.
+                const input = inputs.get(COMBINED_KEY);
+                const nudge = hints.get(COMBINED_KEY);
+                prompts.set(COMBINED_KEY, input.document !== null
+                    ? buildMergedPassPrompt(text, input.document, nudge)
+                    : buildCombinedPrompt(input.sources, text, CORE_FIELDS, nudge));
             } else {
                 for (const key of runnableKeys) {
                     prompts.set(key, buildIndividualPrompt(inputs.get(key), text, CORE_FIELDS, hints.get(key)));
@@ -339,68 +371,77 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             });
             sendEvent(taskId, passKey, 'pass_started', { itemKeys: keys });
 
+            // Per-item abort controllers: an item-scoped cancel aborts exactly
+            // one card's in-flight work; op-level cancellation reaches them
+            // through the op signal. Combined mode shares one controller — a
+            // single request covers every claimed key.
+            const sharedController = task.settings.mode === 'combined' && op.keys.size > 0
+                ? new AbortController()
+                : null;
+            for (const key of op.keys) {
+                const itemController = sharedController ?? new AbortController();
+                if (!sharedController) {
+                    signal.addEventListener('abort', () => itemController.abort(), { once: true });
+                }
+                entry.itemControllers.set(`${passKey}:${key}`, itemController);
+            }
+            if (sharedController) {
+                signal.addEventListener('abort', () => sharedController.abort(), { once: true });
+            }
+
             const executableKeys = runnableKeys.filter(key => !blockedKeys.has(key) && op.keys.has(key));
 
             if (task.settings.mode === 'combined' && executableKeys.length > 0) {
                 let attempts = 0;
                 let acquired = false;
+                const combinedSignal = sharedController?.signal ?? signal;
                 try {
-                    await acquireSlot(entry, signal);
+                    await acquireSlot(entry, combinedSignal);
                     acquired = true;
-                    throwIfAborted(signal);
+                    throwIfAborted(combinedSignal);
                     await repo.checkpoint(taskId, draft => {
-                        for (const key of executableKeys) draft.passes[passKey].items[key].status = 'running';
+                        draft.passes[passKey].items[COMBINED_KEY].status = 'running';
                     });
-                    executableKeys.forEach(key => sendEvent(taskId, passKey, 'item_started', { itemKey: key }));
+                    sendEvent(taskId, passKey, 'item_started', { itemKey: COMBINED_KEY });
                     const content = await withRetries(async () => {
                         attempts++;
                         // This run-time completion snapshot is the frontend's sanitized config-resolution seam; the executor resolves secret_id.
-                        return completionContent(await executeCompletion({
+                        const output = completionContent(await executeCompletion({
                             body: { ...(task.completion || {}), messages: [{ role: 'user', content: prompts.get(COMBINED_KEY) }], stream: false },
                             userDirectories,
-                            signal,
+                            signal: combinedSignal,
                         }));
-                    }, signal, 3);
-                    const parsed = parseCombinedResponse(content, executableKeys.map(key => inputs.get(key)));
+                        if (!output.trim()) throw new Error('Completion returned empty content');
+                        return output;
+                    }, combinedSignal, 3);
+                    // One big pass: the whole response is the merged result.
                     await repo.checkpoint(taskId, draft => {
-                        for (const key of executableKeys) {
-                            const item = draft.passes[passKey].items[key];
-                            item.attempts += attempts;
-                            item.hintApplied = executableKeys.length === 1 && Boolean(hints.get(key)?.trim());
-                            if (parsed.results[key]) {
-                                item.status = 'succeeded';
-                                item.output = passKey === 'summary' ? parsed.results[key].summary : parsed.results[key].xml;
-                                item.error = null;
-                            } else {
-                                item.status = 'failed';
-                                item.error = 'No output returned for this character';
-                            }
-                        }
+                        const item = draft.passes[passKey].items[COMBINED_KEY];
+                        item.status = 'succeeded';
+                        item.output = content;
+                        item.error = null;
+                        item.attempts += attempts;
+                        item.hintApplied = Boolean(hints.get(COMBINED_KEY)?.trim());
                     });
-                    for (const key of executableKeys) {
-                        const succeeded = Boolean(parsed.results[key]);
-                        sendEvent(taskId, passKey, succeeded ? 'item_succeeded' : 'item_failed', {
-                            itemKey: key,
-                            error: succeeded ? undefined : 'No output returned for this character',
-                        });
-                    }
+                    sendEvent(taskId, passKey, 'item_succeeded', { itemKey: COMBINED_KEY });
                 } catch (error) {
                     try {
                         await repo.checkpoint(taskId, draft => {
-                            for (const key of executableKeys) {
-                                const item = draft.passes[passKey].items[key];
-                                if (signal.aborted) {
-                                    if (item.status === 'running') item.status = 'interrupted';
-                                } else {
-                                    item.status = 'failed';
-                                    item.error = String(error);
-                                }
-                                item.attempts += attempts;
-                                if (attempts > 0) {
-                                    item.hintApplied = executableKeys.length === 1 && Boolean(hints.get(key)?.trim());
-                                }
+                            const item = draft.passes[passKey].items[COMBINED_KEY];
+                            if (signal.aborted || combinedSignal.aborted) {
+                                if (item.status === 'running') item.status = 'interrupted';
+                            } else {
+                                item.status = 'failed';
+                                item.error = String(error);
                             }
+                            item.attempts += attempts;
+                            if (attempts > 0) item.hintApplied = Boolean(hints.get(COMBINED_KEY)?.trim());
                         });
+                        if (!signal.aborted && combinedSignal.aborted) {
+                            sendEvent(taskId, passKey, 'item_cancelled', { itemKey: COMBINED_KEY });
+                        } else if (!signal.aborted) {
+                            sendEvent(taskId, passKey, 'item_failed', { itemKey: COMBINED_KEY, error: String(error) });
+                        }
                     } catch {
                         // A failed checkpoint must not escape the settled combined queue item.
                     }
@@ -411,10 +452,11 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 const itemTasks = executableKeys.map(key => async () => {
                     let attempts = 0;
                     let acquired = false;
+                    const itemSignal = entry.itemControllers.get(`${passKey}:${key}`)?.signal ?? signal;
                     try {
-                        await acquireSlot(entry, signal);
+                        await acquireSlot(entry, itemSignal);
                         acquired = true;
-                        throwIfAborted(signal);
+                        throwIfAborted(itemSignal);
                         await repo.checkpoint(taskId, draft => {
                             draft.passes[passKey].items[key].status = 'running';
                         });
@@ -425,11 +467,11 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                             const output = completionContent(await executeCompletion({
                                 body: { ...(task.completion || {}), messages: [{ role: 'user', content: prompts.get(key) }], stream: false },
                                 userDirectories,
-                                signal,
+                                signal: itemSignal,
                             }));
                             if (!output.trim()) throw new Error('Completion returned empty content');
                             return output;
-                        }, signal, 3);
+                        }, itemSignal, 3);
                         await repo.checkpoint(taskId, draft => {
                             const item = draft.passes[passKey].items[key];
                             item.status = 'succeeded';
@@ -444,7 +486,11 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                             await repo.checkpoint(taskId, draft => {
                                 const item = draft.passes[passKey].items[key];
                                 if (signal.aborted) {
+                                    // Op-level cancel keeps queued items resumable.
                                     if (item.status === 'running') item.status = 'interrupted';
+                                } else if (itemSignal.aborted) {
+                                    // Item-scoped cancel settles the card as interrupted.
+                                    if (item.status === 'running' || item.status === 'queued') item.status = 'interrupted';
                                 } else {
                                     item.status = 'failed';
                                     item.error = String(error);
@@ -452,7 +498,9 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                                 item.attempts += attempts;
                                 if (attempts > 0) item.hintApplied = Boolean(hints.get(key)?.trim());
                             });
-                            if (!signal.aborted) {
+                            if (itemSignal.aborted && !signal.aborted) {
+                                sendEvent(taskId, passKey, 'item_cancelled', { itemKey: key });
+                            } else if (!signal.aborted) {
                                 sendEvent(taskId, passKey, 'item_failed', { itemKey: key, error: String(error) });
                             }
                         } catch {
@@ -489,7 +537,10 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             }
 
             const completed = await repo.checkpoint(taskId, draft => {
-                const status = finalStatus(draft, passKey, draft.sources.map(source => source.key));
+                const statusKeys = task.settings.mode === 'combined'
+                    ? [COMBINED_KEY]
+                    : draft.sources.map(source => source.key);
+                const status = finalStatus(draft, passKey, statusKeys);
                 draft.passes[passKey].status = status;
                 if (status === 'succeeded') {
                     draft.passes[passKey].inputRevision = computePassInputHash(draft, passKey);
@@ -504,6 +555,9 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             return { passKey, status, items: itemStatuses(completed, passKey, keys) };
         } finally {
             entry.ops.delete(op);
+            for (const key of op.keys) {
+                entry.itemControllers.delete(`${passKey}:${key}`);
+            }
             pruneEntry(taskId, entry);
         }
     }
@@ -675,16 +729,35 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         if (!PASS_KEYS.includes(passKey)) throw new TypeError(`Invalid pass key: ${passKey}`);
         const task = await repo.getTask(taskId);
         const pass = task.passes[passKey];
-        const hasResumableItem = task.sources.some(source => RESUMABLE_STATUSES.has(newItem(pass.items[source.key]).status));
+        const hasResumableItem = task.settings.mode === 'combined'
+            ? RESUMABLE_STATUSES.has(newItem(pass.items[COMBINED_KEY]).status)
+            : task.sources.some(source => RESUMABLE_STATUSES.has(newItem(pass.items[source.key]).status));
         if (pass.status !== 'interrupted' || !hasResumableItem) throw new TaskNotResumableError(passKey);
         if (typeof onScheduled === 'function') onScheduled(task);
         // Persisted live-running items are intentionally excluded to avoid silently billing uncertain work twice.
         return runPass({ taskId, passKey, repo, userDirectories, scope: 'missing' });
     }
 
-    async function cancel(taskId) {
+    /**
+     * Cancels work for a task. Without a scope every live op is aborted; with
+     * `{passKey, itemKey}` only that card's in-flight generation is aborted.
+     *
+     * @param {string} taskId Task id.
+     * @param {object} [scope] Optional item scope.
+     * @param {string} [scope.passKey] Pass key.
+     * @param {string} [scope.itemKey] Item (source) key.
+     * @returns {Promise<boolean>} True when something was aborted.
+     */
+    async function cancel(taskId, { passKey, itemKey } = {}) {
         const entry = taskOps.get(taskId);
-        if (!entry || entry.ops.size === 0) return false;
+        if (!entry) return false;
+        if (typeof passKey === 'string' && typeof itemKey === 'string') {
+            const controller = entry.itemControllers.get(`${passKey}:${itemKey}`);
+            if (!controller || controller.signal.aborted) return false;
+            controller.abort();
+            return true;
+        }
+        if (entry.ops.size === 0) return false;
         for (const op of entry.ops) {
             op.controller.abort();
         }
