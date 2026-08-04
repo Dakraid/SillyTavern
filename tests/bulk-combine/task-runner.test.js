@@ -723,4 +723,230 @@ describe('bulk combine task runner', () => {
         expect((await repo.getTask(task.id)).post).toMatchObject({ status: 'failed', output: '' });
         await expect(runner.cancel(task.id)).resolves.toBe(false);
     });
+
+    // ------------------------------------------------------------------
+    // Parallel item regenerations (item-scoped runs overlap queue runs and
+    // each other, capped by the shared per-task concurrency slot pool).
+    // ------------------------------------------------------------------
+
+    function deferred() {
+        let resolve;
+        const promise = new Promise(res => {
+            resolve = res;
+        });
+        return { promise, resolve };
+    }
+
+    async function flushTicks(times = 5) {
+        for (let index = 0; index < times; index++) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+    }
+
+    async function waitFor(condition, tries = 200) {
+        for (let index = 0; index < tries && !condition(); index++) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        if (!condition()) throw new Error('waitFor timed out');
+    }
+
+    function gatedExecutor(started, gates) {
+        return jest.fn(({ body }) => {
+            const key = keyFromPrompt(body.messages[0].content);
+            started.push(key);
+            const gate = deferred();
+            gates.set(key, gate);
+            return gate.promise.then(() => completion(`<character><name>${key}</name><description>new ${key}</description></character>`));
+        });
+    }
+
+    test('runs item regenerations in parallel and folds the pass status', async () => {
+        const task = await createTask({ count: 2, concurrency: 2 });
+        await repo.checkpoint(task.id, draft => {
+            draft.passes.transform1.status = 'succeeded';
+            draft.passes.transform1.items = {
+                a: { status: 'succeeded', output: 'old a' },
+                b: { status: 'succeeded', output: 'old b' },
+            };
+        });
+        const started = [];
+        const gates = new Map();
+        const executeCompletion = gatedExecutor(started, gates);
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const regenA = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] });
+        const regenB = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['b'] });
+        await waitFor(() => started.length === 2);
+
+        // Both completions are in flight together.
+        expect([...started].sort()).toEqual(['a', 'b']);
+        gates.get('a').resolve();
+        gates.get('b').resolve();
+        const [resultA, resultB] = await Promise.all([regenA, regenB]);
+        const stored = await repo.getTask(task.id);
+
+        expect(resultA.items).toEqual({ a: 'succeeded' });
+        expect(resultB.items).toEqual({ b: 'succeeded' });
+        expect(stored.passes.transform1.status).toBe('succeeded');
+        expect(stored.passes.transform1.items.a.output).toContain('new a');
+        expect(stored.passes.transform1.items.b.output).toContain('new b');
+    });
+
+    test('caps parallel regenerations at the task concurrency limit', async () => {
+        const task = await createTask({ count: 2, concurrency: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.passes.transform1.items = {
+                a: { status: 'succeeded', output: 'old a' },
+                b: { status: 'succeeded', output: 'old b' },
+            };
+        });
+        const started = [];
+        const gates = new Map();
+        const executeCompletion = gatedExecutor(started, gates);
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const regenA = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] });
+        await waitFor(() => started.length === 1);
+        const regenB = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['b'] });
+        await flushTicks();
+
+        // The second regeneration waits for the shared slot.
+        expect(started).toEqual(['a']);
+        gates.get('a').resolve();
+        await waitFor(() => started.length === 2);
+        expect(started).toEqual(['a', 'b']);
+        gates.get('b').resolve();
+        await Promise.all([regenA, regenB]);
+    });
+
+    test('runs a regeneration alongside an in-flight queue run without stomping bookkeeping', async () => {
+        const task = await createTask({ count: 3, concurrency: 3 });
+        await repo.checkpoint(task.id, draft => {
+            draft.passes.transform1.items = {
+                a: { status: 'failed' },
+                b: { status: 'failed' },
+                c: { status: 'succeeded', output: 'old c' },
+            };
+        });
+        const started = [];
+        const gates = new Map();
+        const executeCompletion = gatedExecutor(started, gates);
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const run = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        await waitFor(() => started.length === 2);
+        const regen = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['c'] });
+        await waitFor(() => started.length === 3);
+
+        // The regeneration runs in parallel with the queue run.
+        expect(started).toContain('c');
+        gates.get('c').resolve();
+        const regenResult = await regen;
+        let stored = await repo.getTask(task.id);
+
+        // While the run is live it owns pass/execution bookkeeping.
+        expect(regenResult.status).toBe('running');
+        expect(stored.passes.transform1.status).toBe('running');
+        expect(stored.execution.status).toBe('running');
+        expect(stored.passes.transform1.items.c.output).toContain('new c');
+
+        gates.get('a').resolve();
+        gates.get('b').resolve();
+        const runResult = await run;
+        stored = await repo.getTask(task.id);
+        expect(runResult.status).toBe('succeeded');
+        expect(stored.passes.transform1.status).toBe('succeeded');
+        expect(stored.execution.status).toBe('idle');
+    });
+
+    test('skips items claimed by another in-flight op in both directions', async () => {
+        const task = await createTask({ count: 2, concurrency: 2 });
+        const started = [];
+        const gates = new Map();
+        const executeCompletion = gatedExecutor(started, gates);
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const regen = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] });
+        await waitFor(() => started.length === 1);
+        // The queue run claims only b; a is regeneration-claimed.
+        const run = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        await waitFor(() => started.length === 2);
+        expect(started).toEqual(['a', 'b']);
+
+        // A duplicate regeneration of the claimed item settles without executing.
+        const dupe = await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] });
+        expect(started).toEqual(['a', 'b']);
+        expect(dupe.items).toEqual({ a: 'running' });
+
+        gates.get('b').resolve();
+        const runResult = await run;
+        // a was still regenerating when the run finalized.
+        expect(runResult.status).toBe('partial');
+
+        gates.get('a').resolve();
+        const regenResult = await regen;
+        const stored = await repo.getTask(task.id);
+        // The run is gone — the regeneration folds the final pass status.
+        expect(regenResult.status).toBe('succeeded');
+        expect(stored.passes.transform1.status).toBe('succeeded');
+        expect(executeCompletion).toHaveBeenCalledTimes(2);
+    });
+
+    test('aborts a regeneration through the shared cancellation controller', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.passes.transform1.items.a = { status: 'succeeded', output: 'old a' };
+        });
+        let started;
+        const completionStarted = new Promise(resolve => {
+            started = resolve;
+        });
+        const executeCompletion = jest.fn(({ signal }) => new Promise((resolve, reject) => {
+            started();
+            signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+        const regen = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] });
+
+        await completionStarted;
+        await expect(runner.cancel(task.id)).resolves.toBe(true);
+        const result = await regen;
+        expect(result.status).toBe('interrupted');
+        expect((await repo.getTask(task.id)).passes.transform1.items.a.status).toBe('interrupted');
+        await expect(runner.cancel(task.id)).resolves.toBe(false);
+    });
+
+    test('keeps prompt assistance exclusive against regenerations in both directions', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.prompts.main.assistant.request = 'Rewrite it';
+            draft.passes.transform1.items.a = { status: 'succeeded', output: 'old a' };
+        });
+        const started = [];
+        const gates = new Map();
+        const executeCompletion = jest.fn(({ body }) => {
+            const key = keyFromPrompt(body.messages[0].content) ?? 'assist';
+            started.push(key);
+            const gate = deferred();
+            gates.set(key, gate);
+            return gate.promise.then(() => completion(key === 'assist' ? 'Rewritten prompt' : `<character><name>${key}</name></character>`));
+        });
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        // Assist blocks a regeneration.
+        const assist = runner.runPromptAssist({ taskId: task.id, promptKey: 'main', repo, userDirectories: {} });
+        await waitFor(() => started.length === 1);
+        await expect(runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] }))
+            .rejects.toBeInstanceOf(TaskAlreadyRunningError);
+        gates.get('assist').resolve();
+        await assist;
+
+        // A regeneration blocks an assist.
+        const regen = runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {}, itemKeys: ['a'] });
+        await waitFor(() => started.length === 2);
+        await expect(runner.runPromptAssist({ taskId: task.id, promptKey: 'main', repo, userDirectories: {} }))
+            .rejects.toBeInstanceOf(TaskAlreadyRunningError);
+        gates.get('a').resolve();
+        await regen;
+    });
 });

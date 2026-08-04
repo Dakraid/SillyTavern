@@ -580,7 +580,7 @@ describe('transformPage', () => {
         expect(actions.runPass).not.toHaveBeenCalled();
     });
 
-    test('Cancel is enabled only while running; running disables Run/Regenerate and shows the indicator', () => {
+    test('Cancel is enabled only while running; running disables Run/Regenerate all but not item Regenerate', () => {
         // Not running: Cancel disabled and inert.
         const settled = renderTransformPage();
         const settledCancel = findOne(settled.root, hasClass('bc-task-transform-cancel'));
@@ -589,7 +589,8 @@ describe('transformPage', () => {
         expect(settled.actions.cancel).not.toHaveBeenCalled();
         expect(findOne(settled.root, hasClass('bc-task-transform-running'))).toBe(null);
 
-        // Running (pass status): Cancel enabled; Run/Regenerate disabled; indicator shown.
+        // Running (pass status): Cancel enabled; Run/Regenerate all disabled;
+        // single-item Regenerate stays enabled (regens overlap runs server-side).
         const running = renderTransformPage(makeSnapshot({
             task: { passes: { transform1: { status: 'running' } } },
         }));
@@ -597,13 +598,30 @@ describe('transformPage', () => {
         expect(cancel.disabled).toBe(false);
         expect(findOne(running.root, hasClass('bc-task-transform-run')).disabled).toBe(true);
         expect(findOne(running.root, hasClass('bc-task-transform-regen-all')).disabled).toBe(true);
-        expect(findOne(running.root, hasClass('bc-task-transform-regen')).disabled).toBe(true);
+        expect(findOne(running.root, hasClass('bc-task-transform-regen')).disabled).toBe(false);
         const indicator = findOne(running.root, hasClass('bc-task-transform-running'));
         expect(indicator.getAttribute('role')).toBe('status');
         expect(indicator.textContent).toContain('Running');
         cancel.click();
         expect(running.actions.cancel).toHaveBeenCalledTimes(1);
-        expect(running.actions.runPass).not.toHaveBeenCalled();
+    });
+
+    test('item Regenerate is disabled while that item is queued or running', () => {
+        for (const status of ['queued', 'running']) {
+            const { root } = renderTransformPage(makeSnapshot({
+                task: {
+                    passes: {
+                        transform1: {
+                            status: 'running',
+                            items: { 'a.png': makeItem({ status }) },
+                        },
+                    },
+                },
+            }));
+            const regen = findOne(root, hasClass('bc-task-transform-regen'));
+            expect(regen.disabled).toBe(true);
+            regen.click();
+        }
     });
 
     test('execution record pointing at the pass also counts as running', () => {

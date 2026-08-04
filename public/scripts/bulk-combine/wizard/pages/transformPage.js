@@ -19,6 +19,10 @@
  * - Run → `actions.runPass(passKey, { completionSettings })` (default scope
  *   `missing`: every item without a succeeded result).
  * - Regenerate ONE item → `actions.runPass(passKey, { itemKeys: [key], completionSettings })`.
+ *   Item-scoped regenerations overlap an in-flight queue run and each
+ *   other server-side (shared concurrency limit), so the button stays
+ *   enabled while the pass runs; it is disabled only while THAT item is
+ *   queued/running.
  * - Regenerate ALL → `actions.runPass(passKey, { scope: 'all', completionSettings })`.
  * - Resume (pass status `interrupted`) → `actions.resumePass(passKey)`.
  * - Cancel (only while running) → `actions.cancel()`.
@@ -81,6 +85,7 @@ const RUN_TITLE = 'Run this pass for every card without a successful result. Fir
 const RESUME_TITLE = 'Resume the interrupted pass (runs every card without a successful result).';
 const RUNNING_TITLE = 'This pass is already running.';
 const REGEN_ALL_TITLE = 'Re-run every card, including cards with a successful result.';
+const ITEM_BUSY_TITLE = 'This card is already queued or regenerating.';
 const CANCEL_TITLE = 'Cancel the running pass.';
 const NO_MODEL_TITLE = 'Select a connection profile or preset on the Prompt & Settings page first.';
 const NO_MODEL_NOTE = 'No chat completion model is resolved for this task — select a connection profile or preset on the Prompt & Settings page.';
@@ -714,8 +719,10 @@ export function createTransformPage({ passKey, title } = {}) {
         const source = sourceFor(key);
         const name = stringOf(source?.name).trim() || 'Unnamed character';
         const item = itemOf(key);
-        const running = isRunning();
         const model = hasModel();
+        // Item-scoped regenerations overlap runs server-side; only an
+        // already queued/running item (or read-only/no-model) blocks the button.
+        const itemBusy = item.status === 'queued' || item.status === 'running';
 
         // Header: name + status badge.
         const header = document.createElement('div');
@@ -810,8 +817,8 @@ export function createTransformPage({ passKey, title } = {}) {
         actions.append(buildButton({
             className: 'bc-task-transform-regen',
             label: 'Regenerate',
-            title: readOnlyMode ? READ_ONLY_NOTE : (!model ? NO_MODEL_TITLE : (running ? RUNNING_TITLE : `Re-run only ${name} with the current settings.`)),
-            disabled: running || !model || readOnlyMode,
+            title: readOnlyMode ? READ_ONLY_NOTE : (!model ? NO_MODEL_TITLE : (itemBusy ? ITEM_BUSY_TITLE : `Re-run only ${name} with the current settings.`)),
+            disabled: itemBusy || !model || readOnlyMode,
             onClick: () => void fireRunPass({ itemKeys: [key] }),
         }));
         section.append(actions);

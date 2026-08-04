@@ -143,8 +143,14 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         throw new TypeError('executeCompletion and countTokens are required');
     }
 
-    const active = new Set();
-    const controllers = new Map();
+    /**
+     * Live per-task operations. Queue runs, prompt assists, and post-processes
+     * stay mutually exclusive; item-scoped regenerations overlap any of them
+     * and each other, sharing the task's concurrency slots.
+     *
+     * @type {Map<string, {ops: Set<{kind: string, passKey: string|null, keys: Set<string>, controller: AbortController}>, limit: number, inFlight: number, waiters: Array<{resolve: Function, reject: Function}>}>}
+     */
+    const taskOps = new Map();
     const sendEvent = (taskId, passKey, type, payload = {}) => {
         if (typeof emit !== 'function') return;
         try {
@@ -153,6 +159,81 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             // Notifications are advisory; durable checkpoints remain authoritative.
         }
     };
+
+    function opsEntry(taskId) {
+        let entry = taskOps.get(taskId);
+        if (!entry) {
+            entry = { ops: new Set(), limit: 1, inFlight: 0, waiters: [] };
+            taskOps.set(taskId, entry);
+        }
+        return entry;
+    }
+
+    function pruneEntry(taskId, entry) {
+        if (entry.ops.size === 0 && entry.inFlight === 0 && entry.waiters.length === 0) {
+            taskOps.delete(taskId);
+        }
+    }
+
+    function hasBlockingOp(entry, kinds) {
+        for (const op of entry.ops) {
+            if (kinds.includes(op.kind)) return true;
+        }
+        return false;
+    }
+
+    /** Whether another live op claimed this item of this pass. */
+    function claimedByOtherOp(entry, self, passKey, key) {
+        for (const op of entry.ops) {
+            if (op !== self && op.passKey === passKey && op.keys.has(key)) return true;
+        }
+        return false;
+    }
+
+    /** Whether another live queue run owns this pass's bookkeeping. */
+    function hasRunOpForPass(entry, self, passKey) {
+        for (const op of entry.ops) {
+            if (op !== self && op.kind === 'run' && op.passKey === passKey) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Takes a shared per-task concurrency slot; waits when the task's limit is
+     * saturated. Rejects with the cancellation error when aborted while queued.
+     *
+     * @param {object} entry Task op entry.
+     * @param {AbortSignal} signal Op abort signal.
+     * @returns {Promise<void>} Resolves once the slot is held.
+     */
+    function acquireSlot(entry, signal) {
+        throwIfAborted(signal);
+        if (entry.inFlight < entry.limit) {
+            entry.inFlight++;
+            return Promise.resolve();
+        }
+        return new Promise((resolve, reject) => {
+            const waiter = { resolve, reject };
+            entry.waiters.push(waiter);
+            signal.addEventListener('abort', () => {
+                const index = entry.waiters.indexOf(waiter);
+                if (index >= 0) {
+                    entry.waiters.splice(index, 1);
+                    reject(new Error('Job cancelled.'));
+                }
+            }, { once: true });
+        });
+    }
+
+    function releaseSlot(entry) {
+        const next = entry.waiters.shift();
+        if (next) {
+            // Hand the slot over; the in-flight count is unchanged.
+            next.resolve();
+        } else {
+            entry.inFlight--;
+        }
+    }
 
     async function runPass({
         taskId,
@@ -165,11 +246,20 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         onScheduled = null,
     }) {
         if (!PASS_KEYS.includes(passKey)) throw new TypeError(`Invalid pass key: ${passKey}`);
-        if (active.has(taskId)) throw new TaskAlreadyRunningError(taskId);
+        // Item-scoped runs are regenerations: they overlap queue runs and
+        // other regenerations. Queue runs stay exclusive with queue runs,
+        // assists, and post-processes; nothing overlaps an assist/post.
+        const isRegen = Array.isArray(itemKeys) && itemKeys.length > 0;
+        const kind = isRegen ? 'regen' : 'run';
+        const entry = opsEntry(taskId);
+        if (hasBlockingOp(entry, isRegen ? ['assist', 'post'] : ['run', 'assist', 'post'])) {
+            pruneEntry(taskId, entry);
+            throw new TaskAlreadyRunningError(taskId);
+        }
 
-        active.add(taskId);
         const controller = new AbortController();
-        controllers.set(taskId, controller);
+        const op = { kind, passKey, keys: new Set(), controller };
+        entry.ops.add(op);
         const { signal } = controller;
 
         try {
@@ -177,6 +267,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 ? await prepareTask()
                 : await repo.getTask(taskId);
             if (typeof onScheduled === 'function') onScheduled(task);
+            entry.limit = Math.max(1, task.settings.concurrency);
             const keys = targetKeys(task, passKey, scope, itemKeys);
             const inputs = deriveInputs(task, passKey);
             const text = promptText(task, passKey);
@@ -217,14 +308,19 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             const startedAt = new Date().toISOString();
             await repo.checkpoint(taskId, draft => {
                 const pass = draft.passes[passKey];
-                pass.status = 'running';
-                draft.activePass = passKey;
-                draft.execution = { status: 'running', pass: passKey, startedAt };
+                if (!isRegen) {
+                    pass.status = 'running';
+                    draft.activePass = passKey;
+                    draft.execution = { status: 'running', pass: passKey, startedAt };
+                }
                 for (const key of keys) {
                     const item = newItem(pass.items[key]);
                     if (!inputs.has(key)) {
                         item.status = 'skipped';
                         item.error = null;
+                    } else if (claimedByOtherOp(entry, op, passKey, key)) {
+                        // Claimed by an in-flight run/regeneration — leave it untouched.
+                        continue;
                     } else {
                         const promptKey = task.settings.mode === 'combined' ? COMBINED_KEY : key;
                         item.inputHash = hashInputs({ source: inputs.get(key), prompt: prompts.get(promptKey) });
@@ -235,6 +331,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         } else {
                             item.status = 'queued';
                             item.error = null;
+                            op.keys.add(key);
                         }
                     }
                     pass.items[key] = item;
@@ -242,11 +339,14 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             });
             sendEvent(taskId, passKey, 'pass_started', { itemKeys: keys });
 
-            const executableKeys = runnableKeys.filter(key => !blockedKeys.has(key));
+            const executableKeys = runnableKeys.filter(key => !blockedKeys.has(key) && op.keys.has(key));
 
             if (task.settings.mode === 'combined' && executableKeys.length > 0) {
                 let attempts = 0;
+                let acquired = false;
                 try {
+                    await acquireSlot(entry, signal);
+                    acquired = true;
                     throwIfAborted(signal);
                     await repo.checkpoint(taskId, draft => {
                         for (const key of executableKeys) draft.passes[passKey].items[key].status = 'running';
@@ -304,11 +404,16 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                     } catch {
                         // A failed checkpoint must not escape the settled combined queue item.
                     }
+                } finally {
+                    if (acquired) releaseSlot(entry);
                 }
             } else if (task.settings.mode !== 'combined' && executableKeys.length > 0) {
                 const itemTasks = executableKeys.map(key => async () => {
                     let attempts = 0;
+                    let acquired = false;
                     try {
+                        await acquireSlot(entry, signal);
+                        acquired = true;
                         throwIfAborted(signal);
                         await repo.checkpoint(taskId, draft => {
                             draft.passes[passKey].items[key].status = 'running';
@@ -353,6 +458,8 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         } catch {
                             // Every pool task settles even when its failure checkpoint cannot be written.
                         }
+                    } finally {
+                        if (acquired) releaseSlot(entry);
                     }
                 });
                 await runWithConcurrency(itemTasks, Math.max(1, task.settings.concurrency));
@@ -360,30 +467,44 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
 
             const settled = await repo.getTask(taskId);
             if (signal.aborted) {
-                const interruptedAt = new Date().toISOString();
-                const interrupted = await repo.checkpoint(taskId, draft => {
-                    draft.passes[passKey].status = 'interrupted';
-                    draft.activePass = null;
-                    draft.execution = { status: 'interrupted', pass: null, interruptedAt };
-                });
+                if (!isRegen) {
+                    const interruptedAt = new Date().toISOString();
+                    const interrupted = await repo.checkpoint(taskId, draft => {
+                        draft.passes[passKey].status = 'interrupted';
+                        draft.activePass = null;
+                        draft.execution = { status: 'interrupted', pass: null, interruptedAt };
+                    });
+                    sendEvent(taskId, passKey, 'pass_cancelled');
+                    return { passKey, status: 'interrupted', items: itemStatuses(interrupted, passKey, keys) };
+                }
+                // Regenerations never own pass bookkeeping; item statuses were
+                // already folded by the per-item catch above.
                 sendEvent(taskId, passKey, 'pass_cancelled');
-                return { passKey, status: 'interrupted', items: itemStatuses(interrupted, passKey, keys) };
+                return { passKey, status: 'interrupted', items: itemStatuses(settled, passKey, keys) };
             }
 
-            const status = finalStatus(settled, passKey, settled.sources.map(source => source.key));
+            if (isRegen && hasRunOpForPass(entry, op, passKey)) {
+                // A queue run for this pass is live — it finalizes the pass.
+                return { passKey, status: settled.passes[passKey]?.status ?? 'running', items: itemStatuses(settled, passKey, keys) };
+            }
+
             const completed = await repo.checkpoint(taskId, draft => {
+                const status = finalStatus(draft, passKey, draft.sources.map(source => source.key));
                 draft.passes[passKey].status = status;
                 if (status === 'succeeded') {
-                    draft.passes[passKey].inputRevision = computePassInputHash(task, passKey);
+                    draft.passes[passKey].inputRevision = computePassInputHash(draft, passKey);
                 }
-                draft.activePass = null;
-                draft.execution = { status: 'idle', pass: null };
+                if (!isRegen) {
+                    draft.activePass = null;
+                    draft.execution = { status: 'idle', pass: null };
+                }
             });
+            const status = completed.passes[passKey].status;
             sendEvent(taskId, passKey, 'pass_completed', { status });
             return { passKey, status, items: itemStatuses(completed, passKey, keys) };
         } finally {
-            active.delete(taskId);
-            controllers.delete(taskId);
+            entry.ops.delete(op);
+            pruneEntry(taskId, entry);
         }
     }
 
@@ -395,12 +516,17 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         prepareTask = null,
         onScheduled = null,
     }) {
-        if (active.has(taskId)) throw new TaskAlreadyRunningError(taskId);
         if (!PROMPT_KEYS.includes(promptKey)) throw new TypeError(`Invalid prompt key: ${promptKey}`);
 
-        active.add(taskId);
+        const entry = opsEntry(taskId);
+        if (entry.ops.size > 0) {
+            pruneEntry(taskId, entry);
+            throw new TaskAlreadyRunningError(taskId);
+        }
+
         const controller = new AbortController();
-        controllers.set(taskId, controller);
+        const op = { kind: 'assist', passKey: null, keys: new Set(), controller };
+        entry.ops.add(op);
         const { signal } = controller;
 
         try {
@@ -460,17 +586,21 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 throw error;
             }
         } finally {
-            active.delete(taskId);
-            controllers.delete(taskId);
+            entry.ops.delete(op);
+            pruneEntry(taskId, entry);
         }
     }
 
     async function runPostProcess({ taskId, repo, userDirectories }) {
-        if (active.has(taskId)) throw new TaskAlreadyRunningError(taskId);
+        const entry = opsEntry(taskId);
+        if (entry.ops.size > 0) {
+            pruneEntry(taskId, entry);
+            throw new TaskAlreadyRunningError(taskId);
+        }
 
-        active.add(taskId);
         const controller = new AbortController();
-        controllers.set(taskId, controller);
+        const op = { kind: 'post', passKey: null, keys: new Set(), controller };
+        entry.ops.add(op);
         const { signal } = controller;
 
         try {
@@ -536,8 +666,8 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 throw error;
             }
         } finally {
-            active.delete(taskId);
-            controllers.delete(taskId);
+            entry.ops.delete(op);
+            pruneEntry(taskId, entry);
         }
     }
 
@@ -553,9 +683,11 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
     }
 
     async function cancel(taskId) {
-        const controller = controllers.get(taskId);
-        if (!controller) return false;
-        controller.abort();
+        const entry = taskOps.get(taskId);
+        if (!entry || entry.ops.size === 0) return false;
+        for (const op of entry.ops) {
+            op.controller.abort();
+        }
         return true;
     }
 
