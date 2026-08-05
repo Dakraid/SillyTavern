@@ -316,7 +316,6 @@ function makeSnapshot({ settings = {}, prompts = {}, status = 'draft' } = {}) {
             status,
             sources: [],
             settings: {
-                mode: 'individual',
                 concurrency: 2,
                 connectionProfile: null,
                 preset: null,
@@ -326,8 +325,9 @@ function makeSnapshot({ settings = {}, prompts = {}, status = 'draft' } = {}) {
                 xmlEnabled: false,
                 xmlMinify: false,
                 postProcessingEnabled: false,
-                postProcessingMode: 'replace',
+                postProcessingMode: 'append',
                 secondPassEnabled: false,
+                secondPassMode: 'individual',
                 ...settings,
             },
             prompts: {
@@ -674,11 +674,6 @@ describe('promptSettingsPage', () => {
     test('processing, output, and passes controls PATCH sparse settings', () => {
         const { actions } = renderPage(makeSnapshot());
 
-        const combined = findOne(container, hasAriaLabel('Combined'));
-        combined.checked = true;
-        combined.fire('change');
-        expect(actions.update).toHaveBeenLastCalledWith({ settings: { mode: 'combined' } });
-
         const concurrency = findOne(container, hasAriaLabel('Concurrency'));
         concurrency.value = '3';
         concurrency.fire('change');
@@ -700,41 +695,83 @@ describe('promptSettingsPage', () => {
         expect(actions.update).toHaveBeenLastCalledWith({ settings: { secondPassEnabled: true } });
 
         const postMode = findOne(container, hasAriaLabel('Post-processing mode'));
-        postMode.value = 'append';
+        postMode.value = 'prepend';
         postMode.fire('change');
-        expect(actions.update).toHaveBeenLastCalledWith({ settings: { postProcessingMode: 'append' } });
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { postProcessingMode: 'prepend' } });
 
-        expect(actions.update).toHaveBeenCalledTimes(6);
+        expect(actions.update).toHaveBeenCalledTimes(5);
     });
 
-    test('concurrency locks in combined mode; pass rows hide unless enabled; summary needs lorebook', () => {
+    test('the processing mode radios are gone; concurrency is always enabled; pass rows hide unless enabled; summary needs lorebook', () => {
         const page = createPromptSettingsPage();
         const actions = makeActions();
 
-        // Default snapshot: individual mode, nothing enabled, card destination.
+        // Default snapshot: nothing enabled, card destination.
         page.render(container, makeSnapshot(), actions);
+        expect(findOne(container, hasAriaLabel('Individual'))).toBe(null);
+        expect(findOne(container, hasAriaLabel('Combined'))).toBe(null);
+        expect(findAll(container, (element) => element.type === 'radio')).toHaveLength(0);
         expect(findOne(container, hasAriaLabel('Concurrency')).disabled).toBe(false);
+        expect(findOne(container, hasAriaLabel('Concurrency')).value).toBe('2');
+        expect(findOne(container, hasAriaLabel('Second-pass mode')).parentElement.hidden).toBe(true);
         expect(findOne(container, hasFieldKey('prompt:secondPass:text')).parentElement.hidden).toBe(true);
         expect(findOne(container, hasFieldKey('prompt:post:text')).parentElement.hidden).toBe(true);
         expect(findOne(container, hasAriaLabel('Post-processing mode')).parentElement.hidden).toBe(true);
         expect(findOne(container, hasFieldKey('prompt:summary:text')).parentElement.hidden).toBe(true);
 
-        // Combined + passes enabled + lorebook destination.
+        // Passes enabled + lorebook destination: concurrency STAYS enabled
+        // (Transform 1 is always per-card) and the pass rows reveal.
         page.render(container, makeSnapshot({
             settings: {
-                mode: 'combined',
                 secondPassEnabled: true,
+                secondPassMode: 'combined',
                 postProcessingEnabled: true,
                 destination: 'lorebook',
             },
         }), actions);
-        const locked = findOne(container, hasAriaLabel('Concurrency'));
-        expect(locked.disabled).toBe(true);
-        expect(locked.title).toContain('individual mode');
+        expect(findOne(container, hasAriaLabel('Concurrency')).disabled).toBe(false);
+        expect(findOne(container, hasAriaLabel('Second-pass mode')).parentElement.hidden).toBe(false);
         expect(findOne(container, hasFieldKey('prompt:secondPass:text')).parentElement.hidden).toBe(false);
         expect(findOne(container, hasFieldKey('prompt:post:text')).parentElement.hidden).toBe(false);
         expect(findOne(container, hasAriaLabel('Post-processing mode')).parentElement.hidden).toBe(false);
         expect(findOne(container, hasFieldKey('prompt:summary:text')).parentElement.hidden).toBe(false);
+    });
+
+    test('the second-pass mode select lists the pinned options and PATCHes secondPassMode', () => {
+        const { actions } = renderPage(makeSnapshot({ settings: { secondPassEnabled: true } }));
+
+        const select = findOne(container, hasAriaLabel('Second-pass mode'));
+        expect(select.tagName).toBe('SELECT');
+        expect(select.children.map((option) => option.value)).toEqual(['individual', 'combined']);
+        expect(select.children[0].textContent).toContain('Per-card');
+        expect(select.children[1].textContent).toContain('Full card');
+        // Default resolution: absent/unknown values show individual.
+        expect(select.value).toBe('individual');
+
+        select.value = 'combined';
+        select.fire('change');
+        expect(actions.update).toHaveBeenCalledTimes(1);
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { secondPassMode: 'combined' } });
+
+        // A stored combined mode renders selected.
+        const combined = renderPage(makeSnapshot({ settings: { secondPassEnabled: true, secondPassMode: 'combined' } }));
+        expect(findOne(combined.root, hasAriaLabel('Second-pass mode')).value).toBe('combined');
+    });
+
+    test('the post-processing mode select offers only Prepend/Append; legacy replace resolves to append', () => {
+        const { root } = renderPage(makeSnapshot({ settings: { postProcessingEnabled: true } }));
+        const select = findOne(root, hasAriaLabel('Post-processing mode'));
+        expect(select.children.map((option) => option.value)).toEqual(['prepend', 'append']);
+        // Fixture default.
+        expect(select.value).toBe('append');
+
+        // A legacy stored 'replace' normalizes to 'append' for display.
+        const legacy = renderPage(makeSnapshot({ settings: { postProcessingEnabled: true, postProcessingMode: 'replace' } }));
+        expect(findOne(legacy.root, hasAriaLabel('Post-processing mode')).value).toBe('append');
+
+        // Unknown values fall back to append as well.
+        const unknown = renderPage(makeSnapshot({ settings: { postProcessingEnabled: true, postProcessingMode: 'weird' } }));
+        expect(findOne(unknown.root, hasAriaLabel('Post-processing mode')).value).toBe('append');
     });
 
     test('pass prompt textareas commit on change as sparse prompt patches', () => {
@@ -809,7 +846,7 @@ describe('promptSettingsPage', () => {
 
         expect(() => {
             page.render(container, makeSnapshot(), actions);
-            page.render(container, makeSnapshot({ settings: { mode: 'combined' } }), actions);
+            page.render(container, makeSnapshot({ settings: { secondPassMode: 'combined' } }), actions);
         }).not.toThrow();
         expect(container.children).toHaveLength(1);
         expect(findAll(container, hasFieldKey('prompt:main:text'))).toHaveLength(1);

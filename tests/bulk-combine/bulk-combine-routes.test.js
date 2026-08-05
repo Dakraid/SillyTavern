@@ -525,7 +525,7 @@ describe('/api/bulk-combine task routes', () => {
             mergedDescription: '<character><name>Alice</name></character>',
             post: {
                 enabled: false,
-                mode: 'replace',
+                mode: 'append',
                 input: '<character><name>Alice</name></character>',
                 output: '',
             },

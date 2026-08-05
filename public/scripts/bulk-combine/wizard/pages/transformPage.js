@@ -7,8 +7,10 @@
  *
  * Layout: a toolbar on top (Run/Resume, Regenerate all, Cancel, queue
  * totals), then two columns. LEFT: a compact item status list — one row per
- * source key in individual mode, or ONE merged `__combined__` placeholder
- * row in combined mode (the pass runs as a single big item) — with avatar
+ * source key in a per-source pass, or ONE merged `__combined__` placeholder
+ * row in a merged pass (the pass runs as a single big item: Transform 2 in
+ * combined second-pass mode, or the summary following it; Transform 1 is
+ * always per-source) — with avatar
  * thumbnail, name, and status badge, behind a name/status filter. Clicking a row selects it (closure state, local
  * re-render — NEVER a server PATCH) and updates the RIGHT detail inspector:
  * character avatar left of a large editable output textbox, a read-only
@@ -102,7 +104,7 @@ const HINT_NOTE = 'A note attached to this item. Recorded as applied when a sing
 const HINT_APPLIED_TITLE = 'Set server-side: the last single-item regeneration ran with a non-empty hint.';
 const EMPTY_LIST_NOTE = 'No source cards — add characters on the Cards page.';
 
-/** Item key of the single merged item in combined-mode passes (mirrors the server). */
+/** Item key of the single merged item in a merged pass (mirrors the server). */
 const COMBINED_ITEM_KEY = '__combined__';
 
 /**
@@ -241,21 +243,37 @@ export function createTransformPage({ passKey, title } = {}) {
         return Array.isArray(taskOf().sources) ? taskOf().sources : [];
     }
 
-    /** @returns {boolean} Whether the task runs in combined (one merged pass) mode. */
-    function combinedMode() {
-        return recordOf(taskOf().settings).mode === 'combined';
+    /**
+     * Whether THIS pass runs as ONE merged `__combined__` item (pinned
+     * contract): Transform 1 always runs per-source; Transform 2 is merged
+     * only in the combined second-pass mode; the summary follows the
+     * upstream shape — merged exactly when the combined second pass ran.
+     *
+     * @returns {boolean} True when this pass is a single merged item.
+     */
+    function mergedPass() {
+        const settings = recordOf(taskOf().settings);
+        if (pass === 'transform2') {
+            // The page is disabled when the second pass is off, so the mode
+            // alone decides here.
+            return settings.secondPassMode === 'combined';
+        }
+        if (pass === 'summary') {
+            return settings.secondPassEnabled === true && settings.secondPassMode === 'combined';
+        }
+        return false;
     }
 
     /**
-     * Rows shown in the item list: one per source in individual mode; a
-     * single merged placeholder in combined mode (the pass runs as one big
+     * Rows shown in the item list: one per source in a per-source pass; a
+     * single merged placeholder in a merged pass (the pass runs as one big
      * item covering all sources).
      *
      * @returns {object[]} Display source records.
      */
     function displaySources() {
         const sources = sourcesOf();
-        if (!combinedMode() || sources.length === 0) {
+        if (!mergedPass() || sources.length === 0) {
             return sources;
         }
         return [{

@@ -30,14 +30,14 @@ function source(key, name) {
     };
 }
 
-async function createTask({ count = 3, mode = 'individual', concurrency = 1 } = {}) {
+async function createTask({ count = 3, secondPassMode = 'individual', concurrency = 1 } = {}) {
     const created = await repo.createTask({ name: 'Runner task' });
     return repo.updateTask(created.id, task => {
         task.sources = Array.from({ length: count }, (_, index) => source(
             String.fromCharCode(97 + index),
             `Character ${index + 1}`,
         ));
-        task.settings.mode = mode;
+        task.settings.secondPassMode = secondPassMode;
         task.settings.concurrency = concurrency;
         task.settings.outputTokens = 2;
         task.settings.totalContextTokens = 1000;
@@ -229,69 +229,80 @@ describe('bulk combine task runner', () => {
         expect(executeCompletion).toHaveBeenCalledTimes(2);
     });
 
-    test('runs combined mode as one merged item holding the whole response', async () => {
-        const task = await createTask({ mode: 'combined' });
-        const output = [
-            '<character><name>Character 1</name><description>First</description></character>',
-            '<character><name>Character 2</name><description>Second</description></character>',
-            '<character><name>Character 3</name><description>Third</description></character>',
-        ].join('\n');
-        const executeCompletion = jest.fn(async () => completion(output));
+    test('runs transform1 per source when transform2 is configured as combined', async () => {
+        const task = await createTask({ secondPassMode: 'combined' });
+        const executeCompletion = jest.fn(async ({ body }) => completion(`<result>${keyFromPrompt(body.messages[0].content)}</result>`));
         const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
 
         const result = await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
         const stored = await repo.getTask(task.id);
 
-        expect(executeCompletion).toHaveBeenCalledTimes(1);
-        expect(result).toMatchObject({ status: 'succeeded', items: { __combined__: 'succeeded' } });
-        expect(stored.passes.transform1.items.__combined__.output).toBe(output);
-        expect(stored.passes.transform1.items.__combined__.error).toBe(null);
-        expect(stored.passes.transform1.status).toBe('succeeded');
+        expect(executeCompletion).toHaveBeenCalledTimes(3);
+        expect(result.items).toEqual({ a: 'succeeded', b: 'succeeded', c: 'succeeded' });
+        expect(stored.passes.transform1.items).not.toHaveProperty('__combined__');
     });
 
-    test('feeds the merged transform1 output into combined transform2 and summary', async () => {
-        const task = await createTask({ mode: 'combined' });
+    test('runs one combined transform2 over all transform1 outputs and summary follows its shape', async () => {
+        const task = await createTask({ secondPassMode: 'combined' });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.secondPassEnabled = true;
+            draft.passes.transform1.items = {
+                a: { status: 'succeeded', output: 'T1 Alpha' },
+                b: { status: 'succeeded', output: 'T1 Beta' },
+                c: { status: 'succeeded', output: 'T1 Gamma' },
+            };
+        });
+        const executeCompletion = jest.fn()
+            .mockResolvedValueOnce(completion('<merged>T2</merged>'))
+            .mockResolvedValueOnce(completion('Merged summary'));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const transform2 = await runner.runPass({ taskId: task.id, passKey: 'transform2', repo, userDirectories: {} });
+        const transform2Prompt = executeCompletion.mock.calls[0][0].body.messages[0].content;
+        expect(executeCompletion).toHaveBeenCalledTimes(1);
+        expect(transform2Prompt).toContain('T1 Alpha\n\nT1 Beta\n\nT1 Gamma');
+        expect(transform2.items).toEqual({ __combined__: 'succeeded' });
+        expect((await repo.getTask(task.id)).passes.transform2.items.__combined__.output).toBe('<merged>T2</merged>');
+
+        const summary = await runner.runPass({ taskId: task.id, passKey: 'summary', repo, userDirectories: {} });
+        const summaryPrompt = executeCompletion.mock.calls[1][0].body.messages[0].content;
+        expect(executeCompletion).toHaveBeenCalledTimes(2);
+        expect(summaryPrompt).toContain('<merged>T2</merged>');
+        expect(summary.items).toEqual({ __combined__: 'succeeded' });
+    });
+
+    test('skips a combined transform2 without any transform1 outputs (no LLM call)', async () => {
+        const task = await createTask({ secondPassMode: 'combined' });
         await repo.checkpoint(task.id, draft => {
             draft.settings.secondPassEnabled = true;
         });
-        const prompts = [];
-        const executeCompletion = jest.fn(async ({ body }) => {
-            prompts.push(body.messages[0].content);
-            return completion(`<character><name>Merged pass ${prompts.length}</name></character>`);
-        });
+        const executeCompletion = jest.fn(async () => completion('<merged>T2</merged>'));
         const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
 
-        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
-        const transform2 = await runner.runPass({ taskId: task.id, passKey: 'transform2', repo, userDirectories: {} });
-        const summary = await runner.runPass({ taskId: task.id, passKey: 'summary', repo, userDirectories: {} });
+        await runner.runPass({ taskId: task.id, passKey: 'transform2', repo, userDirectories: {} });
         const stored = await repo.getTask(task.id);
 
-        // Transform 1 embeds every source block; follow-ups consume the
-        // upstream merged document, not per-source blocks.
-        expect(prompts[0]).toContain('Character 1 description');
-        expect(prompts[0]).toContain('Character 3 description');
-        expect(prompts[1]).toContain('Merged pass 1');
-        expect(prompts[1]).toContain('Improve the transformed description');
-        expect(prompts[2]).toContain('Merged pass 2');
-        expect(transform2.items).toEqual({ __combined__: 'succeeded' });
-        expect(summary.items).toEqual({ __combined__: 'succeeded' });
-        expect(stored.passes.summary.items.__combined__.output).toContain('Merged pass 3');
+        expect(executeCompletion).not.toHaveBeenCalled();
+        expect(stored.passes.transform2.items).not.toHaveProperty('__combined__');
+        expect(Object.values(stored.passes.transform2.items).every(item => item.status === 'skipped')).toBe(true);
     });
 
-    test('resumes an interrupted combined pass through its merged item', async () => {
-        const task = await createTask({ mode: 'combined' });
+    test('resumes an interrupted merged transform2 through its combined item', async () => {
+        const task = await createTask({ secondPassMode: 'combined' });
         await repo.checkpoint(task.id, draft => {
-            draft.passes.transform1.status = 'interrupted';
-            draft.passes.transform1.items.__combined__ = { status: 'interrupted' };
+            draft.settings.secondPassEnabled = true;
+            draft.passes.transform1.items.a = { status: 'succeeded', output: 'T1' };
+            draft.passes.transform2.status = 'interrupted';
+            draft.passes.transform2.items.__combined__ = { status: 'interrupted' };
         });
         const executeCompletion = jest.fn(async () => completion('<character><name>Merged</name></character>'));
         const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
 
-        const result = await runner.resume({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        const result = await runner.resume({ taskId: task.id, passKey: 'transform2', repo, userDirectories: {} });
 
         expect(result.status).toBe('succeeded');
         expect(executeCompletion).toHaveBeenCalledTimes(1);
-        expect((await repo.getTask(task.id)).passes.transform1.items.__combined__.status).toBe('succeeded');
+        expect((await repo.getTask(task.id)).passes.transform2.items.__combined__.status).toBe('succeeded');
     });
 
     test('cancels running work, retaining queued items for resume', async () => {
@@ -428,7 +439,7 @@ describe('bulk combine task runner', () => {
         expect(executeCompletion).not.toHaveBeenCalled();
     });
 
-    test('derives transform2 and summary inputs from the latest successful enabled transform', async () => {
+    test('runs individual transform2 and summary per succeeded source', async () => {
         const task = await createTask({ count: 2 });
         await repo.checkpoint(task.id, draft => {
             draft.settings.secondPassEnabled = true;
@@ -688,30 +699,25 @@ describe('bulk combine task runner', () => {
         expect(events.at(-1).type).toBe('post_process_completed');
     });
 
-    test('checkpoints a failed replace when XML corpus counts differ', async () => {
+    test('normalizes a legacy replace post mode to append before execution', async () => {
         const task = await preparePostTask({ count: 2 });
         await repo.checkpoint(task.id, draft => {
             draft.settings.postProcessingMode = 'replace';
         });
-        const executeCompletion = jest.fn(async () => completion('<character><name>Only one</name></character>'));
-        const events = [];
-        const runner = createTaskRunner({
-            executeCompletion,
-            countTokens: async () => 1,
-            emit: (_taskId, event) => events.push(event),
-        });
+        const postOutput = '<character><name>Additional</name></character>';
+        const executeCompletion = jest.fn(async () => completion(postOutput));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
 
-        await expect(runner.runPostProcess({ taskId: task.id, repo, userDirectories: {} })).rejects.toThrow(
-            'Post-processing returned 1 root XML corpus block(s), expected 2.',
-        );
+        await expect(runner.runPostProcess({ taskId: task.id, repo, userDirectories: {} }))
+            .resolves.toMatchObject({ status: 'succeeded' });
         const stored = await repo.getTask(task.id);
 
+        expect(stored.settings.postProcessingMode).toBe('append');
         expect(stored.post).toMatchObject({
-            status: 'failed',
-            error: 'Error: Post-processing returned 1 root XML corpus block(s), expected 2.',
-            output: '',
+            status: 'succeeded',
+            mode: 'append',
+            output: expect.stringContaining(postOutput),
         });
-        expect(events.at(-1).type).toBe('post_process_failed');
     });
 
     test('skips post processing when disabled or when the merged description is empty', async () => {

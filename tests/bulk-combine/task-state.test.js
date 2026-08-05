@@ -7,6 +7,7 @@ import {
     hashInputs,
     isValidTask,
     normalizeTask,
+    transform2CombinedDocument,
 } from '../../src/util/bulk-combine/task-state.js';
 
 describe('Bulk Combine task state', () => {
@@ -40,7 +41,7 @@ describe('Bulk Combine task state', () => {
         });
         expect(task.expiresAt).toBe('2026-08-09T12:00:00.000Z');
         expect(task.settings).toMatchObject({
-            mode: 'individual',
+            secondPassMode: 'individual',
             concurrency: 1,
             connectionProfile: null,
             preset: null,
@@ -49,9 +50,10 @@ describe('Bulk Combine task state', () => {
             destination: 'card',
             xmlMinify: false,
             postProcessingEnabled: false,
-            postProcessingMode: 'replace',
+            postProcessingMode: 'append',
             secondPassEnabled: false,
         });
+        expect(task.settings).not.toHaveProperty('mode');
         expect(task.prompts.main).toEqual({
             text: '',
             assistant: { request: '', proposal: '', diff: '', applied: false, error: '' },
@@ -69,7 +71,7 @@ describe('Bulk Combine task state', () => {
             revision: -4,
             currentPage: 0,
             sources: 'wrong',
-            settings: { mode: 'unknown', concurrency: 'many', connectionProfile: { apiKey: 'secret' } },
+            settings: { secondPassMode: 'unknown', concurrency: 'many', connectionProfile: { apiKey: 'secret' } },
             prompts: { main: { text: 99, assistant: { request: 5, applied: 'yes' } } },
             passes: { transform1: { status: 5, inputRevision: -1, items: [] } },
             archivedAt: 'not-a-date',
@@ -82,7 +84,7 @@ describe('Bulk Combine task state', () => {
         expect(normalized.revision).toBe(1);
         expect(normalized.currentPage).toBe(1);
         expect(normalized.sources).toEqual([]);
-        expect(normalized.settings).toMatchObject({ mode: 'individual', concurrency: 1, connectionProfile: null });
+        expect(normalized.settings).toMatchObject({ secondPassMode: 'individual', concurrency: 1, connectionProfile: null });
         expect(normalized.prompts.main.text).toBe('');
         expect(normalized.passes.transform1).toEqual({ status: 'pending', inputRevision: null, items: {} });
         expect(normalized.completion).toEqual({});
@@ -96,6 +98,38 @@ describe('Bulk Combine task state', () => {
         expect(isValidTask({})).toBe(false);
         expect(isValidTask({ ...createEmptyTask({ name: 'Valid' }), revision: 0 })).toBe(false);
         expect(isValidTask({ ...createEmptyTask({ name: 'Valid' }), completion: null })).toBe(false);
+    });
+
+    test('migrates legacy combined and replace settings', () => {
+        const normalized = normalizeTask({
+            settings: {
+                mode: 'combined',
+                secondPassEnabled: false,
+                postProcessingMode: 'replace',
+            },
+        });
+
+        expect(normalized.settings).toMatchObject({
+            secondPassMode: 'combined',
+            secondPassEnabled: false,
+            postProcessingMode: 'append',
+        });
+        expect(normalized.settings).not.toHaveProperty('mode');
+    });
+
+    test('joins transform1 outputs in source order and falls back to a legacy merged item', () => {
+        const task = createEmptyTask({ name: 'Combined document' });
+        task.sources = [{ key: 'b' }, { key: 'a' }];
+        task.passes.transform1.items = {
+            a: { status: 'succeeded', output: 'Alpha' },
+            b: { status: 'succeeded', output: 'Beta' },
+            __combined__: { status: 'succeeded', output: 'Legacy' },
+        };
+        expect(transform2CombinedDocument(task)).toBe('Beta\n\nAlpha');
+
+        task.passes.transform1.items.a.status = 'failed';
+        task.passes.transform1.items.b.status = 'failed';
+        expect(transform2CombinedDocument(task)).toBe('Legacy');
     });
 
     test('preserves a completion settings snapshot during normalization', () => {

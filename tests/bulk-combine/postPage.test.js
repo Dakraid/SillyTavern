@@ -162,7 +162,7 @@ function makeSnapshot(overrides = {}) {
         id: 'task-1',
         name: 'Task',
         revision: 1,
-        settings: { postProcessingEnabled: true, postProcessingMode: 'replace' },
+        settings: { postProcessingEnabled: true, postProcessingMode: 'append' },
         prompts: { post: { text: '', assistant: { request: '', proposal: '', diff: '', applied: false, error: '' } } },
         post: { status: 'pending', input: '', output: '', error: '' },
     };
@@ -301,14 +301,32 @@ describe('postPage', () => {
         expect(actions.update).toHaveBeenCalledWith({ prompts: { post: { text: 'new draft' } } });
     });
 
+    test('the mode select offers only prepend/append; a legacy stored replace resolves to append', () => {
+        const { root } = renderPage();
+        const select = findOne(root, (e) => e.id === 'bc-task-post-mode');
+        expect(select.children.map((option) => option.value)).toEqual(['prepend', 'append']);
+        // Fixture default is append.
+        expect(select.value).toBe('append');
+        // The note explains the append behavior (added around the transform output, never editing it).
+        const note = findOne(root, hasClass('bc-task-post-mode-note'));
+        expect(note.textContent).toContain('Append');
+        expect(note.textContent).toContain('never edited');
+
+        // A legacy stored 'replace' normalizes to 'append' for display.
+        const legacy = renderPage(makeSnapshot({ task: { settings: { postProcessingMode: 'replace' } } }));
+        expect(findOne(legacy.root, (e) => e.id === 'bc-task-post-mode').value).toBe('append');
+        expect(findOne(legacy.root, hasClass('bc-task-post-mode-note')).textContent).toContain('Append');
+    });
+
     test('mode select change patches postProcessingMode and updates the note', () => {
         const { root, actions } = renderPage();
         const select = findOne(root, (e) => e.id === 'bc-task-post-mode');
-        select.value = 'append';
+        select.value = 'prepend';
         select.fire('change');
-        expect(actions.update).toHaveBeenCalledWith({ settings: { postProcessingMode: 'append' } });
+        expect(actions.update).toHaveBeenCalledWith({ settings: { postProcessingMode: 'prepend' } });
         const note = findOne(root, hasClass('bc-task-post-mode-note'));
-        expect(note.textContent).toContain('Append');
+        expect(note.textContent).toContain('Prepend');
+        expect(note.textContent).toContain('never edited');
     });
 
     test('Run is disabled without prompt text, enabled with a draft, commits the draft then calls runPostProcess', async () => {

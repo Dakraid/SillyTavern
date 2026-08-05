@@ -11,8 +11,8 @@
  * snapshot re-renders), an inline rich diff (`diff_match_patch` when the
  * browser bundle exposes it, plain proposal text otherwise) with
  * Apply/Dismiss. Below the workspaces, a grouped settings drawer (native
- * `<details>` sections) edits connection, token windows, processing mode,
- * output/lorebook, and optional passes — every control PATCHes sparsely on
+ * `<details>` sections) edits connection, token windows, processing
+ * concurrency, output/lorebook, and optional passes — every control PATCHes sparsely on
  * `change`. Each prompt field (main, second pass, summary, post-processing)
  * has a preset row (select + Apply/Save/Delete) backed by the new
  * `bulk_combine_task_prompt_presets` store (`services/promptPresets.js`);
@@ -1037,52 +1037,19 @@ export function createPromptSettingsPage() {
     }
 
     /**
-     * Builds one processing-mode radio option (title + explanation).
-     *
-     * @param {object} options Radio options.
-     * @param {string} options.value Mode value.
-     * @param {string} options.title Mode title.
-     * @param {string} options.description Short explanation.
-     * @param {boolean} options.checked Current selection.
-     * @returns {Element} Label element wrapping the radio.
-     */
-    function buildModeOption({ value, title, description, checked }) {
-        const wrapper = document.createElement('label');
-        wrapper.className = 'bc-task-mode-option';
-        const input = document.createElement('input');
-        input.type = 'radio';
-        input.name = 'bc-task-processing-mode';
-        input.value = value;
-        input.checked = checked === true;
-        input.setAttribute('aria-label', title);
-        input.addEventListener('change', () => patchSettings('mode', value));
-        const text = document.createElement('span');
-        text.className = 'bc-task-mode-text';
-        const name = document.createElement('span');
-        name.className = 'bc-task-mode-title';
-        name.textContent = title;
-        const detail = document.createElement('span');
-        detail.className = 'bc-task-mode-description';
-        detail.textContent = description;
-        text.append(name, detail);
-        wrapper.append(input, text);
-        return wrapper;
-    }
-
-    /**
-     * Builds the Processing group (mode radios + concurrency).
+     * Builds the Processing group (concurrency). Transform 1 always runs
+     * per card; pass-level merging is configured per pass (see Optional
+     * Passes).
      *
      * @returns {Element} Settings group.
      */
     function buildProcessingGroup() {
         const settings = settingsOf();
-        const mode = settings.mode === 'combined' ? 'combined' : 'individual';
 
         const concurrencyInput = buildNumberInput({
             ariaLabel: 'Concurrency',
             value: Number.isSafeInteger(settings.concurrency) ? settings.concurrency : 1,
             min: 1,
-            disabled: mode !== 'individual',
             onChange: (raw) => {
                 const number = Number(raw);
                 if (Number.isSafeInteger(number) && number >= 1) {
@@ -1090,24 +1057,14 @@ export function createPromptSettingsPage() {
                 }
             },
         });
-        if (concurrencyInput.disabled) {
-            concurrencyInput.title = 'Concurrency only applies to individual mode.';
-        }
+
+        const note = document.createElement('span');
+        note.className = 'bc-task-field-hint';
+        note.textContent = 'Transform 1 always processes each card individually.';
 
         return buildGroup('processing', 'Processing', [
-            buildModeOption({
-                value: 'individual',
-                title: 'Individual',
-                description: 'Generate each card in its own request, then merge the results.',
-                checked: mode === 'individual',
-            }),
-            buildModeOption({
-                value: 'combined',
-                title: 'Combined',
-                description: 'Generate one merged result for all cards in a single request.',
-                checked: mode === 'combined',
-            }),
-            buildField('Concurrency', concurrencyInput, 'Parallel requests in individual mode.'),
+            note,
+            buildField('Concurrency', concurrencyInput, 'Parallel requests per pass.'),
         ]);
     }
 
@@ -1201,12 +1158,24 @@ export function createPromptSettingsPage() {
             onChange: (checked) => patchSettings('secondPassEnabled', checked),
         });
 
+        const secondPassModeSelect = buildSelect({
+            ariaLabel: 'Second-pass mode',
+            options: [
+                { value: 'individual', label: 'Per-card — refine each card separately, assemble automatically' },
+                { value: 'combined', label: 'Full card — one request produces the complete card' },
+            ],
+            value: settings.secondPassMode === 'combined' ? 'combined' : 'individual',
+            onChange: (value) => patchSettings('secondPassMode', value === 'combined' ? 'combined' : 'individual'),
+        });
+        const secondPassModeRow = buildField('Second-pass mode', secondPassModeSelect);
+        secondPassModeRow.hidden = !secondPassEnabled;
+
         const secondPassRow = buildPromptRow({
             label: 'Second-pass instructions',
             promptKey: 'secondPass',
             rows: 4,
             visible: secondPassEnabled,
-            hintText: 'A refinement pass over each first-pass result.',
+            hintText: 'Transform 2 receives all Transform-1 results combined and may rewrite the description.',
         });
 
         const postToggle = buildCheckbox({
@@ -1218,14 +1187,13 @@ export function createPromptSettingsPage() {
         const modeSelect = buildSelect({
             ariaLabel: 'Post-processing mode',
             options: [
-                { value: 'replace', label: 'Replace' },
                 { value: 'prepend', label: 'Prepend' },
                 { value: 'append', label: 'Append' },
             ],
-            value: ['replace', 'prepend', 'append'].includes(settings.postProcessingMode) ? settings.postProcessingMode : 'replace',
+            value: ['prepend', 'append'].includes(settings.postProcessingMode) ? settings.postProcessingMode : 'append',
             onChange: (value) => patchSettings('postProcessingMode', value),
         });
-        const modeRow = buildField('Post-processing mode', modeSelect);
+        const modeRow = buildField('Post-processing mode', modeSelect, 'Post-processing only adds text around the transform output — it never edits it.');
         modeRow.hidden = !postProcessingEnabled;
 
         const postRow = buildPromptRow({
@@ -1245,6 +1213,7 @@ export function createPromptSettingsPage() {
 
         return buildGroup('passes', 'Optional Passes', [
             secondPassToggle,
+            secondPassModeRow,
             secondPassRow,
             postToggle,
             modeRow,

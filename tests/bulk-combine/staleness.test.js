@@ -10,7 +10,6 @@ import {
     computePassInputHash,
     createEmptyTask,
     deriveStaleness,
-    hashInputs,
     relevantSettings,
 } from '../../src/util/bulk-combine/task-state.js';
 
@@ -46,49 +45,8 @@ function source(key, name) {
     };
 }
 
-function settingsSubset(settings, completion) {
-    return {
-        mode: settings.mode,
-        totalContextTokens: settings.totalContextTokens,
-        outputTokens: settings.outputTokens,
-        destination: settings.destination,
-        connectionProfile: settings.connectionProfile,
-        preset: settings.preset,
-        completion,
-    };
-}
-
-function sourcesWithOutputs(sources, pass) {
-    return sources
-        .filter(entry => pass.items[entry.key]?.status === 'succeeded')
-        .map(entry => ({
-            ...entry,
-            fields: {
-                ...entry.fields,
-                description: pass.items[entry.key].output,
-            },
-        }));
-}
-
 function setCurrentRevision(task, passKey) {
-    let sources = task.sources;
-    let prompts = [task.prompts.main.text];
-    if (passKey === 'transform2') {
-        sources = sourcesWithOutputs(task.sources, task.passes.transform1);
-        prompts = [task.prompts.main.text, task.prompts.secondPass.text];
-    } else if (passKey === 'summary') {
-        const inputPass = task.settings.secondPassEnabled
-            && Object.values(task.passes.transform2.items).some(item => item.status === 'succeeded')
-            ? task.passes.transform2
-            : task.passes.transform1;
-        sources = sourcesWithOutputs(task.sources, inputPass);
-        prompts = [task.prompts.summary.text];
-    }
-    task.passes[passKey].inputRevision = hashInputs({
-        sources,
-        prompts,
-        settings: settingsSubset(task.settings, task.completion),
-    });
+    task.passes[passKey].inputRevision = computePassInputHash(task, passKey);
 }
 
 function successfulTask({ secondPassEnabled = true } = {}) {
@@ -337,25 +295,36 @@ describe('Bulk Combine pass staleness', () => {
         });
     });
 
-    test('combined mode hashes the merged upstream item and flags drift', () => {
-        const task = createEmptyTask({ name: 'Combined' });
-        task.settings.mode = 'combined';
-        task.settings.secondPassEnabled = true;
-        task.sources = [source('a', 'Alpha'), source('b', 'Beta')];
-        task.passes.transform1.items[COMBINED_KEY] = { status: 'succeeded', output: '<merged t1 />' };
-        task.passes.transform1.inputRevision = computePassInputHash(task, 'transform1');
-        task.passes.transform2.items[COMBINED_KEY] = { status: 'succeeded', output: '<merged t2 />' };
-        task.passes.transform2.inputRevision = computePassInputHash(task, 'transform2');
+    test('matches the runner input hash for a combined transform2 document', async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'st-bulk-staleness-combined-'));
+        tempRoots.push(root);
+        const repo = new BulkCombineTaskRepository(root);
+        const created = await repo.createTask({ name: 'Combined parity' });
+        const task = await repo.updateTask(created.id, draft => {
+            draft.sources = [source('a', 'Alpha'), source('b', 'Beta')];
+            draft.settings.secondPassEnabled = true;
+            draft.settings.secondPassMode = 'combined';
+            draft.prompts.main.text = 'Transform';
+            draft.prompts.secondPass.text = 'Improve';
+        }, { expectedRevision: created.revision });
+        let call = 0;
+        const runner = createTaskRunner({
+            executeCompletion: async () => {
+                call++;
+                return { status: 200, data: {}, content: call === 1 ? 'T1 Alpha' : call === 2 ? 'T1 Beta' : 'T2 merged' };
+            },
+            countTokens: async () => 1,
+        });
 
-        let staleness = deriveStaleness(task);
-        expect(staleness.transform1.stale).toBe(false);
-        expect(staleness.transform2.stale).toBe(false);
+        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        await runner.runPass({ taskId: task.id, passKey: 'transform2', repo, userDirectories: {} });
+        const stored = await repo.getTask(task.id);
 
-        // Regenerating transform1 changes its merged output → transform2 drifts.
-        task.passes.transform1.items[COMBINED_KEY].output = '<merged t1 NEW />';
-        staleness = deriveStaleness(task);
-        expect(staleness.transform1.stale).toBe(false);
-        expect(staleness.transform2.stale).toBe(true);
-        expect(staleness.transform2.reason).toBe('input_changed');
+        expect(stored.passes.transform2.items[COMBINED_KEY].output).toBe('T2 merged');
+        expect(stored.passes.transform2.inputRevision).toBe(computePassInputHash(stored, 'transform2'));
+        expect(deriveStaleness(stored).transform2).toEqual({ stale: false, reason: 'current' });
+
+        stored.passes.transform1.items.a.output = 'T1 Alpha changed';
+        expect(deriveStaleness(stored).transform2).toEqual({ stale: true, reason: 'input_changed' });
     });
 });

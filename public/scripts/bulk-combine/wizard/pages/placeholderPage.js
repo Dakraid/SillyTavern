@@ -61,7 +61,7 @@ function buildSummaryLines(key, state) {
         case 'prompt':
             return [
                 `Main prompt: ${(task.prompts?.main?.text ?? '').length} character(s).`,
-                `Mode: ${settings.mode ?? 'individual'} · Concurrency limit: ${settings.concurrency ?? 1} · Destination: ${settings.destination ?? 'card'}.`,
+                `Second pass: ${settings.secondPassEnabled === true ? (settings.secondPassMode === 'combined' ? 'combined (full card)' : 'per-card') : 'off'} · Concurrency limit: ${settings.concurrency ?? 1} · Destination: ${settings.destination ?? 'card'}.`,
             ];
         case 'transform1':
         case 'transform2':
@@ -75,7 +75,7 @@ function buildSummaryLines(key, state) {
         case 'post': {
             const post = task.post ?? {};
             return [
-                `Post-processing status: ${post.status ?? 'not run'} (mode: ${settings.postProcessingMode ?? 'replace'}).`,
+                `Post-processing status: ${post.status ?? 'not run'} (mode: ${settings.postProcessingMode ?? 'append'}).`,
             ];
         }
         case 'review': {

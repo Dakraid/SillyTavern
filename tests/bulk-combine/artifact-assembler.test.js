@@ -23,7 +23,7 @@ function makeTask({ destination = 'card', secondPassEnabled = false, xmlMinify =
             destination,
             secondPassEnabled,
             postProcessingEnabled: true,
-            postProcessingMode: 'replace',
+            postProcessingMode: 'append',
             xmlMinify,
         },
         passes: {
@@ -178,21 +178,20 @@ describe('bulk combine artifact assembler', () => {
         ].join('\n'));
     });
 
-    test('applies replace, prepend, append, and invalid-mode-as-replace semantics', () => {
+    test('applies prepend and append, treating removed or unknown modes as append', () => {
         const base = '<character><name>A</name></character>';
-        const replacement = '<character><name>B</name></character>';
+        const addition = '<character><name>B</name></character>';
 
-        expect(applyPostProcess(base, replacement, 'replace')).toEqual({ description: replacement });
-        expect(applyPostProcess(base, replacement, 'prepend')).toEqual({ description: `${replacement}\n\n${base}` });
-        expect(applyPostProcess(base, replacement, 'append')).toEqual({ description: `${base}\n\n${replacement}` });
-        expect(applyPostProcess(base, replacement, 'unknown')).toEqual({ description: replacement });
+        expect(applyPostProcess(base, addition, 'prepend')).toEqual({ description: `${addition}\n\n${base}` });
+        expect(applyPostProcess(base, addition, 'append')).toEqual({ description: `${base}\n\n${addition}` });
+        expect(applyPostProcess(base, addition, 'replace')).toEqual({ description: `${base}\n\n${addition}` });
+        expect(applyPostProcess(base, addition, 'unknown')).toEqual({ description: `${base}\n\n${addition}` });
     });
 
-    test('rejects replace output with a different XML corpus count', () => {
-        const base = '<character>A</character>\n\n<character>B</character>';
-        expect(() => applyPostProcess(base, '<character>A</character>', 'replace')).toThrow(
-            'Post-processing returned 1 root XML corpus block(s), expected 2.',
-        );
+    test('validates post output for both supported modes', () => {
+        const base = '<character>A</character>';
+        expect(() => applyPostProcess(base, '', 'prepend')).toThrow('Generation returned empty output.');
+        expect(() => applyPostProcess(base, '', 'append')).toThrow('Generation returned empty output.');
     });
 
     test('assembles the review payload by derivation and exposes persisted post output', () => {
@@ -209,7 +208,7 @@ describe('bulk combine artifact assembler', () => {
             mergedDescription: buildMergedCardDescription(task),
             post: {
                 enabled: true,
-                mode: 'replace',
+                mode: 'append',
                 input: buildMergedCardDescription(task),
                 output: task.post.output,
             },
@@ -217,10 +216,9 @@ describe('bulk combine artifact assembler', () => {
         });
     });
 
-    test('combined mode assembles one merged block and extracts lorebook entries from it', () => {
+    test('reads a legacy merged transform1 by pass shape and extracts lorebook entries', () => {
         const task = makeTask({ destination: 'lorebook' });
         task.name = 'Merged card';
-        task.settings.mode = 'combined';
         task.passes.transform1.items = {
             __combined__: { status: 'succeeded', output: `${firstXml}\n${secondXml}` },
         };

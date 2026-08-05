@@ -5,9 +5,11 @@
  *
  * Renders the post-processing workspace: a status banner (from
  * `task.post.status` plus upstream derived staleness), the post prompt
- * textarea with an LLM prompt-assist row, the replace/prepend/append mode
- * select, a before/after panel (`task.post.input` captured by the server at
- * run time vs `task.post.output`), and the Run / Skip / Continue toolbar.
+ * textarea with an LLM prompt-assist row, the prepend/append mode select
+ * (post-processing can only add text around the transform output — it
+ * never edits it), a before/after panel (`task.post.input` captured by
+ * the server at run time vs `task.post.output`), and the Run / Skip /
+ * Continue toolbar.
  *
  * Page-module contract: `render(container, snapshot, actions) → Element`
  * (the page heading, used as the focus target). The page rebuilds via
@@ -43,14 +45,15 @@ const UPSTREAM_PASS_KEYS = Object.freeze(['transform1', 'transform2', 'summary']
 const EMPTY_ASSISTANT = Object.freeze({ request: '', proposal: '', diff: '', applied: false, error: '' });
 
 /**
- * Post-processing combine modes with their one-line explanations.
+ * Post-processing combine modes with their one-line explanations. Post
+ * output can only be added before/after the transform output — never
+ * replace it (the legacy 'replace' mode is removed).
  *
  * @type {ReadonlyArray<readonly [string, string]>}
  */
 const POST_MODES = Object.freeze([
-    ['replace', 'Replace — the final description becomes exactly what the post-process returns.'],
-    ['prepend', 'Prepend — the post-process result is inserted before the assembled description.'],
-    ['append', 'Append — the post-process result is added after the assembled description.'],
+    ['prepend', 'Prepend — the post-process result is added before the transform output; the transform text itself is never edited.'],
+    ['append', 'Append — the post-process result is added after the transform output; the transform text itself is never edited.'],
 ]);
 
 const RUN_TITLE = 'Run post-processing now. Fire-and-forget: progress arrives over the task event stream.';
@@ -468,7 +471,7 @@ export function createPostPage() {
      */
     function buildWorkspace() {
         const settings = latestSnapshot?.task?.settings ?? {};
-        const mode = typeof settings.postProcessingMode === 'string' ? settings.postProcessingMode : 'replace';
+        const mode = typeof settings.postProcessingMode === 'string' ? settings.postProcessingMode : 'append';
 
         const section = document.createElement('section');
         section.className = 'bc-task-post-workspace';
@@ -480,7 +483,7 @@ export function createPostPage() {
 
         const note = document.createElement('p');
         note.className = 'bc-task-post-note';
-        note.textContent = 'The prompt runs once over the whole assembled description. Choose how the result combines with the assembled text.';
+        note.textContent = 'The prompt runs once over the whole assembled description. The result is only added before or after the transform output — it never edits it.';
 
         const promptLabel = document.createElement('label');
         promptLabel.className = 'bc-task-post-label';
@@ -522,7 +525,7 @@ export function createPostPage() {
             option.title = explanation;
             select.append(option);
         }
-        select.value = POST_MODES.some(([value]) => value === mode) ? mode : 'replace';
+        select.value = POST_MODES.some(([value]) => value === mode) ? mode : 'append';
         select.disabled = readOnlyMode === true;
         modeRow.append(modeLabel, select);
 
@@ -531,7 +534,7 @@ export function createPostPage() {
         modeNote.textContent = POST_MODES.find(([value]) => value === select.value)?.[1] ?? POST_MODES[0][1];
 
         select.addEventListener('change', () => {
-            const value = String(select.value ?? 'replace');
+            const value = String(select.value ?? 'append');
             modeNote.textContent = POST_MODES.find(([modeValue]) => modeValue === value)?.[1] ?? '';
             void applyPatch(latestActions, { settings: { postProcessingMode: value } });
         });

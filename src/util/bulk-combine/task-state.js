@@ -6,7 +6,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
 const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
 
-/** Item key of the single merged item in combined-mode passes. */
+/** Item key of the single merged item in merged passes. */
 export const COMBINED_KEY = '__combined__';
 
 function isRecord(value) {
@@ -41,7 +41,7 @@ export function newPass() {
 
 function defaultSettings() {
     return {
-        mode: 'individual',
+        secondPassMode: 'individual',
         concurrency: 1,
         connectionProfile: null,
         preset: null,
@@ -51,7 +51,7 @@ function defaultSettings() {
         xmlEnabled: false,
         xmlMinify: false,
         postProcessingEnabled: false,
-        postProcessingMode: 'replace',
+        postProcessingMode: 'append',
         secondPassEnabled: false,
     };
 }
@@ -124,7 +124,7 @@ function normalizeSettings(input) {
     if (!isRecord(input)) return defaults;
 
     return {
-        mode: ['individual', 'combined'].includes(input.mode) ? input.mode : defaults.mode,
+        secondPassMode: input.mode === 'combined' || input.secondPassMode === 'combined' ? 'combined' : defaults.secondPassMode,
         concurrency: Number.isSafeInteger(input.concurrency) && input.concurrency > 0 ? input.concurrency : defaults.concurrency,
         connectionProfile: typeof input.connectionProfile === 'string' && input.connectionProfile ? input.connectionProfile : null,
         preset: typeof input.preset === 'string' && input.preset ? input.preset : null,
@@ -134,7 +134,7 @@ function normalizeSettings(input) {
         xmlEnabled: typeof input.xmlEnabled === 'boolean' ? input.xmlEnabled : defaults.xmlEnabled,
         xmlMinify: typeof input.xmlMinify === 'boolean' ? input.xmlMinify : defaults.xmlMinify,
         postProcessingEnabled: typeof input.postProcessingEnabled === 'boolean' ? input.postProcessingEnabled : defaults.postProcessingEnabled,
-        postProcessingMode: ['replace', 'prepend', 'append'].includes(input.postProcessingMode)
+        postProcessingMode: ['prepend', 'append'].includes(input.postProcessingMode)
             ? input.postProcessingMode
             : defaults.postProcessingMode,
         secondPassEnabled: typeof input.secondPassEnabled === 'boolean' ? input.secondPassEnabled : defaults.secondPassEnabled,
@@ -258,7 +258,7 @@ function isNullableInteger(value) {
 
 function isSettings(value) {
     return isRecord(value)
-        && ['individual', 'combined'].includes(value.mode)
+        && ['individual', 'combined'].includes(value.secondPassMode)
         && Number.isSafeInteger(value.concurrency) && value.concurrency > 0
         && (value.connectionProfile === null || typeof value.connectionProfile === 'string')
         && (value.preset === null || typeof value.preset === 'string')
@@ -268,7 +268,7 @@ function isSettings(value) {
         && typeof value.xmlEnabled === 'boolean'
         && typeof value.xmlMinify === 'boolean'
         && typeof value.postProcessingEnabled === 'boolean'
-        && ['replace', 'prepend', 'append'].includes(value.postProcessingMode)
+        && ['prepend', 'append'].includes(value.postProcessingMode)
         && typeof value.secondPassEnabled === 'boolean';
 }
 
@@ -337,7 +337,7 @@ export function hashInputs(value) {
  */
 export function relevantSettings(settings = {}, completion = {}) {
     return {
-        mode: settings.mode,
+        secondPassMode: settings.secondPassMode,
         totalContextTokens: settings.totalContextTokens,
         outputTokens: settings.outputTokens,
         destination: settings.destination,
@@ -364,13 +364,26 @@ function sourcesWithSucceededOutputs(task, pass) {
 }
 
 /**
- * Combined-mode upstream input: the pass's single merged output wrapped as
- * one synthetic source document, or no sources when it never succeeded.
+ * Joins succeeded per-source Transform-1 outputs for a merged Transform-2,
+ * falling back to a legacy merged Transform-1 item.
+ * @param {object} task Bulk Combine task
+ * @returns {string} Merged Transform-1 document
  */
+export function transform2CombinedDocument(task) {
+    const outputs = task.sources
+        .filter(source => task.passes.transform1.items[source.key]?.status === 'succeeded')
+        .map(source => String(task.passes.transform1.items[source.key].output ?? ''));
+    if (outputs.length > 0) return outputs.join('\n\n');
+
+    const legacy = task.passes.transform1.items[COMBINED_KEY];
+    return legacy?.status === 'succeeded' ? String(legacy.output ?? '') : '';
+}
+
+/** Wraps a succeeded merged pass output as one synthetic source document. */
 function combinedInputSource(pass) {
     const item = pass?.items?.[COMBINED_KEY];
-    return item?.status === 'succeeded' && typeof item.output === 'string' && item.output
-        ? [{ key: COMBINED_KEY, name: COMBINED_KEY, fields: { description: item.output } }]
+    return item?.status === 'succeeded'
+        ? [{ key: COMBINED_KEY, name: COMBINED_KEY, fields: { description: String(item.output ?? '') } }]
         : [];
 }
 
@@ -398,17 +411,21 @@ function passInputPrompts(task, passKey) {
     return [task.prompts.main.text];
 }
 function passInputSources(task, passKey) {
-    const combined = task.settings.mode === 'combined';
     if (passKey === 'transform1') return task.sources;
     if (passKey === 'transform2') {
         if (!task.settings.secondPassEnabled) return [];
-        return combined
-            ? combinedInputSource(task.passes.transform1)
-            : sourcesWithSucceededOutputs(task, task.passes.transform1);
+        if (task.settings.secondPassMode === 'combined') {
+            const document = transform2CombinedDocument(task);
+            // Mirror the runner: no document, no input (keeps the shared hash in parity).
+            return document
+                ? [{ key: COMBINED_KEY, name: task.name || COMBINED_KEY, fields: { description: document } }]
+                : [];
+        }
+        return sourcesWithSucceededOutputs(task, task.passes.transform1);
     }
     const useTransform2 = task.settings.secondPassEnabled && hasSucceededOutput(task.passes.transform2);
     const upstream = useTransform2 ? task.passes.transform2 : task.passes.transform1;
-    return combined
+    return upstream.items[COMBINED_KEY]?.status === 'succeeded'
         ? combinedInputSource(upstream)
         : sourcesWithSucceededOutputs(task, upstream);
 }

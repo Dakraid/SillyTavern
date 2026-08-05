@@ -1,5 +1,4 @@
 import {
-    countXmlCorpus,
     escapeXml,
     extractCommentFromCharacterBlock,
     extractKeysFromCharacterBlock,
@@ -27,12 +26,13 @@ export function selectFullDescriptionPass(task) {
 
 export function getFullDescriptionSources(task) {
     const pass = task?.passes?.[selectFullDescriptionPass(task)];
-    // Combined mode: the pass holds one merged output for all sources.
-    if (task?.settings?.mode === 'combined') {
-        const item = pass?.items?.[COMBINED_KEY];
-        return item?.status === 'succeeded'
-            ? [{ key: COMBINED_KEY, name: sourceName({ name: task?.name }), output: String(item.output ?? '') }]
-            : [];
+    const merged = pass?.items?.[COMBINED_KEY];
+    if (merged?.status === 'succeeded') {
+        return [{
+            key: COMBINED_KEY,
+            name: sourceName({ name: task?.name }),
+            output: String(merged.output ?? ''),
+        }];
     }
     return (Array.isArray(task?.sources) ? task.sources : [])
         .filter(source => pass?.items?.[source.key]?.status === 'succeeded')
@@ -66,16 +66,14 @@ export function getCardDescriptionBlocks(task) {
         }));
     }
 
-    // Combined mode in lorebook destination: one merged block, summarized
-    // when the combined summary pass succeeded.
-    if (task?.settings?.mode === 'combined') {
+    const mergedSummary = task?.passes?.summary?.items?.[COMBINED_KEY];
+    if (mergedSummary?.status === 'succeeded') {
         const name = sourceName({ name: task?.name });
-        const summary = task?.passes?.summary?.items?.[COMBINED_KEY];
-        if (summary?.status === 'succeeded') {
-            return [{ key: COMBINED_KEY, name, xml: buildSummaryBlock(name, summary.output) }];
-        }
-        const full = fullSources.get(COMBINED_KEY);
-        return full ? [{ key: COMBINED_KEY, name, xml: full.output }] : [];
+        return [{ key: COMBINED_KEY, name, xml: buildSummaryBlock(name, mergedSummary.output) }];
+    }
+    const mergedFull = fullSources.get(COMBINED_KEY);
+    if (mergedFull) {
+        return [{ key: COMBINED_KEY, name: mergedFull.name, xml: mergedFull.output }];
     }
 
     return (Array.isArray(task?.sources) ? task.sources : []).flatMap((source) => {
@@ -153,16 +151,7 @@ export function buildMergedCardDescription(task) {
 export function applyPostProcess(baseDescription, postOutput, mode) {
     const output = validateGeneratedGroupCardDescription(postOutput, 0);
     if (mode === 'prepend') return { description: `${output}\n\n${baseDescription}` };
-    if (mode === 'append') return { description: `${baseDescription}\n\n${output}` };
-
-    const inputCorpusCount = countXmlCorpus(baseDescription);
-    const outputCorpusCount = countXmlCorpus(output);
-    if (inputCorpusCount > 0 && outputCorpusCount !== inputCorpusCount) {
-        throw new Error(
-            `Post-processing returned ${outputCorpusCount} root XML corpus block(s), expected ${inputCorpusCount}.`,
-        );
-    }
-    return { description: output };
+    return { description: `${baseDescription}\n\n${output}` };
 }
 
 export function assembleReviewPayload(task) {
@@ -174,7 +163,7 @@ export function assembleReviewPayload(task) {
         mergedDescription,
         post: {
             enabled: task?.settings?.postProcessingEnabled === true,
-            mode: task?.settings?.postProcessingMode ?? 'replace',
+            mode: task?.settings?.postProcessingMode ?? 'append',
             input: mergedDescription,
             output: typeof task?.post?.output === 'string' ? task.post.output : '',
         },

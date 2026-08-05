@@ -2,10 +2,14 @@ import DiffMatchPatch from 'diff-match-patch';
 
 import { runWithConcurrency, throwIfAborted, withRetries } from '../job-manager.js';
 import { applyPostProcess, buildMergedCardDescription } from './artifact-assembler.js';
-import { COMBINED_KEY, computePassInputHash, hashInputs } from './task-state.js';
+import {
+    COMBINED_KEY,
+    computePassInputHash,
+    hashInputs,
+    transform2CombinedDocument,
+} from './task-state.js';
 import {
     CORE_FIELDS,
-    buildCombinedPrompt,
     buildIndividualPrompt,
     buildMergedPassPrompt,
     buildPostProcessPrompt,
@@ -69,39 +73,29 @@ function sourceWithOutput(source, output) {
 }
 
 function deriveInputs(task, passKey) {
-    // Combined mode: one merged item per pass. Transform 1 consumes all
-    // sources in one prompt; transform2/summary consume the upstream pass's
-    // single merged output document.
-    if (task.settings.mode === 'combined') {
-        if (passKey === 'transform1') {
-            return task.sources.length > 0
-                ? new Map([[COMBINED_KEY, { sources: task.sources, document: null }]])
-                : new Map();
-        }
-        if (passKey === 'transform2' && !task.settings.secondPassEnabled) return new Map();
-
-        let inputPass = task.passes.transform1;
-        if (passKey === 'summary'
-            && task.settings.secondPassEnabled
-            && task.passes.transform2.items[COMBINED_KEY]?.status === 'succeeded') {
-            inputPass = task.passes.transform2;
-        }
-        const upstream = inputPass.items[COMBINED_KEY];
-        return upstream?.status === 'succeeded' && upstream.output
-            ? new Map([[COMBINED_KEY, { sources: [], document: upstream.output }]])
-            : new Map();
-    }
-
     if (passKey === 'transform1') {
         return new Map(task.sources.map(source => [source.key, source]));
     }
-    if (passKey === 'transform2' && !task.settings.secondPassEnabled) return new Map();
+    if (passKey === 'transform2') {
+        if (!task.settings.secondPassEnabled) return new Map();
+        if (task.settings.secondPassMode === 'combined') {
+            const document = transform2CombinedDocument(task);
+            // No succeeded Transform-1 outputs yet: nothing to merge, no call.
+            return document
+                ? new Map([[COMBINED_KEY, { sources: [], document }]])
+                : new Map();
+        }
+    }
 
     let inputPass = task.passes.transform1;
     if (passKey === 'summary'
         && task.settings.secondPassEnabled
         && Object.values(task.passes.transform2.items).some(item => item?.status === 'succeeded')) {
         inputPass = task.passes.transform2;
+    }
+    const merged = inputPass.items[COMBINED_KEY];
+    if (merged?.status === 'succeeded') {
+        return new Map([[COMBINED_KEY, { sources: [], document: String(merged.output ?? '') }]]);
     }
 
     const inputs = new Map();
@@ -114,8 +108,8 @@ function deriveInputs(task, passKey) {
     return inputs;
 }
 
-function targetKeys(task, passKey, scope, itemKeys) {
-    if (task.settings.mode === 'combined') {
+function targetKeys(task, passKey, scope, itemKeys, inputs) {
+    if (inputs.has(COMBINED_KEY)) {
         if (Array.isArray(itemKeys) && itemKeys.length > 0) {
             return itemKeys.includes(COMBINED_KEY) ? [COMBINED_KEY] : [];
         }
@@ -300,21 +294,21 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 : await repo.getTask(taskId);
             if (typeof onScheduled === 'function') onScheduled(task);
             entry.limit = Math.max(1, task.settings.concurrency);
-            const keys = targetKeys(task, passKey, scope, itemKeys);
             const inputs = deriveInputs(task, passKey);
+            const merged = inputs.has(COMBINED_KEY);
+            const keys = targetKeys(task, passKey, scope, itemKeys, inputs);
             const text = promptText(task, passKey);
             const runnableKeys = keys.filter(key => inputs.has(key));
             const hints = new Map(runnableKeys.map(key => [key, newItem(task.passes[passKey].items[key]).regenHint]));
             const prompts = new Map();
 
-            if (task.settings.mode === 'combined' && runnableKeys.length > 0) {
-                // One merged prompt: transform1 embeds every source block,
-                // transform2/summary feed the upstream merged output document.
+            if (merged && runnableKeys.length > 0) {
                 const input = inputs.get(COMBINED_KEY);
-                const nudge = hints.get(COMBINED_KEY);
-                prompts.set(COMBINED_KEY, input.document !== null
-                    ? buildMergedPassPrompt(text, input.document, nudge)
-                    : buildCombinedPrompt(input.sources, text, CORE_FIELDS, nudge));
+                prompts.set(COMBINED_KEY, buildMergedPassPrompt(
+                    text,
+                    input.document,
+                    hints.get(COMBINED_KEY),
+                ));
             } else {
                 for (const key of runnableKeys) {
                     prompts.set(key, buildIndividualPrompt(inputs.get(key), text, CORE_FIELDS, hints.get(key)));
@@ -354,7 +348,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         // Claimed by an in-flight run/regeneration — leave it untouched.
                         continue;
                     } else {
-                        const promptKey = task.settings.mode === 'combined' ? COMBINED_KEY : key;
+                        const promptKey = merged ? COMBINED_KEY : key;
                         item.inputHash = hashInputs({ source: inputs.get(key), prompt: prompts.get(promptKey) });
                         if (blockedKeys.has(key)) {
                             const usage = preflightItems.get(promptKey);
@@ -373,11 +367,8 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
 
             // Per-item abort controllers: an item-scoped cancel aborts exactly
             // one card's in-flight work; op-level cancellation reaches them
-            // through the op signal. Combined mode shares one controller — a
-            // single request covers every claimed key.
-            const sharedController = task.settings.mode === 'combined' && op.keys.size > 0
-                ? new AbortController()
-                : null;
+            // through the op signal. A merged pass has one shared request.
+            const sharedController = merged && op.keys.size > 0 ? new AbortController() : null;
             for (const key of op.keys) {
                 const itemController = sharedController ?? new AbortController();
                 if (!sharedController) {
@@ -391,7 +382,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
 
             const executableKeys = runnableKeys.filter(key => !blockedKeys.has(key) && op.keys.has(key));
 
-            if (task.settings.mode === 'combined' && executableKeys.length > 0) {
+            if (merged && executableKeys.length > 0) {
                 let attempts = 0;
                 let acquired = false;
                 const combinedSignal = sharedController?.signal ?? signal;
@@ -448,7 +439,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 } finally {
                     if (acquired) releaseSlot(entry);
                 }
-            } else if (task.settings.mode !== 'combined' && executableKeys.length > 0) {
+            } else if (!merged && executableKeys.length > 0) {
                 const itemTasks = executableKeys.map(key => async () => {
                     let attempts = 0;
                     let acquired = false;
@@ -537,9 +528,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             }
 
             const completed = await repo.checkpoint(taskId, draft => {
-                const statusKeys = task.settings.mode === 'combined'
-                    ? [COMBINED_KEY]
-                    : draft.sources.map(source => source.key);
+                const statusKeys = merged ? [COMBINED_KEY] : draft.sources.map(source => source.key);
                 const status = finalStatus(draft, passKey, statusKeys);
                 draft.passes[passKey].status = status;
                 if (status === 'succeeded') {
@@ -729,7 +718,8 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
         if (!PASS_KEYS.includes(passKey)) throw new TypeError(`Invalid pass key: ${passKey}`);
         const task = await repo.getTask(taskId);
         const pass = task.passes[passKey];
-        const hasResumableItem = task.settings.mode === 'combined'
+        const inputs = deriveInputs(task, passKey);
+        const hasResumableItem = inputs.has(COMBINED_KEY)
             ? RESUMABLE_STATUSES.has(newItem(pass.items[COMBINED_KEY]).status)
             : task.sources.some(source => RESUMABLE_STATUSES.has(newItem(pass.items[source.key]).status));
         if (pass.status !== 'interrupted' || !hasResumableItem) throw new TaskNotResumableError(passKey);

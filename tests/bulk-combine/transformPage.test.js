@@ -301,7 +301,7 @@ function makeActions() {
         runPass: jest.fn(async () => {}),
         resumePass: jest.fn(async () => {}),
         cancel: jest.fn(async () => {}),
-cancelItem: jest.fn(async () => {}),
+        cancelItem: jest.fn(async () => {}),
         runPostProcess: jest.fn(async () => {}),
         runPromptAssist: jest.fn(async () => {}),
         getReview: jest.fn(async () => {}),
@@ -651,21 +651,46 @@ describe('transformPage', () => {
         expect(idle.actions.cancelItem).not.toHaveBeenCalled();
     });
 
-    test('combined mode renders one merged placeholder row and regenerates it', async () => {
-        const { root, actions } = renderTransformPage(makeSnapshot({
+    test('transform1 never merges: combined second-pass mode still renders one row per source', () => {
+        const { root } = renderTransformPage(makeSnapshot({
             task: {
-                settings: { mode: 'combined' },
+                settings: { secondPassEnabled: true, secondPassMode: 'combined' },
                 passes: {
                     transform1: {
                         status: 'succeeded',
-                        items: { __combined__: makeItem({ status: 'succeeded', output: 'MERGED' }) },
+                        items: {
+                            'a.png': makeItem({ status: 'succeeded', output: 'AAA' }),
+                            'b.png': makeItem({ status: 'succeeded', output: 'BBB' }),
+                        },
                     },
                 },
             },
         }));
 
         const rows = findAll(root, hasClass('bc-task-transform-item'));
+        expect(rows).toHaveLength(2);
+        expect(rows[0].getAttribute('data-source-key')).toBe('a.png');
+        expect(rows[1].getAttribute('data-source-key')).toBe('b.png');
+        expect(findOne(root, hasClass('bc-task-transform-totals')).textContent).toBe('2/2 succeeded');
+    });
+
+    test('transform2 renders one merged placeholder row in combined second-pass mode and regenerates it', async () => {
+        const { root, actions } = renderTransformPage(makeSnapshot({
+            currentPage: 4,
+            task: {
+                settings: { secondPassEnabled: true, secondPassMode: 'combined' },
+                passes: {
+                    transform2: {
+                        status: 'succeeded',
+                        items: { __combined__: makeItem({ status: 'succeeded', output: 'MERGED' }) },
+                    },
+                },
+            },
+        }), makeActions(), { passKey: 'transform2', title: 'Transform 2' });
+
+        const rows = findAll(root, hasClass('bc-task-transform-item'));
         expect(rows).toHaveLength(1);
+        expect(rows[0].getAttribute('data-source-key')).toBe('__combined__');
         expect(rows[0].textContent).toContain('All characters (2)');
         expect(findOne(root, hasClass('bc-task-transform-output')).value).toBe('MERGED');
         expect(findOne(root, hasClass('bc-task-transform-totals')).textContent).toBe('1/1 succeeded');
@@ -673,7 +698,73 @@ describe('transformPage', () => {
         findOne(root, hasClass('bc-task-transform-regen')).click();
         await flush();
         expect(actions.runPass).toHaveBeenCalledTimes(1);
-        expect(actions.runPass).toHaveBeenCalledWith('transform1', { itemKeys: ['__combined__'], completionSettings: { model: 'x', stream: false } });
+        expect(actions.runPass).toHaveBeenCalledWith('transform2', { itemKeys: ['__combined__'], completionSettings: { model: 'x', stream: false } });
+    });
+
+    test('transform2 in individual second-pass mode renders one row per source', () => {
+        const { root } = renderTransformPage(makeSnapshot({
+            currentPage: 4,
+            task: {
+                settings: { secondPassEnabled: true, secondPassMode: 'individual' },
+                passes: {
+                    transform2: {
+                        status: 'succeeded',
+                        items: {
+                            'a.png': makeItem({ status: 'succeeded', output: 'A2' }),
+                            'b.png': makeItem({ status: 'succeeded', output: 'B2' }),
+                        },
+                    },
+                },
+            },
+        }), makeActions(), { passKey: 'transform2', title: 'Transform 2' });
+
+        const rows = findAll(root, hasClass('bc-task-transform-item'));
+        expect(rows).toHaveLength(2);
+        expect(rows[0].getAttribute('data-source-key')).toBe('a.png');
+        expect(rows[1].getAttribute('data-source-key')).toBe('b.png');
+        expect(findOne(root, hasClass('bc-task-transform-totals')).textContent).toBe('2/2 succeeded');
+    });
+
+    test('the summary pass merges only when the combined second pass ran', () => {
+        const mergedPasses = {
+            summary: {
+                status: 'succeeded',
+                items: { __combined__: makeItem({ status: 'succeeded', output: 'SUMMARY' }) },
+            },
+        };
+
+        // Combined second pass ran → single merged summary row.
+        const merged = renderTransformPage(makeSnapshot({
+            currentPage: 5,
+            task: {
+                settings: { secondPassEnabled: true, secondPassMode: 'combined' },
+                passes: mergedPasses,
+            },
+        }), makeActions(), { passKey: 'summary', title: 'Lorebook Summary' });
+        const mergedRows = findAll(merged.root, hasClass('bc-task-transform-item'));
+        expect(mergedRows).toHaveLength(1);
+        expect(mergedRows[0].getAttribute('data-source-key')).toBe('__combined__');
+        expect(findOne(merged.root, hasClass('bc-task-transform-output')).value).toBe('SUMMARY');
+
+        // Individual second pass → per-source rows.
+        const individual = renderTransformPage(makeSnapshot({
+            currentPage: 5,
+            task: {
+                settings: { secondPassEnabled: true, secondPassMode: 'individual' },
+                passes: mergedPasses,
+            },
+        }), makeActions(), { passKey: 'summary', title: 'Lorebook Summary' });
+        expect(findAll(individual.root, hasClass('bc-task-transform-item'))).toHaveLength(2);
+
+        // Second pass disabled → per-source rows even with a combined mode stored.
+        const disabled = renderTransformPage(makeSnapshot({
+            currentPage: 5,
+            task: {
+                settings: { secondPassEnabled: false, secondPassMode: 'combined' },
+                passes: mergedPasses,
+            },
+        }), makeActions(), { passKey: 'summary', title: 'Lorebook Summary' });
+        expect(findAll(disabled.root, hasClass('bc-task-transform-item'))).toHaveLength(2);
     });
 
     test('execution record pointing at the pass also counts as running', () => {
