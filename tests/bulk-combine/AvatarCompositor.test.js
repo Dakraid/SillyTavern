@@ -278,3 +278,158 @@ describe('AvatarCompositor', () => {
         expect(onSettle).toHaveBeenCalledTimes(1);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Tiling layouts (setLayout)
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a compositor over N named sources and returns the pieces under test.
+ *
+ * @param {number} count Source count.
+ * @param {object} [options] Extra factory options.
+ * @returns {{compositor: object, canvas: object}} Compositor pieces.
+ */
+function renderMany(count, options = {}) {
+    const sources = Array.from({ length: count }, (_, index) => ({
+        key: `${index}.png`,
+        name: `Char${index}`,
+        avatar: `${index}.png`,
+    }));
+    const compositor = createAvatarCompositor({ container, sources, ...options });
+    const canvas = findAll(compositor.root, hasClass('bc-compositor-canvas'))[0];
+    return { compositor, canvas };
+}
+
+describe('AvatarCompositor layouts', () => {
+    test('the default layout is the classic near-square grid', () => {
+        const { compositor } = renderMany(4);
+        const cells = compositor.getLayoutCells();
+        expect(cells).toHaveLength(4);
+        expect(cells[0]).toEqual({ x: 0, y: 0, w: 508, h: 508 }); // 2×2, gap 8
+    });
+
+    test('a layout gap wins over the legacy gap option', () => {
+        expect(renderMany(2, { gap: 20 }).compositor.getLayoutCells()[0].w).toBe(502);
+        expect(renderMany(2, { layout: { method: 'square', gap: 20 } }).compositor.getLayoutCells()[0].w).toBe(502);
+        expect(renderMany(2, { gap: 20, layout: { method: 'square', gap: 4 } }).compositor.getLayoutCells()[0].w).toBe(510);
+    });
+
+    test('setLayout recomputes the cells, keeps offsets by index, and does not reload images', () => {
+        const { compositor } = renderMany(4, { initialOffsets: [{ x: 5, y: -5, scale: 120 }] });
+        expect(compositor.getLayoutCells()[0].w).toBe(508); // square 2×2
+        const offsetsBefore = compositor.getOffsets();
+        const imagesBefore = FakeImage.instances.length;
+
+        compositor.setLayout({ method: 'portrait', aspect: '2:3' });
+
+        const cells = compositor.getLayoutCells();
+        expect(cells).toHaveLength(4);
+        expect(cells[0].w).toBe(336); // 3 columns: (1024 − 2·8) / 3
+        expect(cells[0].h).toBe(508); // 2 rows: (1024 − 8) / 2
+        expect(compositor.getOffsets()).toEqual(offsetsBefore);
+        expect(FakeImage.instances.length).toBe(imagesBefore); // no reload
+    });
+
+    test('setLayout updates hit-testing to the new cells', () => {
+        const { compositor, canvas } = renderMany(4);
+        compositor.setLayout({ method: 'portrait', aspect: '2:3' });
+
+        // (700, 10) is inside cell 2 of the 3×2 grid (was cell 1 in 2×2).
+        canvas.fire('pointerdown', { clientX: 700, clientY: 10, pointerId: 1 });
+        canvas.fire('pointermove', { clientX: 710, clientY: 10, pointerId: 1 });
+        const offsets = compositor.getOffsets();
+        expect(offsets[2].x).not.toBe(0);
+        expect(offsets[1].x).toBe(0);
+        canvas.fire('pointerup', { pointerId: 1 });
+    });
+
+    test('best-fit falls back to square before settle and recomputes from loaded aspects after', () => {
+        const { compositor } = renderMany(2, { layout: { method: 'best-fit' } });
+        expect(compositor.getLayoutCells()[0].w).toBe(508); // square 2×1 fallback
+
+        for (const image of FakeImage.instances) {
+            image.naturalWidth = 400; // landscape aspect 4.0
+            image.naturalHeight = 100;
+            image.onload();
+        }
+
+        const cells = compositor.getLayoutCells();
+        expect(cells).toHaveLength(2);
+        expect(cells[0].w).toBe(1024); // 1 column × 2 rows of landscape cells
+        expect(cells[0].h).toBe(508);
+
+        // Re-resolving the same method keeps the fitted cells (no throw, no reload).
+        const imagesBefore = FakeImage.instances.length;
+        compositor.setLayout({ method: 'best-fit' });
+        expect(compositor.getLayoutCells()[0].w).toBe(1024);
+        expect(FakeImage.instances.length).toBe(imagesBefore);
+    });
+
+    test('best-fit ignores images that failed to load', () => {
+        const { compositor } = renderMany(2, { layout: { method: 'best-fit' } });
+        FakeImage.instances[0].naturalWidth = 400;
+        FakeImage.instances[0].naturalHeight = 100;
+        FakeImage.instances[0].onload();
+        FakeImage.instances[1].onerror();
+
+        expect(compositor.isReady()).toBe(true);
+        expect(compositor.getLayoutCells()[0].w).toBe(1024); // fitted to the one loaded aspect
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Zoom floor (cutoff fix)
+// ---------------------------------------------------------------------------
+
+describe('AvatarCompositor zoom floor', () => {
+    /**
+     * Fires `count` wheel zoom-out steps at the given canvas point.
+     *
+     * @param {object} canvas Fake canvas element.
+     * @param {number} x Canvas X.
+     * @param {number} y Canvas Y.
+     * @param {number} count Step count.
+     */
+    function wheelZoomOut(canvas, x, y, count) {
+        for (let step = 0; step < count; step++) {
+            canvas.fire('wheel', { clientX: x, clientY: y, deltaY: 120 });
+        }
+    }
+
+    test('a persisted sub-50 scale survives construction (lazy floor normalization)', () => {
+        const { compositor } = renderMany(2, { initialOffsets: [{ x: 0, y: 0, scale: 12 }] });
+        expect(compositor.getOffsets()[0].scale).toBe(12);
+    });
+
+    test('zoom-out stops at the default floor (50) while the image is unloaded', () => {
+        const { compositor, canvas } = renderMany(2);
+        wheelZoomOut(canvas, 10, 10, 15);
+        expect(compositor.getOffsets()[0].scale).toBe(50);
+    });
+
+    test('an extreme-aspect image zooms out to its contain fit once loaded', () => {
+        const { compositor, canvas } = renderMany(2);
+        const image = FakeImage.instances[0];
+        image.naturalWidth = 2000; // extreme landscape
+        image.naturalHeight = 100;
+        image.onload();
+
+        // Cell 0: 508×1024. Contain floor = ceil(100 · (508/2000) / (1024/100)) = 3.
+        wheelZoomOut(canvas, 10, 10, 25);
+        expect(compositor.getOffsets()[0].scale).toBe(3);
+        expect(compositor.getOffsets()[1].scale).toBe(100); // other cell untouched
+    });
+
+    test('a square-ish image keeps a floor of 100 for its cell', () => {
+        const { compositor, canvas } = renderMany(1);
+        const image = FakeImage.instances[0];
+        image.naturalWidth = 300;
+        image.naturalHeight = 300;
+        image.onload();
+
+        canvas.fire('keydown', { key: 'Tab' }); // single-cell editor lets Tab through
+        wheelZoomOut(canvas, 10, 10, 15);
+        expect(compositor.getOffsets()[0].scale).toBe(100); // contain == cover
+    });
+});

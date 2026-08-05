@@ -22,6 +22,11 @@
  *       initialOffsets,            // optional [{ x, y, scale }] (normalized)
  *       outputSize,                // square output px (default 1024)
  *       gap,                       // cell gap px at output resolution
+ *                                  // (fallback; a valid layout.gap wins)
+ *       layout,                    // optional { method, gap, aspect } —
+ *                                  // 'square' (default) | 'portrait' |
+ *                                  // 'best-fit'; aspect is the portrait
+ *                                  // cell ratio ('2:3'|'3:4'|'9:16')
  *       resolveSourceUrl,          // (source) => image URL; defaults to the
  *                                  // full `/characters/<avatar>` image
  *       onChange,                  // (offsets, finalized) => void — fired on
@@ -32,8 +37,14 @@
  *   }) → {
  *       root,                      // the mounted root element
  *       getOffsets(),              // normalized per-source offsets (copies)
+ *       setLayout(layout),         // swap the tiling layout: recomputes the
+ *                                  // cells, redraws, re-hit-tests; offsets
+ *                                  // are kept by index, images are NOT
+ *                                  // reloaded
+ *       getLayoutCells(),          // current cell rectangles (copies)
  *       getComposedImageDataURL(size?),
- *                                  // square PNG data URL, or null when no
+ *                                  // square PNG data URL composed with the
+ *                                  // CURRENT layout, or null when no
  *                                  // source image is available / canvas is
  *                                  // unsupported
  *       isReady(),                 // every source image settled (load|error)
@@ -42,6 +53,19 @@
  *
  * Images load asynchronously; the preview redraws as each arrives. Cells
  * whose image failed (or has no avatar ref) render as an empty themed cell.
+ * The themed placeholder fill is painted behind EVERY cell, so letterboxed
+ * areas (zoomed out to the contain fit) are never transparent.
+ *
+ * Zoom floor: the per-cell contain-fit scale (computeCellMinScale), not
+ * the fixed COMPOSITOR_SCALE_MIN — extreme-aspect images can always be
+ * zoomed out until fully visible. Persisted offsets are normalized lazily
+ * per cell at draw/interaction time, so a persisted sub-50 scale survives
+ * the round-trip through construction.
+ *
+ * 'best-fit' layouts resolve from the LOADED image aspects: before every
+ * image settles the cells fall back to the square grid; once settled they
+ * recompute (a later setLayout with the same method re-resolves against
+ * the current aspects).
  *
  * Accessibility: the canvas is an interactive editor (`role="application"`)
  * with full keyboard control — Tab / Shift+Tab switch the edited cell,
@@ -52,10 +76,13 @@
 import {
     COMPOSITOR_DEFAULT_GAP,
     COMPOSITOR_DEFAULT_OUTPUT_SIZE,
+    COMPOSITOR_SCALE_MIN,
     COMPOSITOR_WHEEL_ZOOM_STEP,
     computeCellCoverDraw,
-    computeGridCells,
+    computeCellMinScale,
+    computeLayoutCells,
     hitTestCell,
+    normalizeCompositorLayout,
     normalizeCompositorOffsets,
     panCompositorOffset,
     pinchCompositorScale,
@@ -127,9 +154,14 @@ export function createAvatarCompositor(options = {}) {
     const outputSize = Number.isFinite(Number(options.outputSize)) && Number(options.outputSize) > 0
         ? Math.round(Number(options.outputSize))
         : COMPOSITOR_DEFAULT_OUTPUT_SIZE;
-    const gap = Number.isFinite(Number(options.gap)) && Number(options.gap) >= 0
-        ? Number(options.gap)
-        : COMPOSITOR_DEFAULT_GAP;
+    /** @type {{method: string, aspect: string, gap?: number}} Current tiling layout. */
+    let layout = normalizeCompositorLayout(options.layout);
+    /** @type {number} Current cell gap (layout.gap wins over the legacy gap option). */
+    let gap = Number.isFinite(Number(layout.gap)) && Number(layout.gap) >= 0
+        ? Number(layout.gap)
+        : Number.isFinite(Number(options.gap)) && Number(options.gap) >= 0
+            ? Number(options.gap)
+            : COMPOSITOR_DEFAULT_GAP;
 
     /** @type {Array<{x: number, y: number, scale: number}>} Working offsets. */
     let offsets = normalizeCompositorOffsets(options.initialOffsets, sources.length);
@@ -199,6 +231,7 @@ export function createAvatarCompositor(options = {}) {
                 return;
             }
             entry.loaded = true;
+            refreshSettledLayout();
             redraw();
             notifySettleIfReady();
         };
@@ -207,6 +240,7 @@ export function createAvatarCompositor(options = {}) {
                 return;
             }
             entry.failed = true;
+            refreshSettledLayout();
             redraw();
             notifySettleIfReady();
         };
@@ -287,10 +321,59 @@ export function createAvatarCompositor(options = {}) {
 
     // --- Painting ------------------------------------------------------------
 
-    const gridCells = computeGridCells(sources.length, outputSize, gap);
+    /**
+     * Computes the cell rectangles for the current layout. 'best-fit'
+     * resolves against the LOADED image aspects (square fallback until
+     * usable aspects exist).
+     *
+     * @returns {Array<{x: number, y: number, w: number, h: number}>} Cell rects.
+     */
+    function computeCells() {
+        const aspects = layout.method === 'best-fit'
+            ? cells.map((entry) => entry.loaded && entry.image
+                ? entry.image.naturalWidth / entry.image.naturalHeight
+                : null)
+            : undefined;
+        return computeLayoutCells(layout, sources.length, outputSize, gap, aspects);
+    }
+
+    /** @type {Array<{x: number, y: number, w: number, h: number}>} Current cell rects. */
+    let gridCells = computeCells();
 
     /**
-     * Paints one cell onto a 2D context at the given geometry scale.
+     * Recomputes the cells once every image has settled when the layout
+     * resolves from image aspects ('best-fit'). Before settle the square
+     * fallback stays active.
+     *
+     * @returns {void}
+     */
+    function refreshSettledLayout() {
+        if (disposed || layout.method !== 'best-fit' || !isReady()) {
+            return;
+        }
+        gridCells = computeCells();
+    }
+
+    /**
+     * Returns the per-cell zoom floor (contain-fit scale) once the image
+     * dimensions are known, the default floor before.
+     *
+     * @param {number} index Cell index.
+     * @returns {number} Minimum zoom percent.
+     */
+    function cellMinScale(index) {
+        const entry = cells[index];
+        const cell = gridCells[index];
+        if (entry?.loaded && entry.image && cell) {
+            return computeCellMinScale(cell, entry.image.naturalWidth, entry.image.naturalHeight);
+        }
+        return COMPOSITOR_SCALE_MIN;
+    }
+
+    /**
+     * Paints one cell onto a 2D context at the given geometry scale. The
+     * themed placeholder fill goes behind EVERY cell, so letterboxed areas
+     * (zoomed out towards the contain fit) are never transparent.
      *
      * @param {CanvasRenderingContext2D} ctx Target context.
      * @param {number} index Cell index.
@@ -304,15 +387,16 @@ export function createAvatarCompositor(options = {}) {
         ctx.rect(cell.x, cell.y, cell.w, cell.h);
         ctx.clip();
 
+        ctx.fillStyle = themePaint(canvas, '--SmartThemeBlurTintColor', 'rgba(128, 128, 128, 0.25)');
+        ctx.fillRect(cell.x, cell.y, cell.w, cell.h);
+
         const draw = entry?.loaded && entry.image
             ? computeCellCoverDraw(cell, entry.image.naturalWidth, entry.image.naturalHeight, offsets[index])
             : null;
         if (draw) {
             ctx.drawImage(entry.image, draw.dx, draw.dy, draw.dw, draw.dh);
         } else {
-            // Empty / failed cell: themed placeholder fill.
-            ctx.fillStyle = themePaint(canvas, '--SmartThemeBlurTintColor', 'rgba(128, 128, 128, 0.25)');
-            ctx.fillRect(cell.x, cell.y, cell.w, cell.h);
+            // Empty / failed cell: initial letter over the placeholder fill.
             const initial = String(entry?.source?.name ?? '').trim().charAt(0);
             if (initial && typeof ctx.fillText === 'function') {
                 ctx.fillStyle = themePaint(canvas, '--SmartThemeBodyColor', 'rgba(128, 128, 128, 0.8)');
@@ -470,7 +554,7 @@ export function createAvatarCompositor(options = {}) {
         pointers.set(event.pointerId ?? 0, point);
 
         if (pinchState && pointers.size >= 2) {
-            const scale = pinchCompositorScale(pinchState.startScale, pinchState.startDistance, currentPinchDistance());
+            const scale = pinchCompositorScale(pinchState.startScale, pinchState.startDistance, currentPinchDistance(), cellMinScale(pinchState.index));
             setCellOffset(pinchState.index, { ...offsets[pinchState.index], scale }, false);
             event.preventDefault?.();
             return;
@@ -480,7 +564,7 @@ export function createAvatarCompositor(options = {}) {
             if (cell) {
                 const deltaXPercent = ((point.x - dragState.startX) / cell.w) * 100;
                 const deltaYPercent = ((point.y - dragState.startY) / cell.h) * 100;
-                setCellOffset(dragState.index, panCompositorOffset(dragState.startOffset, deltaXPercent, deltaYPercent), false);
+                setCellOffset(dragState.index, panCompositorOffset(dragState.startOffset, deltaXPercent, deltaYPercent, cellMinScale(dragState.index)), false);
             }
             event.preventDefault?.();
         }
@@ -537,7 +621,7 @@ export function createAvatarCompositor(options = {}) {
         }
         setActiveCell(index);
         const delta = Number(event.deltaY) > 0 ? -COMPOSITOR_WHEEL_ZOOM_STEP : COMPOSITOR_WHEEL_ZOOM_STEP;
-        setCellOffset(index, zoomCompositorOffset(offsets[index], delta), true);
+        setCellOffset(index, zoomCompositorOffset(offsets[index], delta, cellMinScale(index)), true);
     }, { passive: false, signal });
 
     canvas.addEventListener('keydown', (event) => {
@@ -575,13 +659,13 @@ export function createAvatarCompositor(options = {}) {
         if (key in panDeltas) {
             event.preventDefault?.();
             const [dx, dy] = panDeltas[key];
-            setCellOffset(activeCellIndex, panCompositorOffset(offsets[activeCellIndex], dx, dy), true);
+            setCellOffset(activeCellIndex, panCompositorOffset(offsets[activeCellIndex], dx, dy, cellMinScale(activeCellIndex)), true);
             return;
         }
         if (key === '+' || key === '=' || key === '-' || key === '_') {
             event.preventDefault?.();
             const delta = (key === '+' || key === '=') ? COMPOSITOR_WHEEL_ZOOM_STEP : -COMPOSITOR_WHEEL_ZOOM_STEP;
-            setCellOffset(activeCellIndex, zoomCompositorOffset(offsets[activeCellIndex], delta), true);
+            setCellOffset(activeCellIndex, zoomCompositorOffset(offsets[activeCellIndex], delta, cellMinScale(activeCellIndex)), true);
         }
     }, { signal });
 
@@ -597,10 +681,43 @@ export function createAvatarCompositor(options = {}) {
     }
 
     /**
-     * Composes the current offsets into a square PNG data URL. Resolution-
-     * independent: the grid and offsets are recomputed at the requested
-     * size. Returns null when no source image is available, when the canvas
-     * is unsupported, or when encoding fails (e.g. a tainted canvas).
+     * Swaps the tiling layout: recomputes the cells, redraws, and keeps
+     * hit-testing correct (pointer handlers always read the current cell
+     * rects). Offsets are kept by index; images are NOT reloaded. A
+     * 'best-fit' layout re-resolves against the currently loaded image
+     * aspects (square fallback before they settle).
+     *
+     * @param {object} nextLayout Layout record (`{ method, gap, aspect }`).
+     * @returns {void}
+     */
+    function setLayout(nextLayout) {
+        if (disposed) {
+            return;
+        }
+        layout = normalizeCompositorLayout(nextLayout);
+        if (Number.isFinite(Number(layout.gap)) && Number(layout.gap) >= 0) {
+            gap = Number(layout.gap);
+        }
+        gridCells = computeCells();
+        redraw();
+    }
+
+    /**
+     * Returns a copy of the current cell rectangles (canvas coordinates at
+     * output resolution).
+     *
+     * @returns {Array<{x: number, y: number, w: number, h: number}>} Cell rects.
+     */
+    function getLayoutCells() {
+        return gridCells.map((cell) => ({ x: cell.x, y: cell.y, w: cell.w, h: cell.h }));
+    }
+
+    /**
+     * Composes the current offsets into a square PNG data URL with the
+     * CURRENT layout. Resolution-independent: the cells and offsets are
+     * recomputed at the requested size. Returns null when no source image
+     * is available, when the canvas is unsupported, or when encoding fails
+     * (e.g. a tainted canvas).
      *
      * @param {number} [size] Square output size (defaults to outputSize).
      * @returns {string|null} PNG data URL, or null.
@@ -621,7 +738,12 @@ export function createAvatarCompositor(options = {}) {
                 return null;
             }
             const scaledGap = gap * (targetSize / outputSize);
-            paintComposite(ctx, computeGridCells(sources.length, targetSize, scaledGap), false);
+            const aspects = layout.method === 'best-fit'
+                ? cells.map((entry) => entry.loaded && entry.image
+                    ? entry.image.naturalWidth / entry.image.naturalHeight
+                    : null)
+                : undefined;
+            paintComposite(ctx, computeLayoutCells(layout, sources.length, targetSize, scaledGap, aspects), false);
             return offscreen.toDataURL('image/png');
         } catch (error) {
             console.error('AvatarCompositor: failed to compose the avatar image.', error);
@@ -664,5 +786,5 @@ export function createAvatarCompositor(options = {}) {
 
     redraw();
 
-    return { root, getOffsets, getComposedImageDataURL, isReady, dispose };
+    return { root, getOffsets, setLayout, getLayoutCells, getComposedImageDataURL, isReady, dispose };
 }

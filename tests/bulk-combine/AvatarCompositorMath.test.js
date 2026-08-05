@@ -18,9 +18,13 @@ import {
     COMPOSITOR_SCALE_MIN,
     clampNumber,
     computeCellCoverDraw,
+    computeCellMinScale,
     computeGridCells,
+    computeLayoutCells,
     hitTestCell,
+    normalizeCompositorLayout,
     normalizeCompositorOffset,
+    normalizeCompositorOffsetWithFloor,
     normalizeCompositorOffsets,
     panCompositorOffset,
     pinchCompositorScale,
@@ -184,9 +188,10 @@ describe('computeCellCoverDraw', () => {
 
     test('raw offsets are normalized (extreme input clamps)', () => {
         const draw = computeCellCoverDraw(cell, 200, 200, { x: 9999, y: 0, scale: 1 });
-        // x clamps to +100% of cell.w; scale clamps to 50 → dw=50, centered (+25).
-        expect(draw.dx).toBe(10 + 25 + COMPOSITOR_OFFSET_LIMIT);
-        expect(draw.dw).toBe(100 * (COMPOSITOR_SCALE_MIN / 100));
+        // x clamps to +100% of cell.w; scale clamps UP to the contain floor
+        // (100 for a matching-aspect image) → dw=100, centered (+0).
+        expect(draw.dx).toBe(10 + 0 + COMPOSITOR_OFFSET_LIMIT);
+        expect(draw.dw).toBe(100);
     });
 });
 
@@ -255,5 +260,236 @@ describe('hitTestCell', () => {
     test('cell edges: inclusive origin, exclusive far edge', () => {
         expect(hitTestCell(cells, 0, 0)).toBe(0);
         expect(hitTestCell(cells, 50, 0)).toBe(-1); // far edge of cell 0, gap before cell 1
+    });
+});
+
+describe('normalizeCompositorLayout', () => {
+    test('defaults junk input to the square grid with the default portrait aspect', () => {
+        expect(normalizeCompositorLayout(undefined)).toEqual({ method: 'square', aspect: '3:4' });
+        expect(normalizeCompositorLayout(null)).toEqual({ method: 'square', aspect: '3:4' });
+        expect(normalizeCompositorLayout({})).toEqual({ method: 'square', aspect: '3:4' });
+        expect(normalizeCompositorLayout('portrait')).toEqual({ method: 'square', aspect: '3:4' });
+        expect(normalizeCompositorLayout({ method: 'mosaic' })).toEqual({ method: 'square', aspect: '3:4' });
+    });
+
+    test('passes through valid methods and aspects', () => {
+        expect(normalizeCompositorLayout({ method: 'portrait', aspect: '2:3' })).toEqual({ method: 'portrait', aspect: '2:3' });
+        expect(normalizeCompositorLayout({ method: 'best-fit', aspect: '9:16' })).toEqual({ method: 'best-fit', aspect: '9:16' });
+    });
+
+    test('unknown aspects fall back to the default (including prototype keys)', () => {
+        expect(normalizeCompositorLayout({ method: 'portrait', aspect: '1:1' }).aspect).toBe('3:4');
+        expect(normalizeCompositorLayout({ method: 'portrait', aspect: 'constructor' }).aspect).toBe('3:4');
+        expect(normalizeCompositorLayout({ method: 'portrait', aspect: 'toString' }).aspect).toBe('3:4');
+    });
+
+    test('carries a valid gap, omits invalid ones', () => {
+        expect(normalizeCompositorLayout({ gap: 4 })).toEqual({ method: 'square', aspect: '3:4', gap: 4 });
+        expect(normalizeCompositorLayout({ gap: 0 })).toEqual({ method: 'square', aspect: '3:4', gap: 0 });
+        expect(normalizeCompositorLayout({ gap: -1 })).toEqual({ method: 'square', aspect: '3:4' });
+        expect(normalizeCompositorLayout({ gap: 'junk' })).toEqual({ method: 'square', aspect: '3:4' });
+    });
+});
+
+describe('computeLayoutCells', () => {
+    test('returns no cells for degenerate input', () => {
+        expect(computeLayoutCells({ method: 'square' }, 0, 100)).toEqual([]);
+        expect(computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 2, 0)).toEqual([]);
+        expect(computeLayoutCells({ method: 'best-fit' }, -3, 100, 0, [1, 1])).toEqual([]);
+    });
+
+    test('square layouts use the classic near-square grid', () => {
+        expect(computeLayoutCells({ method: 'square' }, 5, 90, 0)).toEqual(computeGridCells(5, 90, 0));
+        expect(computeLayoutCells(undefined, 3, 100, 8)).toEqual(computeGridCells(3, 100, 8));
+        expect(computeLayoutCells({ method: 'junk' }, 4, 100, 8)).toEqual(computeGridCells(4, 100, 8));
+    });
+
+    test('a layout gap overrides the gap argument', () => {
+        const cells = computeLayoutCells({ method: 'square', gap: 0 }, 2, 100, 8);
+        expect(cells).toEqual([
+            { x: 0, y: 0, w: 50, h: 100 },
+            { x: 50, y: 0, w: 50, h: 100 },
+        ]);
+    });
+
+    test('portrait 2:3: four sources form a 3×2 grid of exact 2:3 cells', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 4, 120, 0);
+        expect(cells).toHaveLength(4);
+        expect(cells[0]).toEqual({ x: 0, y: 0, w: 40, h: 60 });
+        expect(cells[2]).toEqual({ x: 80, y: 0, w: 40, h: 60 });
+        expect(cells[3]).toEqual({ x: 0, y: 60, w: 40, h: 60 });
+    });
+
+    test('portrait 2:3: five sources still pick the exact 3×2 grid (one empty slot beats a stretched 5×1)', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 5, 120, 0);
+        expect(cells).toHaveLength(5);
+        expect(cells[0]).toEqual({ x: 0, y: 0, w: 40, h: 60 });
+        expect(cells[4]).toEqual({ x: 40, y: 60, w: 40, h: 60 });
+    });
+
+    test('portrait 9:16: six sources form a 4×2 grid (closest to 9:16)', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '9:16' }, 6, 120, 0);
+        expect(cells).toHaveLength(6);
+        expect(cells[0]).toEqual({ x: 0, y: 0, w: 30, h: 60 });
+        expect(cells[3]).toEqual({ x: 90, y: 0, w: 30, h: 60 });
+        expect(cells[5]).toEqual({ x: 30, y: 60, w: 30, h: 60 });
+    });
+
+    test('portrait 3:4: two sources form a 2×1 row of tall cells', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '3:4' }, 2, 100, 0);
+        expect(cells).toEqual([
+            { x: 0, y: 0, w: 50, h: 100 },
+            { x: 50, y: 0, w: 50, h: 100 },
+        ]);
+    });
+
+    test('portrait honors the gap (cells shrink and stay positive)', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3', gap: 8 }, 4, 124);
+        expect(cells).toHaveLength(4);
+        expect(cells[0]).toEqual({ x: 0, y: 0, w: 36, h: 58 });
+        expect(cells[3]).toEqual({ x: 0, y: 66, w: 36, h: 58 });
+
+        const absurd = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 4, 100, 5000);
+        expect(absurd).toHaveLength(4);
+        for (const cell of absurd) {
+            expect(cell.w).toBeGreaterThan(0);
+            expect(cell.h).toBeGreaterThan(0);
+        }
+    });
+
+    test('best-fit targets the geometric mean of the loaded image aspects', () => {
+        // Two landscape (4.0) sources → 1 column × 2 rows of landscape cells.
+        const landscape = computeLayoutCells({ method: 'best-fit' }, 2, 100, 0, [4, 4]);
+        expect(landscape).toEqual([
+            { x: 0, y: 0, w: 100, h: 50 },
+            { x: 0, y: 50, w: 100, h: 50 },
+        ]);
+
+        // Two portrait (0.5) sources → 2 columns × 1 row of portrait cells.
+        const portrait = computeLayoutCells({ method: 'best-fit' }, 2, 100, 0, [0.5, 0.5]);
+        expect(portrait).toEqual([
+            { x: 0, y: 0, w: 50, h: 100 },
+            { x: 50, y: 0, w: 50, h: 100 },
+        ]);
+
+        // Mixed aspects averaging to 1 → the square-ish 2×2 grid.
+        const mixed = computeLayoutCells({ method: 'best-fit' }, 3, 100, 0, [1, 0.5, 2]);
+        expect(mixed).toEqual(computeGridCells(3, 100, 0));
+    });
+
+    test('best-fit ignores missing/unloaded entries and falls back to square when none are usable', () => {
+        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 0)).toEqual(computeGridCells(3, 100, 0));
+        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 0, [])).toEqual(computeGridCells(3, 100, 0));
+        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 0, [null, NaN, -5, 0, 'junk'])).toEqual(computeGridCells(3, 100, 0));
+
+        // A single usable aspect still drives the search.
+        const cells = computeLayoutCells({ method: 'best-fit' }, 3, 300, 0, [null, 0.5, undefined]);
+        expect(cells).toHaveLength(3);
+        expect(cells[0].w).toBeCloseTo(100, 5);
+        expect(cells[0].h).toBe(300);
+    });
+});
+
+describe('computeCellMinScale', () => {
+    test('a matching-aspect image has a floor of 100 (contain == cover)', () => {
+        expect(computeCellMinScale({ x: 0, y: 0, w: 100, h: 100 }, 200, 200)).toBe(100);
+        expect(computeCellMinScale({ x: 0, y: 0, w: 50, h: 100 }, 100, 200)).toBe(100);
+    });
+
+    test('a mismatched-aspect image gets the contain-fit percent', () => {
+        // Portrait image in a square cell: fits at 50% of the cover scale.
+        expect(computeCellMinScale({ x: 0, y: 0, w: 100, h: 100 }, 100, 200)).toBe(50);
+        expect(computeCellMinScale({ x: 0, y: 0, w: 100, h: 100 }, 200, 100)).toBe(50);
+        // Extreme landscape: 10%.
+        expect(computeCellMinScale({ x: 0, y: 0, w: 100, h: 100 }, 1000, 100)).toBe(10);
+    });
+
+    test('the floor is rounded UP so integer zoom steps never crop', () => {
+        // Contain fit is 100·(1/3) ≈ 33.33 → ceil to 34.
+        expect(computeCellMinScale({ x: 0, y: 0, w: 100, h: 100 }, 300, 100)).toBe(34);
+    });
+
+    test('degenerate input falls back to the default floor', () => {
+        expect(computeCellMinScale(null, 100, 100)).toBe(COMPOSITOR_SCALE_MIN);
+        expect(computeCellMinScale({ x: 0, y: 0, w: 0, h: 100 }, 100, 100)).toBe(COMPOSITOR_SCALE_MIN);
+        expect(computeCellMinScale({ x: 0, y: 0, w: 100, h: 100 }, 0, 100)).toBe(COMPOSITOR_SCALE_MIN);
+        expect(computeCellMinScale({ x: 0, y: 0, w: 100, h: 100 }, 'x', 100)).toBe(COMPOSITOR_SCALE_MIN);
+    });
+});
+
+describe('computeCellCoverDraw with the per-cell contain floor', () => {
+    const cell = { x: 10, y: 20, w: 100, h: 100 };
+
+    test('an extreme-aspect image can zoom out to full containment (letterboxed)', () => {
+        // 1000×100 in a 100×100 cell: floor = 10 → scale 10 exactly contains
+        // the image: dw=100, dh=10, vertically centered.
+        expect(computeCellCoverDraw(cell, 1000, 100, { x: 0, y: 0, scale: 10 })).toEqual({
+            dx: 10,
+            dy: 65,
+            dw: 100,
+            dh: 10,
+        });
+    });
+
+    test('a scale below the floor clamps UP to it', () => {
+        const atFloor = computeCellCoverDraw(cell, 1000, 100, { x: 0, y: 0, scale: 10 });
+        expect(computeCellCoverDraw(cell, 1000, 100, { x: 0, y: 0, scale: 1 })).toEqual(atFloor);
+    });
+
+    test('a matching-aspect image can no longer zoom below its (100) floor', () => {
+        const atFloor = computeCellCoverDraw(cell, 200, 200, { x: 0, y: 0, scale: 100 });
+        expect(computeCellCoverDraw(cell, 200, 200, { x: 0, y: 0, scale: 50 })).toEqual(atFloor);
+    });
+});
+
+describe('normalizeCompositorOffsetWithFloor', () => {
+    test('defaults to the fixed minimum (matches normalizeCompositorOffset)', () => {
+        expect(normalizeCompositorOffsetWithFloor({ x: 5, y: -5, scale: 10 })).toEqual({ x: 5, y: -5, scale: COMPOSITOR_SCALE_MIN });
+        expect(normalizeCompositorOffsetWithFloor({ x: 5, y: -5, scale: 10 }, 'junk')).toEqual({ x: 5, y: -5, scale: COMPOSITOR_SCALE_MIN });
+        expect(normalizeCompositorOffsetWithFloor({ x: 5, y: -5, scale: 10 }, -3)).toEqual({ x: 5, y: -5, scale: COMPOSITOR_SCALE_MIN });
+    });
+
+    test('clamps to the given per-cell floor', () => {
+        expect(normalizeCompositorOffsetWithFloor({ x: 0, y: 0, scale: 5 }, 20)).toEqual({ x: 0, y: 0, scale: 20 });
+        expect(normalizeCompositorOffsetWithFloor({ x: 0, y: 0, scale: 150 }, 20)).toEqual({ x: 0, y: 0, scale: 150 });
+        expect(normalizeCompositorOffsetWithFloor({ x: 0, y: 0, scale: 500 }, 20)).toEqual({ x: 0, y: 0, scale: COMPOSITOR_SCALE_MAX });
+        expect(normalizeCompositorOffsetWithFloor(null, 20)).toEqual({ x: 0, y: 0, scale: 100 });
+    });
+});
+
+describe('offset round-trip (sub-50 scales survive construction)', () => {
+    test('normalizeCompositorOffsets preserves a persisted zoomed-out scale below 50', () => {
+        expect(normalizeCompositorOffsets([{ x: 3, y: -4, scale: 12 }], 1)).toEqual([{ x: 3, y: -4, scale: 12 }]);
+    });
+
+    test('construction still sanitizes garbage scales (without clamping to 50)', () => {
+        expect(normalizeCompositorOffsets([{ scale: 500 }], 1)[0].scale).toBe(COMPOSITOR_SCALE_MAX);
+        expect(normalizeCompositorOffsets([{ scale: 'junk' }], 1)[0].scale).toBe(100);
+        expect(normalizeCompositorOffsets([{ scale: 0 }], 1)[0].scale).toBe(1);
+        expect(normalizeCompositorOffsets([{ scale: -9 }], 1)[0].scale).toBe(1);
+    });
+});
+
+describe('floor-aware pan/zoom/pinch', () => {
+    test('zoom reaches the per-cell floor and no further', () => {
+        expect(zoomCompositorOffset({ x: 0, y: 0, scale: 100 }, -95, 10)).toEqual({ x: 0, y: 0, scale: 10 });
+        expect(zoomCompositorOffset({ x: 0, y: 0, scale: 30 }, -50, 25)).toEqual({ x: 0, y: 0, scale: 25 });
+    });
+
+    test('zoom without a floor keeps the fixed minimum', () => {
+        expect(zoomCompositorOffset({ x: 0, y: 0, scale: 100 }, -95)).toEqual({ x: 0, y: 0, scale: COMPOSITOR_SCALE_MIN });
+        expect(zoomCompositorOffset({ x: 0, y: 0, scale: 100 }, -95, 'junk')).toEqual({ x: 0, y: 0, scale: COMPOSITOR_SCALE_MIN });
+    });
+
+    test('pinch clamps to the per-cell floor', () => {
+        expect(pinchCompositorScale(80, 400, 50, 20)).toBe(20);
+        expect(pinchCompositorScale(80, 400, 50)).toBe(COMPOSITOR_SCALE_MIN);
+        expect(pinchCompositorScale(80, 400, 50, 'junk')).toBe(COMPOSITOR_SCALE_MIN);
+    });
+
+    test('pan preserves the scale but re-clamps it against the floor', () => {
+        // A persisted sub-floor scale is lifted on the next interaction.
+        expect(panCompositorOffset({ x: 0, y: 0, scale: 12 }, 5, -5, 30)).toEqual({ x: 5, y: -5, scale: 30 });
+        expect(panCompositorOffset({ x: 0, y: 0, scale: 40 }, 1, 1, 30)).toEqual({ x: 1, y: 1, scale: 40 });
     });
 });

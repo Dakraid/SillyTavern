@@ -154,6 +154,52 @@
 	min-width: 0;
 }
 
+/* --- Tiling controls --- */
+
+.bc-task-avatar-layout-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: 0.5em 1em;
+}
+
+.bc-task-avatar-layout-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2em;
+	min-width: 0;
+}
+
+/* [hidden] must beat the flex display above. */
+.bc-task-avatar-layout-field[hidden] {
+	display: none;
+}
+
+.bc-task-avatar-layout-label {
+	font-size: 0.85em;
+	opacity: 0.75;
+}
+
+.bc-task-avatar-layout-select,
+.bc-task-avatar-layout-gap-input {
+	padding: 0.3em 0.5em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background-color: var(--SmartThemeBlurTintColor);
+	color: inherit;
+	font: inherit;
+}
+
+.bc-task-avatar-layout-select:focus-visible,
+.bc-task-avatar-layout-gap-input:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-avatar-layout-gap-input {
+	width: 5.5em;
+}
+
 .bc-task-avatar-compositor-error {
 	margin: 0;
 	padding: 0.5em 0.7em;

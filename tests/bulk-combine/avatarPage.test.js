@@ -57,6 +57,7 @@ jest.unstable_mockModule('../../public/scripts/bulk-combine/components/AvatarCom
             getOffsets: jest.fn(() => [{ x: 1, y: 2, scale: 110 }]),
             getComposedImageDataURL: jest.fn(() => 'data:image/png;base64,COMPOSED'),
             isReady: jest.fn(() => true),
+            setLayout: jest.fn(),
             dispose: jest.fn(),
         };
         compositorCalls.push({ options, instance });
@@ -631,5 +632,127 @@ describe('avatarPage', () => {
         expect(artifactPatches).toHaveLength(2);
         expect(artifactPatches[1]).toEqual(artifactPatches[0]);
         expect(findOne(container, hasClass('bc-task-avatar-created'))).not.toBe(null);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Tiling layout controls
+// ---------------------------------------------------------------------------
+
+/** @param {Element} root Root node. @param {string} id Element id. @returns {Element|null} Match. */
+function byId(root, id) {
+    return findOne(root, (element) => element.id === id);
+}
+
+describe('avatarPage tiling controls', () => {
+    test('render with defaults: square grid, aspect hidden, compositor default gap', async () => {
+        const { root } = await renderSettled();
+
+        expect(byId(root, 'bc-task-avatar-layout-method').value).toBe('square');
+        expect(byId(root, 'bc-task-avatar-layout-aspect').value).toBe('3:4');
+        expect(byId(root, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBe(true);
+        expect(byId(root, 'bc-task-avatar-layout-gap').value).toBe('8');
+
+        // The compositor is built with the default layout.
+        expect(compositorCalls[0].options.layout).toEqual({ method: 'square', aspect: '3:4', gap: 8 });
+    });
+
+    test('render from the persisted task.avatar.layout (portrait shows the aspect select)', async () => {
+        const snapshot = makeSnapshot({ task: { avatar: { layout: { method: 'portrait', aspect: '9:16', gap: 4 } } } });
+        const { root } = await renderSettled(snapshot);
+
+        expect(byId(root, 'bc-task-avatar-layout-method').value).toBe('portrait');
+        expect(byId(root, 'bc-task-avatar-layout-aspect').value).toBe('9:16');
+        expect(byId(root, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBeFalsy();
+        expect(byId(root, 'bc-task-avatar-layout-gap').value).toBe('4');
+
+        // The compositor is built with the persisted layout.
+        expect(compositorCalls[0].options.layout).toEqual({ method: 'portrait', aspect: '9:16', gap: 4 });
+    });
+
+    test('method change calls setLayout and persists, without rebuilding the compositor', async () => {
+        const actions = makeActions();
+        const { root } = await renderSettled(makeSnapshot(), actions);
+        const [{ instance }] = compositorCalls;
+
+        const methodSelect = byId(root, 'bc-task-avatar-layout-method');
+        methodSelect.value = 'portrait';
+        methodSelect.fire('change');
+
+        const layout = { method: 'portrait', aspect: '3:4', gap: 8 };
+        expect(instance.setLayout).toHaveBeenCalledWith(layout);
+        expect(actions.update).toHaveBeenCalledWith({ avatar: { layout } });
+        expect(compositorCalls).toHaveLength(1); // no rebuild
+        expect(byId(container, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBeFalsy();
+
+        // Switching to best-fit hides the aspect select again.
+        methodSelect.value = 'best-fit';
+        methodSelect.fire('change');
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'best-fit', aspect: '3:4', gap: 8 });
+        expect(byId(container, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBe(true);
+    });
+
+    test('aspect and gap changes commit their own sparse layout patches', async () => {
+        const actions = makeActions();
+        const snapshot = makeSnapshot({ task: { avatar: { layout: { method: 'portrait', aspect: '3:4', gap: 8 } } } });
+        const { root } = await renderSettled(snapshot, actions);
+        const [{ instance }] = compositorCalls;
+
+        const aspectSelect = byId(root, 'bc-task-avatar-layout-aspect');
+        aspectSelect.value = '2:3';
+        aspectSelect.fire('change');
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 8 });
+        expect(actions.update).toHaveBeenLastCalledWith({ avatar: { layout: { method: 'portrait', aspect: '2:3', gap: 8 } } });
+
+        const gapInput = byId(root, 'bc-task-avatar-layout-gap');
+        gapInput.value = '12';
+        gapInput.fire('change');
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 12 });
+        expect(actions.update).toHaveBeenLastCalledWith({ avatar: { layout: { method: 'portrait', aspect: '2:3', gap: 12 } } });
+
+        // A garbage gap commits 0 (clamped ≥ 0) and the input reflects it.
+        gapInput.value = 'junk';
+        gapInput.fire('change');
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 0 });
+        expect(byId(container, 'bc-task-avatar-layout-gap').value).toBe('0');
+    });
+
+    test('a committed layout survives re-renders while the snapshot is still stale', async () => {
+        const actions = makeActions();
+        const snapshot = makeSnapshot(); // avatar.layout: {}
+        const { page, root } = await renderSettled(snapshot, actions);
+
+        const methodSelect = byId(root, 'bc-task-avatar-layout-method');
+        methodSelect.value = 'portrait';
+        methodSelect.fire('change');
+
+        // Re-render with the SAME (stale) snapshot: the draft wins, the
+        // compositor is not rebuilt, and the controls keep the choice.
+        page.render(container, snapshot, actions);
+        await flush();
+        expect(compositorCalls).toHaveLength(1);
+        expect(byId(container, 'bc-task-avatar-layout-method').value).toBe('portrait');
+        expect(byId(container, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBeFalsy();
+    });
+
+    test('the draft clears once the persisted layout catches up', async () => {
+        const actions = makeActions();
+        const { page, root } = await renderSettled(makeSnapshot(), actions);
+
+        const methodSelect = byId(root, 'bc-task-avatar-layout-method');
+        methodSelect.value = 'best-fit';
+        methodSelect.fire('change');
+
+        // The server round-tripped: the snapshot now carries the committed layout.
+        const updated = makeSnapshot({ task: { avatar: { layout: { method: 'best-fit', aspect: '3:4', gap: 8 } } } });
+        page.render(container, updated, actions);
+        await flush();
+        expect(byId(container, 'bc-task-avatar-layout-method').value).toBe('best-fit');
+
+        // A later render for an unrelated reason does not resurrect the draft.
+        page.render(container, updated, actions);
+        await flush();
+        expect(byId(container, 'bc-task-avatar-layout-method').value).toBe('best-fit');
+        expect(compositorCalls).toHaveLength(1);
     });
 });

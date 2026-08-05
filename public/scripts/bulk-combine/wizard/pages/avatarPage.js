@@ -17,6 +17,10 @@
  *   `actions.update({ avatar: { offsets } })`, committed only when the
  *   compositor reports a FINALIZED gesture (drag end, wheel, key press) so
  *   a drag does not storm the server.
+ * - The tiling layout persists into `task.avatar.layout` (`{ method, gap,
+ *   aspect }`) via `actions.update({ avatar: { layout } })`, committed on
+ *   control `change` events only; the same record is passed to the
+ *   compositor's `setLayout` (no rebuild, no image reload).
  * - Created refs persist into `task.artifacts`
  *   (`{ characterName, characterAvatar, lorebookName, createdAt }`); the
  *   created state is rendered from the snapshot, so re-opening the wizard
@@ -33,6 +37,11 @@
 
 import { getCharacters } from '../../../../script.js';
 import { createAvatarCompositor } from '../../components/AvatarCompositor.js';
+import {
+    COMPOSITOR_DEFAULT_GAP,
+    COMPOSITOR_PORTRAIT_ASPECTS,
+    normalizeCompositorLayout,
+} from '../../components/AvatarCompositorMath.js';
 import { createGroupCardFromTask } from '../../services/CardCreator.js';
 
 /**
@@ -47,6 +56,17 @@ const LOADING_TEXT = 'Assembling the review payload…';
 const RETRY_TITLE = 'Try loading the review payload again.';
 const WAITING_FOR_IMAGES_TEXT = 'Waiting for avatar images to load…';
 const COMPOSITOR_UNAVAILABLE_TEXT = 'The avatar compositor could not start in this environment. You can still create the card — it will keep a default avatar.';
+
+/**
+ * Tiling methods offered by the layout controls (`[value, label]`).
+ *
+ * @type {ReadonlyArray<readonly [string, string]>}
+ */
+const LAYOUT_METHODS = Object.freeze([
+    ['square', 'Square grid'],
+    ['portrait', 'Portrait grid'],
+    ['best-fit', 'Best fit'],
+]);
 
 /**
  * Whether a value is a plain record (non-array object).
@@ -261,6 +281,14 @@ export function createAvatarPage() {
     /** @type {string|null} Source identity key the compositor was built for. */
     let compositorSourcesKey = null;
     /**
+     * Last layout committed from the tiling controls. Wins over the
+     * snapshot until the persisted `task.avatar.layout` round-trips, so a
+     * re-render cannot snap the controls back to a stale value.
+     *
+     * @type {{method: string, aspect: string, gap: number}|null}
+     */
+    let layoutDraft = null;
+    /**
      * Create action state: `idle` | `creating` | `created` | `error`.
      *
      * @type {{status: string, error: string|null, result: object|null}}
@@ -385,6 +413,132 @@ export function createAvatarPage() {
     }
 
     /**
+     * Effective tiling layout: the just-committed draft, then the persisted
+     * `task.avatar.layout`, then the defaults (`square`, aspect `3:4`, the
+     * compositor's default gap). The draft clears once the persisted record
+     * catches up.
+     *
+     * @returns {{method: string, aspect: string, gap: number}} Effective layout (concrete gap).
+     */
+    function effectiveLayout() {
+        const persisted = normalizeCompositorLayout(isRecord(latestSnapshot?.task?.avatar?.layout)
+            ? latestSnapshot.task.avatar.layout
+            : undefined);
+        const persistedLayout = { method: persisted.method, aspect: persisted.aspect, gap: persisted.gap ?? COMPOSITOR_DEFAULT_GAP };
+        if (layoutDraft
+            && layoutDraft.method === persistedLayout.method
+            && layoutDraft.aspect === persistedLayout.aspect
+            && layoutDraft.gap === persistedLayout.gap) {
+            layoutDraft = null;
+        }
+        return layoutDraft ?? persistedLayout;
+    }
+
+    /**
+     * Commits a tiling layout from the controls: remembers it locally,
+     * applies it to the live compositor WITHOUT a rebuild (cells recompute,
+     * images stay loaded), and persists it sparsely.
+     *
+     * @param {{method: string, aspect: string, gap: number}} layout Layout record.
+     * @returns {void}
+     */
+    function commitLayout(layout) {
+        layoutDraft = layout;
+        compositor?.setLayout?.(layout);
+        void applyPatch(latestActions, { avatar: { layout } });
+    }
+
+    /**
+     * Builds the tiling controls row above the compositor host: tiling
+     * method select, portrait cell-aspect select (portrait only), and the
+     * cell-gap number input. Commits on `change` events only.
+     *
+     * @returns {Element} Controls row.
+     */
+    function buildLayoutControls() {
+        const current = effectiveLayout();
+
+        const row = document.createElement('div');
+        row.className = 'bc-task-avatar-layout-controls';
+
+        const methodField = document.createElement('div');
+        methodField.className = 'bc-task-avatar-layout-field';
+        const methodLabel = document.createElement('label');
+        methodLabel.className = 'bc-task-avatar-layout-label';
+        methodLabel.setAttribute('for', 'bc-task-avatar-layout-method');
+        methodLabel.textContent = 'Tiling';
+        const methodSelect = document.createElement('select');
+        methodSelect.id = 'bc-task-avatar-layout-method';
+        methodSelect.className = 'bc-task-avatar-layout-select';
+        for (const [value, label] of LAYOUT_METHODS) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            methodSelect.append(option);
+        }
+        methodSelect.value = LAYOUT_METHODS.some(([value]) => value === current.method) ? current.method : 'square';
+        methodField.append(methodLabel, methodSelect);
+
+        const aspectField = document.createElement('div');
+        aspectField.className = 'bc-task-avatar-layout-field';
+        const aspectLabel = document.createElement('label');
+        aspectLabel.className = 'bc-task-avatar-layout-label';
+        aspectLabel.setAttribute('for', 'bc-task-avatar-layout-aspect');
+        aspectLabel.textContent = 'Cell aspect';
+        const aspectSelect = document.createElement('select');
+        aspectSelect.id = 'bc-task-avatar-layout-aspect';
+        aspectSelect.className = 'bc-task-avatar-layout-select';
+        for (const aspect of Object.keys(COMPOSITOR_PORTRAIT_ASPECTS)) {
+            const option = document.createElement('option');
+            option.value = aspect;
+            option.textContent = aspect;
+            aspectSelect.append(option);
+        }
+        aspectSelect.value = typeof COMPOSITOR_PORTRAIT_ASPECTS[current.aspect] === 'number' ? current.aspect : '3:4';
+        aspectField.append(aspectLabel, aspectSelect);
+        aspectField.hidden = methodSelect.value !== 'portrait';
+
+        const gapField = document.createElement('div');
+        gapField.className = 'bc-task-avatar-layout-field';
+        const gapLabel = document.createElement('label');
+        gapLabel.className = 'bc-task-avatar-layout-label';
+        gapLabel.setAttribute('for', 'bc-task-avatar-layout-gap');
+        gapLabel.textContent = 'Gap (px)';
+        const gapInput = document.createElement('input');
+        gapInput.id = 'bc-task-avatar-layout-gap';
+        gapInput.className = 'bc-task-avatar-layout-gap-input';
+        gapInput.type = 'number';
+        gapInput.setAttribute('min', '0');
+        gapInput.setAttribute('step', '1');
+        gapInput.value = String(current.gap);
+        gapField.append(gapLabel, gapInput);
+
+        /**
+         * Reads the controls into a normalized layout record (concrete,
+         * clamped gap ≥ 0) and commits it.
+         *
+         * @returns {void}
+         */
+        function commitFromControls() {
+            const normalized = normalizeCompositorLayout({ method: methodSelect.value, aspect: aspectSelect.value });
+            const raw = Number(gapInput.value);
+            const gap = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+            gapInput.value = String(gap);
+            commitLayout({ method: normalized.method, aspect: normalized.aspect, gap });
+        }
+
+        methodSelect.addEventListener('change', () => {
+            aspectField.hidden = methodSelect.value !== 'portrait';
+            commitFromControls();
+        });
+        aspectSelect.addEventListener('change', commitFromControls);
+        gapInput.addEventListener('change', commitFromControls);
+
+        row.append(methodField, aspectField, gapField);
+        return row;
+    }
+
+    /**
      * Ensures the compositor exists for the current source set. The
      * compositor (canvas + loaded images) persists across re-renders: its
      * host node is re-appended to each new page root. A changed source set
@@ -418,6 +572,7 @@ export function createAvatarPage() {
                     avatar: String(source?.avatar ?? ''),
                 })),
                 initialOffsets: Array.isArray(avatarState.offsets) ? avatarState.offsets : [],
+                layout: effectiveLayout(),
                 onChange: (offsets, finalized) => {
                     if (finalized === true) {
                         void applyPatch(latestActions, { avatar: { offsets } });
@@ -799,7 +954,7 @@ export function createAvatarPage() {
         const studioTitle = document.createElement('h3');
         studioTitle.className = 'bc-task-avatar-section-title';
         studioTitle.textContent = 'Group avatar';
-        compositorSection.append(studioTitle, ensureCompositor());
+        compositorSection.append(studioTitle, buildLayoutControls(), ensureCompositor());
         body.push(compositorSection);
 
         if (!created) {
@@ -896,6 +1051,7 @@ export function createAvatarPage() {
             compositor = null;
             compositorHost = null;
             compositorSourcesKey = null;
+            layoutDraft = null;
             host = null;
             latestSnapshot = null;
             latestActions = null;
