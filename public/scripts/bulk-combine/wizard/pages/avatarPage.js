@@ -18,9 +18,12 @@
  *   compositor reports a FINALIZED gesture (drag end, wheel, key press) so
  *   a drag does not storm the server.
  * - The tiling layout persists into `task.avatar.layout` (`{ method, gap,
- *   aspect }`) via `actions.update({ avatar: { layout } })`, committed on
- *   control `change` events only; the same record is passed to the
- *   compositor's `setLayout` (no rebuild, no image reload).
+ *   aspect, columns, resolution }`) via `actions.update({ avatar: { layout } })`,
+ *   committed on control `change` events only; the cell-relevant subset
+ *   (everything but `resolution`) is passed to the compositor's
+ *   `setLayout` (no rebuild, no image reload). `resolution` never reaches
+ *   the compositor layout — the preview stays 1024×1536; it only feeds
+ *   `getComposedImageDataURL(scale)` at Create time.
  * - Created refs persist into `task.artifacts`
  *   (`{ characterName, characterAvatar, lorebookName, createdAt }`); the
  *   created state is rendered from the snapshot, so re-opening the wizard
@@ -66,6 +69,18 @@ const LAYOUT_METHODS = Object.freeze([
     ['square', 'Square grid'],
     ['portrait', 'Portrait grid'],
     ['best-fit', 'Best fit'],
+]);
+
+/**
+ * Output-resolution options (`[scale, label]`); the scale multiplies the
+ * 512×768 base (×1 → 512×768, ×2 → 1024×1536, ×4 → 2048×3072).
+ *
+ * @type {ReadonlyArray<readonly [string, string]>}
+ */
+const RESOLUTION_OPTIONS = Object.freeze([
+    ['1', '512×768'],
+    ['2', '1024×1536'],
+    ['4', '2048×3072'],
 ]);
 
 /**
@@ -285,7 +300,7 @@ export function createAvatarPage() {
      * snapshot until the persisted `task.avatar.layout` round-trips, so a
      * re-render cannot snap the controls back to a stale value.
      *
-     * @type {{method: string, aspect: string, gap: number}|null}
+     * @type {{method: string, aspect: string, gap: number, columns: number, resolution: number}|null}
      */
     let layoutDraft = null;
     /**
@@ -415,20 +430,28 @@ export function createAvatarPage() {
     /**
      * Effective tiling layout: the just-committed draft, then the persisted
      * `task.avatar.layout`, then the defaults (`square`, aspect `3:4`, the
-     * compositor's default gap). The draft clears once the persisted record
-     * catches up.
+     * compositor's default gap, auto columns, resolution ×2). The draft
+     * clears once the persisted record catches up.
      *
-     * @returns {{method: string, aspect: string, gap: number}} Effective layout (concrete gap).
+     * @returns {{method: string, aspect: string, gap: number, columns: number, resolution: number}} Effective layout (concrete gap).
      */
     function effectiveLayout() {
         const persisted = normalizeCompositorLayout(isRecord(latestSnapshot?.task?.avatar?.layout)
             ? latestSnapshot.task.avatar.layout
             : undefined);
-        const persistedLayout = { method: persisted.method, aspect: persisted.aspect, gap: persisted.gap ?? COMPOSITOR_DEFAULT_GAP };
+        const persistedLayout = {
+            method: persisted.method,
+            aspect: persisted.aspect,
+            gap: persisted.gap ?? COMPOSITOR_DEFAULT_GAP,
+            columns: persisted.columns,
+            resolution: persisted.resolution,
+        };
         if (layoutDraft
             && layoutDraft.method === persistedLayout.method
             && layoutDraft.aspect === persistedLayout.aspect
-            && layoutDraft.gap === persistedLayout.gap) {
+            && layoutDraft.gap === persistedLayout.gap
+            && layoutDraft.columns === persistedLayout.columns
+            && layoutDraft.resolution === persistedLayout.resolution) {
             layoutDraft = null;
         }
         return layoutDraft ?? persistedLayout;
@@ -436,27 +459,34 @@ export function createAvatarPage() {
 
     /**
      * Commits a tiling layout from the controls: remembers it locally,
-     * applies it to the live compositor WITHOUT a rebuild (cells recompute,
-     * images stay loaded), and persists it sparsely.
+     * applies the cell-relevant subset to the live compositor WITHOUT a
+     * rebuild (cells recompute, images stay loaded), and persists the full
+     * record sparsely. `resolution` is deliberately NOT passed to
+     * `setLayout` — it never affects the preview; it only feeds
+     * `getComposedImageDataURL(scale)` at Create time.
      *
-     * @param {{method: string, aspect: string, gap: number}} layout Layout record.
+     * @param {{method: string, aspect: string, gap: number, columns: number, resolution: number}} layout Layout record.
      * @returns {void}
      */
     function commitLayout(layout) {
         layoutDraft = layout;
-        compositor?.setLayout?.(layout);
+        compositor?.setLayout?.({ method: layout.method, aspect: layout.aspect, gap: layout.gap, columns: layout.columns });
         void applyPatch(latestActions, { avatar: { layout } });
     }
 
     /**
      * Builds the tiling controls row above the compositor host: tiling
-     * method select, portrait cell-aspect select (portrait only), and the
-     * cell-gap number input. Commits on `change` events only.
+     * method select, portrait cell-aspect select (portrait only), columns
+     * select (square + portrait only — best-fit derives its grid from the
+     * loaded image shapes), cell-gap number input, output-resolution
+     * select, and the two offset-reset buttons. Commits on `change` events
+     * only.
      *
      * @returns {Element} Controls row.
      */
     function buildLayoutControls() {
         const current = effectiveLayout();
+        const sourceCount = sourcesOf(latestSnapshot).length;
 
         const row = document.createElement('div');
         row.className = 'bc-task-avatar-layout-controls';
@@ -498,6 +528,31 @@ export function createAvatarPage() {
         aspectField.append(aspectLabel, aspectSelect);
         aspectField.hidden = methodSelect.value !== 'portrait';
 
+        const columnsField = document.createElement('div');
+        columnsField.className = 'bc-task-avatar-layout-field';
+        const columnsLabel = document.createElement('label');
+        columnsLabel.className = 'bc-task-avatar-layout-label';
+        columnsLabel.setAttribute('for', 'bc-task-avatar-layout-columns');
+        columnsLabel.textContent = 'Columns';
+        const columnsSelect = document.createElement('select');
+        columnsSelect.id = 'bc-task-avatar-layout-columns';
+        columnsSelect.className = 'bc-task-avatar-layout-select';
+        const autoOption = document.createElement('option');
+        autoOption.value = '0';
+        autoOption.textContent = 'Auto';
+        columnsSelect.append(autoOption);
+        for (let columns = 1; columns <= sourceCount; columns++) {
+            const option = document.createElement('option');
+            option.value = String(columns);
+            option.textContent = String(columns);
+            columnsSelect.append(option);
+        }
+        // A persisted column count beyond the current source set displays
+        // clamped (the compositor clamps the same way).
+        columnsSelect.value = String(Math.min(current.columns, sourceCount));
+        columnsField.append(columnsLabel, columnsSelect);
+        columnsField.hidden = methodSelect.value === 'best-fit';
+
         const gapField = document.createElement('div');
         gapField.className = 'bc-task-avatar-layout-field';
         const gapLabel = document.createElement('label');
@@ -513,28 +568,80 @@ export function createAvatarPage() {
         gapInput.value = String(current.gap);
         gapField.append(gapLabel, gapInput);
 
+        const resolutionField = document.createElement('div');
+        resolutionField.className = 'bc-task-avatar-layout-field';
+        const resolutionLabel = document.createElement('label');
+        resolutionLabel.className = 'bc-task-avatar-layout-label';
+        resolutionLabel.setAttribute('for', 'bc-task-avatar-layout-resolution');
+        resolutionLabel.textContent = 'Output resolution';
+        const resolutionSelect = document.createElement('select');
+        resolutionSelect.id = 'bc-task-avatar-layout-resolution';
+        resolutionSelect.className = 'bc-task-avatar-layout-select';
+        for (const [value, label] of RESOLUTION_OPTIONS) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            resolutionSelect.append(option);
+        }
+        resolutionSelect.value = RESOLUTION_OPTIONS.some(([value]) => Number(value) === current.resolution)
+            ? String(current.resolution)
+            : '2';
+        resolutionField.append(resolutionLabel, resolutionSelect);
+
         /**
          * Reads the controls into a normalized layout record (concrete,
-         * clamped gap ≥ 0) and commits it.
+         * clamped gap ≥ 0; integer columns ≥ 0; resolution 1|2|4) and
+         * commits it.
          *
          * @returns {void}
          */
         function commitFromControls() {
-            const normalized = normalizeCompositorLayout({ method: methodSelect.value, aspect: aspectSelect.value });
+            const normalized = normalizeCompositorLayout({
+                method: methodSelect.value,
+                aspect: aspectSelect.value,
+                columns: columnsSelect.value,
+                resolution: resolutionSelect.value,
+            });
             const raw = Number(gapInput.value);
             const gap = Number.isFinite(raw) && raw >= 0 ? raw : 0;
             gapInput.value = String(gap);
-            commitLayout({ method: normalized.method, aspect: normalized.aspect, gap });
+            commitLayout({
+                method: normalized.method,
+                aspect: normalized.aspect,
+                gap,
+                columns: normalized.columns,
+                resolution: normalized.resolution,
+            });
         }
 
         methodSelect.addEventListener('change', () => {
             aspectField.hidden = methodSelect.value !== 'portrait';
+            columnsField.hidden = methodSelect.value === 'best-fit';
             commitFromControls();
         });
         aspectSelect.addEventListener('change', commitFromControls);
+        columnsSelect.addEventListener('change', commitFromControls);
         gapInput.addEventListener('change', commitFromControls);
+        resolutionSelect.addEventListener('change', commitFromControls);
 
-        row.append(methodField, aspectField, gapField);
+        const compositorAvailable = compositor !== null;
+        const unavailableTitle = 'The avatar compositor is unavailable.';
+        const resetCurrentButton = buildButton({
+            className: 'bc-task-avatar-layout-reset',
+            label: 'Reset current image',
+            title: compositorAvailable ? 'Reset the selected image\'s pan and zoom (keyboard: 0).' : unavailableTitle,
+            disabled: !compositorAvailable,
+            onClick: () => compositor?.resetCellOffset?.(),
+        });
+        const resetAllButton = buildButton({
+            className: 'bc-task-avatar-layout-reset',
+            label: 'Reset all images',
+            title: compositorAvailable ? 'Reset every image\'s pan and zoom.' : unavailableTitle,
+            disabled: !compositorAvailable,
+            onClick: () => compositor?.resetAllOffsets?.(),
+        });
+
+        row.append(methodField, aspectField, columnsField, gapField, resolutionField, resetCurrentButton, resetAllButton);
         return row;
     }
 
@@ -669,7 +776,9 @@ export function createAvatarPage() {
 
         let dataUrl = null;
         try {
-            dataUrl = compositor?.getComposedImageDataURL?.() ?? null;
+            // The persisted resolution feeds ONLY the export — the preview
+            // stays at the internal 1024×1536.
+            dataUrl = compositor?.getComposedImageDataURL?.(effectiveLayout().resolution) ?? null;
         } catch (error) {
             console.warn('avatarPage: composed avatar unavailable; creating without it.', error);
             dataUrl = null;
@@ -954,7 +1063,10 @@ export function createAvatarPage() {
         const studioTitle = document.createElement('h3');
         studioTitle.className = 'bc-task-avatar-section-title';
         studioTitle.textContent = 'Group avatar';
-        compositorSection.append(studioTitle, buildLayoutControls(), ensureCompositor());
+        // The compositor must exist BEFORE the controls build so the reset
+        // buttons get the right disabled state on the first render.
+        const compositorNode = ensureCompositor();
+        compositorSection.append(studioTitle, buildLayoutControls(), compositorNode);
         body.push(compositorSection);
 
         if (!created) {

@@ -18,8 +18,8 @@
 .bc-compositor-canvas-wrap {
 	position: relative;
 	width: 100%;
-	max-width: 26em;
-	aspect-ratio: 1 / 1;
+	max-width: 20em; /* 2:3 portrait → caps the height at 30em */
+	aspect-ratio: 2 / 3; /* JS overrides with the runtime output dims */
 	margin-inline: auto;
 }
 

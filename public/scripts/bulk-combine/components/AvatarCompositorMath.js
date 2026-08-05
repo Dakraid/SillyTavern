@@ -22,10 +22,13 @@
  *   round-trip: construction normalizes scale to [1, MAX] only.
  *
  * Layout model: {@link computeLayoutCells} resolves a `{ method, gap,
- * aspect }` layout record into cell rectangles — near-square grid
- * (`'square'`, the legacy {@link computeGridCells} algorithm), a portrait
- * cell-aspect grid (`'portrait'`), or a grid fitted to the loaded source
- * image aspects (`'best-fit'`).
+ * aspect, columns, resolution }` layout record into cell rectangles on a
+ * (possibly non-square) `width × height` canvas — a grid of square-ish
+ * cells (`'square'`), a portrait cell-aspect grid (`'portrait'`), or a grid
+ * fitted to the loaded source image aspects (`'best-fit'`). All three go
+ * through the unified shape search {@link resolveAspectGridShape}; an
+ * explicit `columns` (≥ 1) skips the search. `resolution` (1|2|4) is the
+ * export scale — it never affects the cells.
  */
 
 /**
@@ -50,11 +53,25 @@ export const COMPOSITOR_SCALE_MIN = 50;
 export const COMPOSITOR_SCALE_MAX = 200;
 
 /**
- * Default square output size, in pixels.
+ * Default square output size, in pixels (legacy `outputSize` fallback).
  *
  * @type {number}
  */
 export const COMPOSITOR_DEFAULT_OUTPUT_SIZE = 1024;
+
+/**
+ * Default output width, in pixels (2:3 portrait canvas).
+ *
+ * @type {number}
+ */
+export const COMPOSITOR_DEFAULT_OUTPUT_WIDTH = 1024;
+
+/**
+ * Default output height, in pixels (2:3 portrait canvas).
+ *
+ * @type {number}
+ */
+export const COMPOSITOR_DEFAULT_OUTPUT_HEIGHT = 1536;
 
 /**
  * Default gap between grid cells, in pixels (at output resolution).
@@ -94,6 +111,21 @@ export const COMPOSITOR_PORTRAIT_ASPECTS = Object.freeze({
  * @type {string}
  */
 export const COMPOSITOR_DEFAULT_PORTRAIT_ASPECT = '3:4';
+
+/**
+ * Selectable export resolutions (scale factors on the 512×768 base: ×1 →
+ * 512×768, ×2 → 1024×1536, ×4 → 2048×3072).
+ *
+ * @type {ReadonlyArray<number>}
+ */
+export const COMPOSITOR_LAYOUT_RESOLUTIONS = Object.freeze([1, 2, 4]);
+
+/**
+ * Default export resolution (×2 → 1024×1536, the internal output dims).
+ *
+ * @type {number}
+ */
+export const COMPOSITOR_DEFAULT_RESOLUTION = 2;
 
 /**
  * Clamps a numeric value to a range with a fallback for non-finite input.
@@ -178,25 +210,27 @@ export function normalizeCompositorOffsets(offsets, count) {
 
 /**
  * Computes the cell rectangles for an explicit `cols × rows` grid shape on
- * a square canvas. Cells are emitted row-major; empty trailing slots are
- * skipped, so the result always has `count` cells.
+ * a `width × height` canvas. Cells are emitted row-major; empty trailing
+ * slots are skipped, so the result always has `count` cells.
  *
  * @param {number} count Number of source cells.
- * @param {number} size Square canvas size in pixels.
+ * @param {number} width Canvas width in pixels.
+ * @param {number} height Canvas height in pixels.
  * @param {number} gap Gap between cells in pixels.
  * @param {number} cols Column count.
  * @param {number} rows Row count.
  * @returns {Array<{x: number, y: number, w: number, h: number}>} Cell rectangles in canvas coordinates.
  */
-function computeShapedCells(count, size, gap, cols, rows) {
+function computeShapedCells(count, width, height, gap, cols, rows) {
     // Keep the gap from swallowing the canvas in either dimension: fall
     // back towards 0 until the cells stay positive-sized (≥ 1 px).
     let effectiveGap = Number.isFinite(Number(gap)) ? Math.max(0, Number(gap)) : 0;
-    const maxGapFor = (divisions) => divisions > 1 ? (size - divisions) / (divisions - 1) : effectiveGap;
-    effectiveGap = Math.min(effectiveGap, Math.max(0, Math.floor(Math.min(maxGapFor(cols), maxGapFor(rows)))));
+    const maxGapCols = cols > 1 ? (width - cols) / (cols - 1) : effectiveGap;
+    const maxGapRows = rows > 1 ? (height - rows) / (rows - 1) : effectiveGap;
+    effectiveGap = Math.min(effectiveGap, Math.max(0, Math.floor(Math.min(maxGapCols, maxGapRows))));
 
-    const cellW = (size - effectiveGap * (cols - 1)) / cols;
-    const cellH = (size - effectiveGap * (rows - 1)) / rows;
+    const cellW = (width - effectiveGap * (cols - 1)) / cols;
+    const cellH = (height - effectiveGap * (rows - 1)) / rows;
     if (cellW <= 0 || cellH <= 0) {
         return [];
     }
@@ -233,26 +267,35 @@ export function computeGridCells(count, size, gap = COMPOSITOR_DEFAULT_GAP) {
 
     const cols = Math.ceil(Math.sqrt(n));
     const rows = Math.ceil(n / cols);
-    return computeShapedCells(n, canvasSize, gap, cols, rows);
+    return computeShapedCells(n, canvasSize, canvasSize, gap, cols, rows);
 }
 
 /**
  * Normalizes a persisted layout record. Unknown/missing methods fall back
  * to `'square'`, unknown/missing portrait aspects to
- * {@link COMPOSITOR_DEFAULT_PORTRAIT_ASPECT}. A finite, non-negative `gap`
- * is carried through; any other gap is omitted (callers fall back to their
+ * {@link COMPOSITOR_DEFAULT_PORTRAIT_ASPECT}. `columns` is an integer ≥ 0
+ * (0 = auto, the shape search decides); `resolution` is one of
+ * {@link COMPOSITOR_LAYOUT_RESOLUTIONS} (default
+ * {@link COMPOSITOR_DEFAULT_RESOLUTION}). A finite, non-negative `gap` is
+ * carried through; any other gap is omitted (callers fall back to their
  * own default).
  *
- * @param {unknown} layout Raw layout record (`{ method, gap, aspect }`).
- * @returns {{method: string, aspect: string, gap?: number}} Normalized layout.
+ * @param {unknown} layout Raw layout record (`{ method, gap, aspect, columns, resolution }`).
+ * @returns {{method: string, aspect: string, columns: number, resolution: number, gap?: number}} Normalized layout.
  */
 export function normalizeCompositorLayout(layout) {
     const method = COMPOSITOR_LAYOUT_METHODS.includes(layout?.method) ? layout.method : 'square';
     const aspect = typeof COMPOSITOR_PORTRAIT_ASPECTS[layout?.aspect] === 'number'
         ? layout.aspect
         : COMPOSITOR_DEFAULT_PORTRAIT_ASPECT;
-    /** @type {{method: string, aspect: string, gap?: number}} */
-    const normalized = { method, aspect };
+    const columns = Number.isSafeInteger(Number(layout?.columns)) && Number(layout.columns) >= 0
+        ? Number(layout.columns)
+        : 0;
+    const resolution = COMPOSITOR_LAYOUT_RESOLUTIONS.includes(Number(layout?.resolution))
+        ? Number(layout.resolution)
+        : COMPOSITOR_DEFAULT_RESOLUTION;
+    /** @type {{method: string, aspect: string, columns: number, resolution: number, gap?: number}} */
+    const normalized = { method, aspect, columns, resolution };
     const gap = Number(layout?.gap);
     if (Number.isFinite(gap) && gap >= 0) {
         normalized.gap = gap;
@@ -279,7 +322,10 @@ function geometricMeanAspect(values) {
 
 /**
  * Picks the `cols × rows` grid shape (cols·rows ≥ count) whose cell aspect
- * — `rows / cols` on a square canvas — best approximates `targetAspect`.
+ * — `rows / cols · (canvas width / canvas height)` — best approximates the
+ * target. The search is unified over the shape ratio `k = rows / cols`:
+ * callers fold the canvas and cell/image aspects into `k` (see
+ * {@link computeLayoutCells}).
  *
  * For each column count the row count is `ceil(count / cols)`, i.e. the
  * empty-slot-minimizing grid for that many columns; the aspect match picks
@@ -287,15 +333,21 @@ function geometricMeanAspect(values) {
  * search). Ties keep the fewest columns.
  *
  * @param {number} count Number of source cells.
- * @param {number} targetAspect Target cell aspect (`width / height`).
+ * @param {number} k Target shape ratio (`rows / cols`); non-finite or
+ * non-positive input falls back to 1 (balanced grid).
  * @returns {{cols: number, rows: number}} Grid shape.
  */
-function resolveAspectGridShape(count, targetAspect) {
-    let best = { cols: 1, rows: count };
+export function resolveAspectGridShape(count, k) {
+    const n = Math.floor(Number(count));
+    if (!Number.isFinite(n) || n <= 0) {
+        return { cols: 1, rows: 1 };
+    }
+    const target = Number.isFinite(Number(k)) && Number(k) > 0 ? Number(k) : 1;
+    let best = { cols: 1, rows: n };
     let bestDiff = Infinity;
-    for (let cols = 1; cols <= count; cols++) {
-        const rows = Math.ceil(count / cols);
-        const diff = Math.abs(rows / cols - targetAspect);
+    for (let cols = 1; cols <= n; cols++) {
+        const rows = Math.ceil(n / cols);
+        const diff = Math.abs(rows / cols - target);
         if (diff < bestDiff) {
             bestDiff = diff;
             best = { cols, rows };
@@ -305,47 +357,65 @@ function resolveAspectGridShape(count, targetAspect) {
 }
 
 /**
- * Resolves a tiling layout into cell rectangles.
+ * Resolves a tiling layout into cell rectangles on a `width × height`
+ * canvas.
  *
- * - `'square'` (default): the near-square {@link computeGridCells} grid.
+ * - `'square'` (default): a grid of square-ish cells — on a square canvas
+ *   exactly the classic near-square {@link computeGridCells} grid.
  * - `'portrait'`: the canvas-filling grid whose cell aspect best
  *   approximates the selected portrait ratio (`layout.aspect`, one of
  *   {@link COMPOSITOR_PORTRAIT_ASPECTS}).
  * - `'best-fit'`: the same search with the target aspect set to the
  *   geometric mean of `imageAspects` (the LOADED source image aspects,
- *   `width / height`); no usable aspect → square fallback.
+ *   `width / height`); no usable aspect → the square target.
  *
- * @param {unknown} layout Layout record (`{ method, gap, aspect }`).
+ * All three go through the unified shape search
+ * {@link resolveAspectGridShape} over `k = rows / cols`: the canvas folds
+ * in as `H / W`, so `k` is `H / W` (square), `r · H / W` (portrait, `r` the
+ * cell aspect), or `g · H / W` (best-fit, `g` the geomean image aspect).
+ * An explicit `layout.columns` (≥ 1) skips the search for every method:
+ * `cols = min(columns, count)`, `rows = ceil(count / cols)`.
+ * `layout.resolution` never affects the cells (export scale only).
+ *
+ * @param {unknown} layout Layout record (`{ method, gap, aspect, columns, resolution }`).
  * @param {number} count Number of source cells.
- * @param {number} size Square canvas size in pixels.
+ * @param {number} width Canvas width in pixels.
+ * @param {number} height Canvas height in pixels.
  * @param {number} [gap] Gap between cells in pixels (overridden by a valid `layout.gap`).
  * @param {Array<number|null>} [imageAspects] Loaded source image aspects (best-fit only).
  * @returns {Array<{x: number, y: number, w: number, h: number}>} Cell rectangles in canvas coordinates.
  */
-export function computeLayoutCells(layout, count, size, gap = COMPOSITOR_DEFAULT_GAP, imageAspects) {
+export function computeLayoutCells(layout, count, width, height, gap = COMPOSITOR_DEFAULT_GAP, imageAspects) {
     const n = Math.floor(Number(count));
-    const canvasSize = Number(size);
-    if (!Number.isFinite(n) || n <= 0 || !Number.isFinite(canvasSize) || canvasSize <= 0) {
+    const canvasWidth = Number(width);
+    const canvasHeight = Number(height);
+    if (!Number.isFinite(n) || n <= 0
+        || !Number.isFinite(canvasWidth) || canvasWidth <= 0
+        || !Number.isFinite(canvasHeight) || canvasHeight <= 0) {
         return [];
     }
 
     const normalized = normalizeCompositorLayout(layout);
     const effectiveGap = normalized.gap ?? gap;
 
-    if (normalized.method === 'square') {
-        return computeGridCells(n, canvasSize, effectiveGap);
+    // Explicit columns skip the shape search for every method.
+    if (normalized.columns >= 1) {
+        const cols = Math.min(normalized.columns, n);
+        const rows = Math.ceil(n / cols);
+        return computeShapedCells(n, canvasWidth, canvasHeight, effectiveGap, cols, rows);
     }
 
-    const targetAspect = normalized.method === 'portrait'
-        ? COMPOSITOR_PORTRAIT_ASPECTS[normalized.aspect]
-        : geometricMeanAspect(imageAspects);
-    if (!Number.isFinite(targetAspect) || targetAspect <= 0) {
-        // Best-fit with no loaded image aspects: square fallback.
-        return computeGridCells(n, canvasSize, effectiveGap);
+    const canvasRatio = canvasHeight / canvasWidth;
+    let k = canvasRatio;
+    if (normalized.method === 'portrait') {
+        k = COMPOSITOR_PORTRAIT_ASPECTS[normalized.aspect] * canvasRatio;
+    } else if (normalized.method === 'best-fit') {
+        const mean = geometricMeanAspect(imageAspects);
+        k = Number.isFinite(mean) && mean > 0 ? mean * canvasRatio : canvasRatio;
     }
 
-    const { cols, rows } = resolveAspectGridShape(n, targetAspect);
-    return computeShapedCells(n, canvasSize, effectiveGap, cols, rows);
+    const { cols, rows } = resolveAspectGridShape(n, k);
+    return computeShapedCells(n, canvasWidth, canvasHeight, effectiveGap, cols, rows);
 }
 
 /**

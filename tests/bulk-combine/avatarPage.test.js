@@ -58,6 +58,8 @@ jest.unstable_mockModule('../../public/scripts/bulk-combine/components/AvatarCom
             getComposedImageDataURL: jest.fn(() => 'data:image/png;base64,COMPOSED'),
             isReady: jest.fn(() => true),
             setLayout: jest.fn(),
+            resetCellOffset: jest.fn(),
+            resetAllOffsets: jest.fn(),
             dispose: jest.fn(),
         };
         compositorCalls.push({ options, instance });
@@ -645,16 +647,19 @@ function byId(root, id) {
 }
 
 describe('avatarPage tiling controls', () => {
-    test('render with defaults: square grid, aspect hidden, compositor default gap', async () => {
+    test('render with defaults: square grid, aspect hidden, compositor default gap, auto columns, ×2 resolution', async () => {
         const { root } = await renderSettled();
 
         expect(byId(root, 'bc-task-avatar-layout-method').value).toBe('square');
         expect(byId(root, 'bc-task-avatar-layout-aspect').value).toBe('3:4');
         expect(byId(root, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBe(true);
         expect(byId(root, 'bc-task-avatar-layout-gap').value).toBe('8');
+        expect(byId(root, 'bc-task-avatar-layout-columns').value).toBe('0');
+        expect(byId(root, 'bc-task-avatar-layout-columns').parentElement.hidden).toBeFalsy();
+        expect(byId(root, 'bc-task-avatar-layout-resolution').value).toBe('2');
 
         // The compositor is built with the default layout.
-        expect(compositorCalls[0].options.layout).toEqual({ method: 'square', aspect: '3:4', gap: 8 });
+        expect(compositorCalls[0].options.layout).toEqual({ method: 'square', aspect: '3:4', gap: 8, columns: 0, resolution: 2 });
     });
 
     test('render from the persisted task.avatar.layout (portrait shows the aspect select)', async () => {
@@ -666,8 +671,17 @@ describe('avatarPage tiling controls', () => {
         expect(byId(root, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBeFalsy();
         expect(byId(root, 'bc-task-avatar-layout-gap').value).toBe('4');
 
-        // The compositor is built with the persisted layout.
-        expect(compositorCalls[0].options.layout).toEqual({ method: 'portrait', aspect: '9:16', gap: 4 });
+        // The compositor is built with the persisted layout (defaults fill the rest).
+        expect(compositorCalls[0].options.layout).toEqual({ method: 'portrait', aspect: '9:16', gap: 4, columns: 0, resolution: 2 });
+    });
+
+    test('persisted columns and resolution round-trip into the controls and the compositor', async () => {
+        const snapshot = makeSnapshot({ task: { avatar: { layout: { method: 'portrait', aspect: '2:3', gap: 4, columns: 2, resolution: 4 } } } });
+        const { root } = await renderSettled(snapshot);
+
+        expect(byId(root, 'bc-task-avatar-layout-columns').value).toBe('2');
+        expect(byId(root, 'bc-task-avatar-layout-resolution').value).toBe('4');
+        expect(compositorCalls[0].options.layout).toEqual({ method: 'portrait', aspect: '2:3', gap: 4, columns: 2, resolution: 4 });
     });
 
     test('method change calls setLayout and persists, without rebuilding the compositor', async () => {
@@ -679,17 +693,18 @@ describe('avatarPage tiling controls', () => {
         methodSelect.value = 'portrait';
         methodSelect.fire('change');
 
-        const layout = { method: 'portrait', aspect: '3:4', gap: 8 };
-        expect(instance.setLayout).toHaveBeenCalledWith(layout);
-        expect(actions.update).toHaveBeenCalledWith({ avatar: { layout } });
+        // setLayout gets the cell-relevant subset (NO resolution); the PATCH carries the full record.
+        expect(instance.setLayout).toHaveBeenCalledWith({ method: 'portrait', aspect: '3:4', gap: 8, columns: 0 });
+        expect(actions.update).toHaveBeenCalledWith({ avatar: { layout: { method: 'portrait', aspect: '3:4', gap: 8, columns: 0, resolution: 2 } } });
         expect(compositorCalls).toHaveLength(1); // no rebuild
         expect(byId(container, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBeFalsy();
 
-        // Switching to best-fit hides the aspect select again.
+        // Switching to best-fit hides the aspect AND columns selects.
         methodSelect.value = 'best-fit';
         methodSelect.fire('change');
-        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'best-fit', aspect: '3:4', gap: 8 });
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'best-fit', aspect: '3:4', gap: 8, columns: 0 });
         expect(byId(container, 'bc-task-avatar-layout-aspect').parentElement.hidden).toBe(true);
+        expect(byId(container, 'bc-task-avatar-layout-columns').parentElement.hidden).toBe(true);
     });
 
     test('aspect and gap changes commit their own sparse layout patches', async () => {
@@ -701,20 +716,111 @@ describe('avatarPage tiling controls', () => {
         const aspectSelect = byId(root, 'bc-task-avatar-layout-aspect');
         aspectSelect.value = '2:3';
         aspectSelect.fire('change');
-        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 8 });
-        expect(actions.update).toHaveBeenLastCalledWith({ avatar: { layout: { method: 'portrait', aspect: '2:3', gap: 8 } } });
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 8, columns: 0 });
+        expect(actions.update).toHaveBeenLastCalledWith({ avatar: { layout: { method: 'portrait', aspect: '2:3', gap: 8, columns: 0, resolution: 2 } } });
 
         const gapInput = byId(root, 'bc-task-avatar-layout-gap');
         gapInput.value = '12';
         gapInput.fire('change');
-        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 12 });
-        expect(actions.update).toHaveBeenLastCalledWith({ avatar: { layout: { method: 'portrait', aspect: '2:3', gap: 12 } } });
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 12, columns: 0 });
+        expect(actions.update).toHaveBeenLastCalledWith({ avatar: { layout: { method: 'portrait', aspect: '2:3', gap: 12, columns: 0, resolution: 2 } } });
 
         // A garbage gap commits 0 (clamped ≥ 0) and the input reflects it.
         gapInput.value = 'junk';
         gapInput.fire('change');
-        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 0 });
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'portrait', aspect: '2:3', gap: 0, columns: 0 });
         expect(byId(container, 'bc-task-avatar-layout-gap').value).toBe('0');
+    });
+
+    test('columns select offers Auto + 1..sources.length and commits explicit columns', async () => {
+        const actions = makeActions();
+        const { root } = await renderSettled(makeSnapshot(), actions);
+        const [{ instance }] = compositorCalls;
+
+        const columnsSelect = byId(root, 'bc-task-avatar-layout-columns');
+        expect(columnsSelect.parentElement.hidden).toBeFalsy(); // square: visible
+        expect(columnsSelect.children.map((child) => child.value)).toEqual(['0', '1', '2']);
+        expect(columnsSelect.children[0].textContent).toBe('Auto');
+
+        columnsSelect.value = '2';
+        columnsSelect.fire('change');
+        expect(instance.setLayout).toHaveBeenLastCalledWith({ method: 'square', aspect: '3:4', gap: 8, columns: 2 });
+        expect(actions.update).toHaveBeenLastCalledWith({ avatar: { layout: { method: 'square', aspect: '3:4', gap: 8, columns: 2, resolution: 2 } } });
+
+        // Portrait keeps the columns select visible.
+        const methodSelect = byId(container, 'bc-task-avatar-layout-method');
+        methodSelect.value = 'portrait';
+        methodSelect.fire('change');
+        expect(byId(container, 'bc-task-avatar-layout-columns').parentElement.hidden).toBeFalsy();
+    });
+
+    test('resolution select commits only the patch — setLayout never receives the resolution', async () => {
+        const actions = makeActions();
+        const { root } = await renderSettled(makeSnapshot(), actions);
+        const [{ instance }] = compositorCalls;
+
+        const resolutionSelect = byId(root, 'bc-task-avatar-layout-resolution');
+        expect(resolutionSelect.children.map((child) => child.textContent)).toEqual(['512×768', '1024×1536', '2048×3072']);
+        expect(resolutionSelect.value).toBe('2');
+
+        instance.setLayout.mockClear();
+        resolutionSelect.value = '4';
+        resolutionSelect.fire('change');
+
+        expect(actions.update).toHaveBeenLastCalledWith({ avatar: { layout: { method: 'square', aspect: '3:4', gap: 8, columns: 0, resolution: 4 } } });
+        expect(instance.setLayout).toHaveBeenCalledTimes(1); // same commit flow…
+        const setLayoutArg = instance.setLayout.mock.calls[0][0];
+        expect(setLayoutArg).toEqual({ method: 'square', aspect: '3:4', gap: 8, columns: 0 });
+        expect('resolution' in setLayoutArg).toBe(false); // …but the preview stays 1024×1536
+    });
+
+    test('Create exports the composed avatar at the committed resolution', async () => {
+        const actions = makeActions();
+        const { root } = await renderSettled(makeSnapshot(), actions);
+        const [{ instance }] = compositorCalls;
+
+        const resolutionSelect = byId(root, 'bc-task-avatar-layout-resolution');
+        resolutionSelect.value = '4';
+        resolutionSelect.fire('change');
+
+        findOne(root, hasClass('bc-task-avatar-create-button')).click();
+        await flush();
+        await flush();
+
+        expect(instance.getComposedImageDataURL).toHaveBeenCalledWith(4);
+        expect(mockCreateGroupCardFromTask).toHaveBeenCalledTimes(1);
+    });
+
+    test('the reset buttons call the compositor reset APIs', async () => {
+        const { root } = await renderSettled(makeSnapshot());
+        const [{ instance }] = compositorCalls;
+
+        const buttons = findAll(root, hasClass('bc-task-avatar-layout-reset'));
+        expect(buttons).toHaveLength(2);
+        const [resetCurrent, resetAll] = buttons;
+        expect(resetCurrent.textContent).toBe('Reset current image');
+        expect(resetAll.textContent).toBe('Reset all images');
+        expect(resetCurrent.disabled).toBe(false);
+        expect(resetAll.disabled).toBe(false);
+
+        resetCurrent.click();
+        expect(instance.resetCellOffset).toHaveBeenCalledTimes(1);
+        expect(instance.resetAllOffsets).not.toHaveBeenCalled();
+
+        resetAll.click();
+        expect(instance.resetAllOffsets).toHaveBeenCalledTimes(1);
+        expect(instance.resetCellOffset).toHaveBeenCalledTimes(1);
+    });
+
+    test('the reset buttons are disabled when the compositor could not start', async () => {
+        compositorShouldThrow = true;
+        const { root } = await renderSettled(makeSnapshot());
+
+        expect(compositorCalls).toHaveLength(0); // the factory threw before recording
+        const buttons = findAll(root, hasClass('bc-task-avatar-layout-reset'));
+        expect(buttons).toHaveLength(2);
+        expect(buttons[0].disabled).toBe(true);
+        expect(buttons[1].disabled).toBe(true);
     });
 
     test('a committed layout survives re-renders while the snapshot is still stale', async () => {

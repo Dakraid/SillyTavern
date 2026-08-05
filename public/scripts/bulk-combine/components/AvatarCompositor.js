@@ -3,12 +3,13 @@
 /**
  * @file Native plain-DOM avatar compositor for the guided task wizard.
  *
- * Composes the task's source avatars into a single square group avatar,
- * entirely client-side on a `<canvas>`: near-square grid layout
- * ({@link computeGridCells}), cover-fit per cell, per-cell drag (pan),
- * wheel/pinch (zoom), and keyboard pan/zoom for accessibility. All geometry
- * lives in the pure, Node-testable `AvatarCompositorMath.js`; this module
- * keeps only the canvas and pointer wiring.
+ * Composes the task's source avatars into a single 2:3 portrait group
+ * avatar (the character-card shape), entirely client-side on a `<canvas>`:
+ * grid layout ({@link computeLayoutCells}), cover-fit per cell, per-cell
+ * drag (pan), wheel/pinch (zoom), and keyboard pan/zoom/reset for
+ * accessibility. All geometry lives in the pure, Node-testable
+ * `AvatarCompositorMath.js`; this module keeps only the canvas and pointer
+ * wiring.
  *
  * No jQuery, no legacy `WizardState`, no legacy `AvatarEditor` lineage.
  * Plain DOM only: `container.replaceChildren`, `el.addEventListener`.
@@ -20,13 +21,19 @@
  *       sources,                   // [{ key?, name?, avatar? }] — avatar is
  *                                  // the character avatar file reference
  *       initialOffsets,            // optional [{ x, y, scale }] (normalized)
- *       outputSize,                // square output px (default 1024)
+ *       outputWidth, outputHeight, // output px (defaults 1024×1536, a 2:3
+ *                                  // portrait canvas)
+ *       outputSize,                // legacy square output px — sets BOTH
+ *                                  // dims when outputWidth/Height are absent
  *       gap,                       // cell gap px at output resolution
  *                                  // (fallback; a valid layout.gap wins)
- *       layout,                    // optional { method, gap, aspect } —
- *                                  // 'square' (default) | 'portrait' |
- *                                  // 'best-fit'; aspect is the portrait
- *                                  // cell ratio ('2:3'|'3:4'|'9:16')
+ *       layout,                    // optional { method, gap, aspect,
+ *                                  // columns, resolution } — 'square'
+ *                                  // (default) | 'portrait' | 'best-fit';
+ *                                  // aspect is the portrait cell ratio
+ *                                  // ('2:3'|'3:4'|'9:16'); columns 0 = auto;
+ *                                  // resolution (1|2|4) is the default
+ *                                  // export scale
  *       resolveSourceUrl,          // (source) => image URL; defaults to the
  *                                  // full `/characters/<avatar>` image
  *       onChange,                  // (offsets, finalized) => void — fired on
@@ -42,11 +49,19 @@
  *                                  // are kept by index, images are NOT
  *                                  // reloaded
  *       getLayoutCells(),          // current cell rectangles (copies)
- *       getComposedImageDataURL(size?),
- *                                  // square PNG data URL composed with the
- *                                  // CURRENT layout, or null when no
+ *       getComposedImageDataURL(scale?),
+ *                                  // PNG data URL composed with the CURRENT
+ *                                  // layout at (outputWidth/2)·scale ×
+ *                                  // (outputHeight/2)·scale px (default
+ *                                  // scale: layout.resolution, i.e. ×2 →
+ *                                  // the output dims), or null when no
  *                                  // source image is available / canvas is
  *                                  // unsupported
+ *       resetCellOffset(),         // reset the ACTIVE cell to
+ *                                  // {x:0,y:0,scale:100}, redraw, fire
+ *                                  // onChange(offsets, true)
+ *       resetAllOffsets(),         // reset EVERY cell likewise (one
+ *                                  // finalized onChange)
  *       isReady(),                 // every source image settled (load|error)
  *       dispose(),                 // idempotent teardown
  *   }
@@ -69,13 +84,15 @@
  *
  * Accessibility: the canvas is an interactive editor (`role="application"`)
  * with full keyboard control — Tab / Shift+Tab switch the edited cell,
- * arrow keys pan it, +/- zoom it, Escape leaves the editor. The active
- * cell is announced via a visually-hidden live region.
+ * arrow keys pan it, +/- zoom it, 0 resets it, Escape leaves the editor.
+ * The active cell is announced via a visually-hidden live region.
  */
 
 import {
     COMPOSITOR_DEFAULT_GAP,
-    COMPOSITOR_DEFAULT_OUTPUT_SIZE,
+    COMPOSITOR_DEFAULT_OUTPUT_HEIGHT,
+    COMPOSITOR_DEFAULT_OUTPUT_WIDTH,
+    COMPOSITOR_DEFAULT_RESOLUTION,
     COMPOSITOR_SCALE_MIN,
     COMPOSITOR_WHEEL_ZOOM_STEP,
     computeCellCoverDraw,
@@ -132,7 +149,7 @@ function themePaint(element, variable, fallback) {
  * factory contract.
  *
  * @param {object} options Factory options.
- * @returns {{root: Element, getOffsets: () => Array<object>, getComposedImageDataURL: (size?: number) => string|null, isReady: () => boolean, dispose: () => void}} Compositor instance.
+ * @returns {{root: Element, getOffsets: () => Array<object>, setLayout: (layout: object) => void, getLayoutCells: () => Array<object>, getComposedImageDataURL: (scale?: number) => string|null, resetCellOffset: () => void, resetAllOffsets: () => void, isReady: () => boolean, dispose: () => void}} Compositor instance.
  */
 export function createAvatarCompositor(options = {}) {
     const container = options.container;
@@ -151,10 +168,19 @@ export function createAvatarCompositor(options = {}) {
         : defaultResolveSourceUrl;
     const onChange = typeof options.onChange === 'function' ? options.onChange : null;
     const onSettle = typeof options.onSettle === 'function' ? options.onSettle : null;
-    const outputSize = Number.isFinite(Number(options.outputSize)) && Number(options.outputSize) > 0
-        ? Math.round(Number(options.outputSize))
-        : COMPOSITOR_DEFAULT_OUTPUT_SIZE;
-    /** @type {{method: string, aspect: string, gap?: number}} Current tiling layout. */
+    // Output dims: explicit outputWidth/outputHeight win per axis; the
+    // legacy square `outputSize` fills any axis they leave unset.
+    const explicitWidth = Number(options.outputWidth);
+    const explicitHeight = Number(options.outputHeight);
+    const legacySize = Number(options.outputSize);
+    const hasLegacySize = Number.isFinite(legacySize) && legacySize > 0;
+    const outputWidth = Number.isFinite(explicitWidth) && explicitWidth > 0
+        ? Math.round(explicitWidth)
+        : hasLegacySize ? Math.round(legacySize) : COMPOSITOR_DEFAULT_OUTPUT_WIDTH;
+    const outputHeight = Number.isFinite(explicitHeight) && explicitHeight > 0
+        ? Math.round(explicitHeight)
+        : hasLegacySize ? Math.round(legacySize) : COMPOSITOR_DEFAULT_OUTPUT_HEIGHT;
+    /** @type {{method: string, aspect: string, columns: number, resolution: number, gap?: number}} Current tiling layout. */
     let layout = normalizeCompositorLayout(options.layout);
     /** @type {number} Current cell gap (layout.gap wins over the legacy gap option). */
     let gap = Number.isFinite(Number(layout.gap)) && Number(layout.gap) >= 0
@@ -186,18 +212,19 @@ export function createAvatarCompositor(options = {}) {
 
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'bc-compositor-canvas-wrap';
+    canvasWrap.style.aspectRatio = `${outputWidth} / ${outputHeight}`;
 
     const canvas = document.createElement('canvas');
     canvas.className = 'bc-compositor-canvas';
-    canvas.width = outputSize;
-    canvas.height = outputSize;
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
     canvas.tabIndex = 0;
     canvas.setAttribute('role', 'application');
     canvas.setAttribute('aria-roledescription', 'avatar editor');
 
     const hint = document.createElement('p');
     hint.className = 'bc-compositor-hint';
-    hint.textContent = 'Drag a cell to pan · scroll or pinch to zoom · Tab switches cell · arrow keys / + − adjust the current cell · Escape leaves the editor.';
+    hint.textContent = 'Drag a cell to pan · scroll or pinch to zoom · Tab switches cell · arrow keys / + − adjust the current cell · 0 resets it · Escape leaves the editor.';
 
     // Visually-hidden live region announcing the active cell.
     const status = document.createElement('p');
@@ -297,7 +324,7 @@ export function createAvatarCompositor(options = {}) {
     function updateAria() {
         canvas.setAttribute(
             'aria-label',
-            `Group avatar editor, ${describeActiveCell()}. Drag to pan; scroll or pinch to zoom. Arrow keys pan the current cell; plus and minus zoom it; Tab and Shift Tab switch cells; Escape leaves the editor.`,
+            `Group avatar editor, ${describeActiveCell()}. Drag to pan; scroll or pinch to zoom. Arrow keys pan the current cell; plus and minus zoom it; 0 resets it; Tab and Shift Tab switch cells; Escape leaves the editor.`,
         );
         status.textContent = `Editing ${describeActiveCell()}.`;
     }
@@ -334,7 +361,7 @@ export function createAvatarCompositor(options = {}) {
                 ? entry.image.naturalWidth / entry.image.naturalHeight
                 : null)
             : undefined;
-        return computeLayoutCells(layout, sources.length, outputSize, gap, aspects);
+        return computeLayoutCells(layout, sources.length, outputWidth, outputHeight, gap, aspects);
     }
 
     /** @type {Array<{x: number, y: number, w: number, h: number}>} Current cell rects. */
@@ -425,7 +452,7 @@ export function createAvatarCompositor(options = {}) {
             const cell = layout[activeCellIndex];
             ctx.save();
             ctx.strokeStyle = themePaint(canvas, '--SmartThemeQuoteColor', '#6aa9ff');
-            ctx.lineWidth = Math.max(2, Math.round(outputSize / 256));
+            ctx.lineWidth = Math.max(2, Math.round(outputWidth / 256));
             ctx.strokeRect(cell.x + 1, cell.y + 1, cell.w - 2, cell.h - 2);
             ctx.restore();
         }
@@ -442,7 +469,7 @@ export function createAvatarCompositor(options = {}) {
         if (!ctx) {
             return;
         }
-        ctx.clearRect(0, 0, outputSize, outputSize);
+        ctx.clearRect(0, 0, outputWidth, outputHeight);
         paintComposite(ctx, gridCells, true);
     }
 
@@ -469,9 +496,9 @@ export function createAvatarCompositor(options = {}) {
      * @returns {{x: number, y: number}} Canvas coordinates.
      */
     function toCanvasCoords(clientX, clientY) {
-        const rect = canvas.getBoundingClientRect?.() ?? { left: 0, top: 0, width: outputSize, height: outputSize };
-        const scaleX = rect.width > 0 ? outputSize / rect.width : 1;
-        const scaleY = rect.height > 0 ? outputSize / rect.height : 1;
+        const rect = canvas.getBoundingClientRect?.() ?? { left: 0, top: 0, width: outputWidth, height: outputHeight };
+        const scaleX = rect.width > 0 ? outputWidth / rect.width : 1;
+        const scaleY = rect.height > 0 ? outputHeight / rect.height : 1;
         return {
             x: (Number(clientX) - rect.left) * scaleX,
             y: (Number(clientY) - rect.top) * scaleY,
@@ -666,6 +693,11 @@ export function createAvatarCompositor(options = {}) {
             event.preventDefault?.();
             const delta = (key === '+' || key === '=') ? COMPOSITOR_WHEEL_ZOOM_STEP : -COMPOSITOR_WHEEL_ZOOM_STEP;
             setCellOffset(activeCellIndex, zoomCompositorOffset(offsets[activeCellIndex], delta, cellMinScale(activeCellIndex)), true);
+            return;
+        }
+        if (key === '0') {
+            event.preventDefault?.();
+            resetCellOffset();
         }
     }, { signal });
 
@@ -681,13 +713,42 @@ export function createAvatarCompositor(options = {}) {
     }
 
     /**
+     * Resets the ACTIVE cell (pointer/keyboard-selected) to the identity
+     * transform `{x: 0, y: 0, scale: 100}`, redraws, and fires a finalized
+     * change so the page persists it.
+     *
+     * @returns {void}
+     */
+    function resetCellOffset() {
+        if (disposed || activeCellIndex < 0 || activeCellIndex >= offsets.length) {
+            return;
+        }
+        setCellOffset(activeCellIndex, { x: 0, y: 0, scale: 100 }, true);
+    }
+
+    /**
+     * Resets EVERY cell to the identity transform, redraws, and fires one
+     * finalized change so the page persists it.
+     *
+     * @returns {void}
+     */
+    function resetAllOffsets() {
+        if (disposed || offsets.length === 0) {
+            return;
+        }
+        offsets = offsets.map(() => ({ x: 0, y: 0, scale: 100 }));
+        redraw();
+        onChange?.(getOffsets(), true);
+    }
+
+    /**
      * Swaps the tiling layout: recomputes the cells, redraws, and keeps
      * hit-testing correct (pointer handlers always read the current cell
      * rects). Offsets are kept by index; images are NOT reloaded. A
      * 'best-fit' layout re-resolves against the currently loaded image
      * aspects (square fallback before they settle).
      *
-     * @param {object} nextLayout Layout record (`{ method, gap, aspect }`).
+     * @param {object} nextLayout Layout record (`{ method, gap, aspect, columns, resolution }`).
      * @returns {void}
      */
     function setLayout(nextLayout) {
@@ -713,37 +774,47 @@ export function createAvatarCompositor(options = {}) {
     }
 
     /**
-     * Composes the current offsets into a square PNG data URL with the
-     * CURRENT layout. Resolution-independent: the cells and offsets are
-     * recomputed at the requested size. Returns null when no source image
-     * is available, when the canvas is unsupported, or when encoding fails
-     * (e.g. a tainted canvas).
+     * Composes the current offsets into a PNG data URL with the CURRENT
+     * layout. Resolution-independent: the cells and offsets are recomputed
+     * at the export dims, `(outputWidth / 2)·scale × (outputHeight /
+     * 2)·scale` px — with the default 1024×1536 canvas, scale 1|2|4 exports
+     * 512×768 / 1024×1536 / 2048×3072. The scale defaults to the layout's
+     * `resolution` ({@link COMPOSITOR_DEFAULT_RESOLUTION} when absent), so
+     * a default call exports at the internal output dims. Returns null when
+     * no source image is available, when the canvas is unsupported, or when
+     * encoding fails (e.g. a tainted canvas).
      *
-     * @param {number} [size] Square output size (defaults to outputSize).
+     * @param {number} [scale] Export scale (defaults to the layout resolution).
      * @returns {string|null} PNG data URL, or null.
      */
-    function getComposedImageDataURL(size) {
+    function getComposedImageDataURL(scale) {
         if (disposed || !cells.some((entry) => entry.loaded)) {
             return null;
         }
-        const targetSize = Number.isFinite(Number(size)) && Number(size) > 0
-            ? Math.round(Number(size))
-            : outputSize;
+        const explicitScale = Number(scale);
+        const layoutScale = Number(layout.resolution);
+        const exportScale = Number.isFinite(explicitScale) && explicitScale > 0
+            ? explicitScale
+            : Number.isFinite(layoutScale) && layoutScale > 0
+                ? layoutScale
+                : COMPOSITOR_DEFAULT_RESOLUTION;
+        const targetWidth = Math.max(1, Math.round((outputWidth / 2) * exportScale));
+        const targetHeight = Math.max(1, Math.round((outputHeight / 2) * exportScale));
         try {
             const offscreen = document.createElement('canvas');
-            offscreen.width = targetSize;
-            offscreen.height = targetSize;
+            offscreen.width = targetWidth;
+            offscreen.height = targetHeight;
             const ctx = offscreen.getContext?.('2d');
             if (!ctx) {
                 return null;
             }
-            const scaledGap = gap * (targetSize / outputSize);
+            const scaledGap = gap * (targetWidth / outputWidth);
             const aspects = layout.method === 'best-fit'
                 ? cells.map((entry) => entry.loaded && entry.image
                     ? entry.image.naturalWidth / entry.image.naturalHeight
                     : null)
                 : undefined;
-            paintComposite(ctx, computeLayoutCells(layout, sources.length, targetSize, scaledGap, aspects), false);
+            paintComposite(ctx, computeLayoutCells(layout, sources.length, targetWidth, targetHeight, scaledGap, aspects), false);
             return offscreen.toDataURL('image/png');
         } catch (error) {
             console.error('AvatarCompositor: failed to compose the avatar image.', error);
@@ -786,5 +857,5 @@ export function createAvatarCompositor(options = {}) {
 
     redraw();
 
-    return { root, getOffsets, setLayout, getLayoutCells, getComposedImageDataURL, isReady, dispose };
+    return { root, getOffsets, setLayout, getLayoutCells, getComposedImageDataURL, resetCellOffset, resetAllOffsets, isReady, dispose };
 }

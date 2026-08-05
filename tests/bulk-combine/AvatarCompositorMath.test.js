@@ -28,6 +28,7 @@ import {
     normalizeCompositorOffsets,
     panCompositorOffset,
     pinchCompositorScale,
+    resolveAspectGridShape,
     zoomCompositorOffset,
 } from '../../public/scripts/bulk-combine/components/AvatarCompositorMath.js';
 
@@ -264,17 +265,17 @@ describe('hitTestCell', () => {
 });
 
 describe('normalizeCompositorLayout', () => {
-    test('defaults junk input to the square grid with the default portrait aspect', () => {
-        expect(normalizeCompositorLayout(undefined)).toEqual({ method: 'square', aspect: '3:4' });
-        expect(normalizeCompositorLayout(null)).toEqual({ method: 'square', aspect: '3:4' });
-        expect(normalizeCompositorLayout({})).toEqual({ method: 'square', aspect: '3:4' });
-        expect(normalizeCompositorLayout('portrait')).toEqual({ method: 'square', aspect: '3:4' });
-        expect(normalizeCompositorLayout({ method: 'mosaic' })).toEqual({ method: 'square', aspect: '3:4' });
+    test('defaults junk input to the square grid, auto columns, and the default aspect/resolution', () => {
+        expect(normalizeCompositorLayout(undefined)).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2 });
+        expect(normalizeCompositorLayout(null)).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2 });
+        expect(normalizeCompositorLayout({})).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2 });
+        expect(normalizeCompositorLayout('portrait')).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2 });
+        expect(normalizeCompositorLayout({ method: 'mosaic' })).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2 });
     });
 
     test('passes through valid methods and aspects', () => {
-        expect(normalizeCompositorLayout({ method: 'portrait', aspect: '2:3' })).toEqual({ method: 'portrait', aspect: '2:3' });
-        expect(normalizeCompositorLayout({ method: 'best-fit', aspect: '9:16' })).toEqual({ method: 'best-fit', aspect: '9:16' });
+        expect(normalizeCompositorLayout({ method: 'portrait', aspect: '2:3' })).toEqual({ method: 'portrait', aspect: '2:3', columns: 0, resolution: 2 });
+        expect(normalizeCompositorLayout({ method: 'best-fit', aspect: '9:16' })).toEqual({ method: 'best-fit', aspect: '9:16', columns: 0, resolution: 2 });
     });
 
     test('unknown aspects fall back to the default (including prototype keys)', () => {
@@ -283,60 +284,84 @@ describe('normalizeCompositorLayout', () => {
         expect(normalizeCompositorLayout({ method: 'portrait', aspect: 'toString' }).aspect).toBe('3:4');
     });
 
+    test('columns pass through as integers ≥ 0 (0 = auto); garbage falls back to auto', () => {
+        expect(normalizeCompositorLayout({ columns: 3 }).columns).toBe(3);
+        expect(normalizeCompositorLayout({ columns: '2' }).columns).toBe(2); // numeric strings coerce
+        expect(normalizeCompositorLayout({ columns: 0 }).columns).toBe(0);
+        expect(normalizeCompositorLayout({ columns: -1 }).columns).toBe(0);
+        expect(normalizeCompositorLayout({ columns: 1.5 }).columns).toBe(0);
+        expect(normalizeCompositorLayout({ columns: 'junk' }).columns).toBe(0);
+        expect(normalizeCompositorLayout({ columns: NaN }).columns).toBe(0);
+    });
+
+    test('resolution passes through only 1|2|4; anything else falls back to 2', () => {
+        expect(normalizeCompositorLayout({ resolution: 1 }).resolution).toBe(1);
+        expect(normalizeCompositorLayout({ resolution: 2 }).resolution).toBe(2);
+        expect(normalizeCompositorLayout({ resolution: 4 }).resolution).toBe(4);
+        expect(normalizeCompositorLayout({ resolution: '4' }).resolution).toBe(4); // numeric strings coerce
+        expect(normalizeCompositorLayout({ resolution: 3 }).resolution).toBe(2);
+        expect(normalizeCompositorLayout({ resolution: 0 }).resolution).toBe(2);
+        expect(normalizeCompositorLayout({ resolution: 'junk' }).resolution).toBe(2);
+    });
+
     test('carries a valid gap, omits invalid ones', () => {
-        expect(normalizeCompositorLayout({ gap: 4 })).toEqual({ method: 'square', aspect: '3:4', gap: 4 });
-        expect(normalizeCompositorLayout({ gap: 0 })).toEqual({ method: 'square', aspect: '3:4', gap: 0 });
-        expect(normalizeCompositorLayout({ gap: -1 })).toEqual({ method: 'square', aspect: '3:4' });
-        expect(normalizeCompositorLayout({ gap: 'junk' })).toEqual({ method: 'square', aspect: '3:4' });
+        expect(normalizeCompositorLayout({ gap: 4 })).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2, gap: 4 });
+        expect(normalizeCompositorLayout({ gap: 0 })).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2, gap: 0 });
+        expect(normalizeCompositorLayout({ gap: -1 })).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2 });
+        expect(normalizeCompositorLayout({ gap: 'junk' })).toEqual({ method: 'square', aspect: '3:4', columns: 0, resolution: 2 });
     });
 });
 
 describe('computeLayoutCells', () => {
     test('returns no cells for degenerate input', () => {
-        expect(computeLayoutCells({ method: 'square' }, 0, 100)).toEqual([]);
-        expect(computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 2, 0)).toEqual([]);
-        expect(computeLayoutCells({ method: 'best-fit' }, -3, 100, 0, [1, 1])).toEqual([]);
+        expect(computeLayoutCells({ method: 'square' }, 0, 100, 100)).toEqual([]);
+        expect(computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 2, 0, 100)).toEqual([]);
+        expect(computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 2, 100, 0)).toEqual([]);
+        expect(computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 2, 100, -50)).toEqual([]);
+        expect(computeLayoutCells({ method: 'best-fit' }, -3, 100, 100, 0, [1, 1])).toEqual([]);
+        expect(computeLayoutCells({ method: 'square' }, 2, 'x', 100)).toEqual([]);
+        expect(computeLayoutCells({ method: 'square' }, 2, 100, 'x')).toEqual([]);
     });
 
-    test('square layouts use the classic near-square grid', () => {
-        expect(computeLayoutCells({ method: 'square' }, 5, 90, 0)).toEqual(computeGridCells(5, 90, 0));
-        expect(computeLayoutCells(undefined, 3, 100, 8)).toEqual(computeGridCells(3, 100, 8));
-        expect(computeLayoutCells({ method: 'junk' }, 4, 100, 8)).toEqual(computeGridCells(4, 100, 8));
+    test('square layouts on a square canvas use the classic near-square grid', () => {
+        expect(computeLayoutCells({ method: 'square' }, 5, 90, 90, 0)).toEqual(computeGridCells(5, 90, 0));
+        expect(computeLayoutCells(undefined, 3, 100, 100, 8)).toEqual(computeGridCells(3, 100, 8));
+        expect(computeLayoutCells({ method: 'junk' }, 4, 100, 100, 8)).toEqual(computeGridCells(4, 100, 8));
     });
 
     test('a layout gap overrides the gap argument', () => {
-        const cells = computeLayoutCells({ method: 'square', gap: 0 }, 2, 100, 8);
+        const cells = computeLayoutCells({ method: 'square', gap: 0 }, 2, 100, 100, 8);
         expect(cells).toEqual([
             { x: 0, y: 0, w: 50, h: 100 },
             { x: 50, y: 0, w: 50, h: 100 },
         ]);
     });
 
-    test('portrait 2:3: four sources form a 3×2 grid of exact 2:3 cells', () => {
-        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 4, 120, 0);
+    test('portrait 2:3 on a square canvas: four sources form a 3×2 grid of exact 2:3 cells', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 4, 120, 120, 0);
         expect(cells).toHaveLength(4);
         expect(cells[0]).toEqual({ x: 0, y: 0, w: 40, h: 60 });
         expect(cells[2]).toEqual({ x: 80, y: 0, w: 40, h: 60 });
         expect(cells[3]).toEqual({ x: 0, y: 60, w: 40, h: 60 });
     });
 
-    test('portrait 2:3: five sources still pick the exact 3×2 grid (one empty slot beats a stretched 5×1)', () => {
-        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 5, 120, 0);
+    test('portrait 2:3 on a square canvas: five sources still pick the exact 3×2 grid (one empty slot beats a stretched 5×1)', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 5, 120, 120, 0);
         expect(cells).toHaveLength(5);
         expect(cells[0]).toEqual({ x: 0, y: 0, w: 40, h: 60 });
         expect(cells[4]).toEqual({ x: 40, y: 60, w: 40, h: 60 });
     });
 
-    test('portrait 9:16: six sources form a 4×2 grid (closest to 9:16)', () => {
-        const cells = computeLayoutCells({ method: 'portrait', aspect: '9:16' }, 6, 120, 0);
+    test('portrait 9:16 on a square canvas: six sources form a 4×2 grid (closest to 9:16)', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '9:16' }, 6, 120, 120, 0);
         expect(cells).toHaveLength(6);
         expect(cells[0]).toEqual({ x: 0, y: 0, w: 30, h: 60 });
         expect(cells[3]).toEqual({ x: 90, y: 0, w: 30, h: 60 });
         expect(cells[5]).toEqual({ x: 30, y: 60, w: 30, h: 60 });
     });
 
-    test('portrait 3:4: two sources form a 2×1 row of tall cells', () => {
-        const cells = computeLayoutCells({ method: 'portrait', aspect: '3:4' }, 2, 100, 0);
+    test('portrait 3:4 on a square canvas: two sources form a 2×1 row of tall cells', () => {
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '3:4' }, 2, 100, 100, 0);
         expect(cells).toEqual([
             { x: 0, y: 0, w: 50, h: 100 },
             { x: 50, y: 0, w: 50, h: 100 },
@@ -344,12 +369,12 @@ describe('computeLayoutCells', () => {
     });
 
     test('portrait honors the gap (cells shrink and stay positive)', () => {
-        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3', gap: 8 }, 4, 124);
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3', gap: 8 }, 4, 124, 124);
         expect(cells).toHaveLength(4);
         expect(cells[0]).toEqual({ x: 0, y: 0, w: 36, h: 58 });
         expect(cells[3]).toEqual({ x: 0, y: 66, w: 36, h: 58 });
 
-        const absurd = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 4, 100, 5000);
+        const absurd = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 4, 100, 100, 5000);
         expect(absurd).toHaveLength(4);
         for (const cell of absurd) {
             expect(cell.w).toBeGreaterThan(0);
@@ -359,34 +384,207 @@ describe('computeLayoutCells', () => {
 
     test('best-fit targets the geometric mean of the loaded image aspects', () => {
         // Two landscape (4.0) sources → 1 column × 2 rows of landscape cells.
-        const landscape = computeLayoutCells({ method: 'best-fit' }, 2, 100, 0, [4, 4]);
+        const landscape = computeLayoutCells({ method: 'best-fit' }, 2, 100, 100, 0, [4, 4]);
         expect(landscape).toEqual([
             { x: 0, y: 0, w: 100, h: 50 },
             { x: 0, y: 50, w: 100, h: 50 },
         ]);
 
         // Two portrait (0.5) sources → 2 columns × 1 row of portrait cells.
-        const portrait = computeLayoutCells({ method: 'best-fit' }, 2, 100, 0, [0.5, 0.5]);
+        const portrait = computeLayoutCells({ method: 'best-fit' }, 2, 100, 100, 0, [0.5, 0.5]);
         expect(portrait).toEqual([
             { x: 0, y: 0, w: 50, h: 100 },
             { x: 50, y: 0, w: 50, h: 100 },
         ]);
 
         // Mixed aspects averaging to 1 → the square-ish 2×2 grid.
-        const mixed = computeLayoutCells({ method: 'best-fit' }, 3, 100, 0, [1, 0.5, 2]);
+        const mixed = computeLayoutCells({ method: 'best-fit' }, 3, 100, 100, 0, [1, 0.5, 2]);
         expect(mixed).toEqual(computeGridCells(3, 100, 0));
     });
 
     test('best-fit ignores missing/unloaded entries and falls back to square when none are usable', () => {
-        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 0)).toEqual(computeGridCells(3, 100, 0));
-        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 0, [])).toEqual(computeGridCells(3, 100, 0));
-        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 0, [null, NaN, -5, 0, 'junk'])).toEqual(computeGridCells(3, 100, 0));
+        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 100, 0)).toEqual(computeGridCells(3, 100, 0));
+        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 100, 0, [])).toEqual(computeGridCells(3, 100, 0));
+        expect(computeLayoutCells({ method: 'best-fit' }, 3, 100, 100, 0, [null, NaN, -5, 0, 'junk'])).toEqual(computeGridCells(3, 100, 0));
 
         // A single usable aspect still drives the search.
-        const cells = computeLayoutCells({ method: 'best-fit' }, 3, 300, 0, [null, 0.5, undefined]);
+        const cells = computeLayoutCells({ method: 'best-fit' }, 3, 300, 300, 0, [null, 0.5, undefined]);
         expect(cells).toHaveLength(3);
         expect(cells[0].w).toBeCloseTo(100, 5);
         expect(cells[0].h).toBe(300);
+    });
+});
+
+describe('computeLayoutCells on a non-square (2:3 portrait) canvas', () => {
+    const W = 1024;
+    const H = 1536;
+
+    test('square method: the grid folds the canvas ratio in (square-ish cells)', () => {
+        // k = H/W = 1.5 → 2 columns × 3 rows → exact square cells.
+        const cells = computeLayoutCells({ method: 'square' }, 6, W, H, 0);
+        expect(cells).toHaveLength(6);
+        expect(cells[0]).toEqual({ x: 0, y: 0, w: 512, h: 512 });
+        expect(cells[1]).toEqual({ x: 512, y: 0, w: 512, h: 512 });
+        expect(cells[5]).toEqual({ x: 512, y: 1024, w: 512, h: 512 });
+    });
+
+    test('square method: two sources stack full-width (closest to square cells)', () => {
+        const cells = computeLayoutCells({ method: 'square' }, 2, W, H, 0);
+        expect(cells).toEqual([
+            { x: 0, y: 0, w: 1024, h: 768 },
+            { x: 0, y: 768, w: 1024, h: 768 },
+        ]);
+    });
+
+    test('portrait 2:3: four sources form a 2×2 grid of exact 2:3 cells', () => {
+        // k = (2/3)·(H/W) = 1 → 2×2.
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 4, W, H, 0);
+        expect(cells).toEqual([
+            { x: 0, y: 0, w: 512, h: 768 },
+            { x: 512, y: 0, w: 512, h: 768 },
+            { x: 0, y: 768, w: 512, h: 768 },
+            { x: 512, y: 768, w: 512, h: 768 },
+        ]);
+    });
+
+    test('portrait 9:16: six sources pick a 3×2 grid', () => {
+        // k = (9/16)·1.5 = 0.84375 → 3×2 is closest.
+        const cells = computeLayoutCells({ method: 'portrait', aspect: '9:16' }, 6, W, H, 0);
+        expect(cells).toHaveLength(6);
+        expect(cells[0].w).toBeCloseTo(1024 / 3, 5);
+        expect(cells[0].h).toBe(768);
+        expect(cells[5].x).toBeCloseTo(2 * (1024 / 3), 5);
+        expect(cells[5].y).toBe(768);
+    });
+
+    test('best-fit: 2:3 images on the 2:3 canvas yield image-matching cells, not square cells', () => {
+        // geomean = 2/3 → k = 1 → 2×2 → 512×768 cells (aspect exactly 2:3).
+        const cells = computeLayoutCells({ method: 'best-fit' }, 4, W, H, 0, [2 / 3, 2 / 3, 2 / 3, 2 / 3]);
+        expect(cells).toHaveLength(4);
+        for (const cell of cells) {
+            expect(cell.w).toBe(512);
+            expect(cell.h).toBe(768);
+            expect(cell.w / cell.h).toBeCloseTo(2 / 3, 5);
+        }
+
+        // Contrast: the SAME images on the old square canvas pick a 3×2
+        // grid (two empty slots) — the fix this regression guards.
+        const squareCanvas = computeLayoutCells({ method: 'best-fit' }, 4, 1024, 1024, 0, [2 / 3, 2 / 3, 2 / 3, 2 / 3]);
+        expect(squareCanvas[0].w).toBeCloseTo(1024 / 3, 5);
+        expect(squareCanvas[0].h).toBe(512);
+    });
+
+    test('best-fit: three 2:3 images fill a 2×2 grid (one empty slot) of image-matching cells', () => {
+        const cells = computeLayoutCells({ method: 'best-fit' }, 3, W, H, 0, [2 / 3, 2 / 3, 2 / 3]);
+        expect(cells).toHaveLength(3);
+        expect(cells[0]).toEqual({ x: 0, y: 0, w: 512, h: 768 });
+        expect(cells[2]).toEqual({ x: 0, y: 768, w: 512, h: 768 });
+    });
+
+    test('best-fit: landscape images stack full-width', () => {
+        // geomean = 4 → k = 6 → 1×2 is closest (rows/cols 2 beats 0.5).
+        const cells = computeLayoutCells({ method: 'best-fit' }, 2, W, H, 0, [4, 4]);
+        expect(cells).toEqual([
+            { x: 0, y: 0, w: 1024, h: 768 },
+            { x: 0, y: 768, w: 1024, h: 768 },
+        ]);
+    });
+
+    test('best-fit with no usable aspects falls back to the square target on the portrait canvas', () => {
+        expect(computeLayoutCells({ method: 'best-fit' }, 6, W, H, 0)).toEqual(computeLayoutCells({ method: 'square' }, 6, W, H, 0));
+        expect(computeLayoutCells({ method: 'best-fit' }, 6, W, H, 0, [null, 'junk'])).toEqual(computeLayoutCells({ method: 'square' }, 6, W, H, 0));
+    });
+
+    test('the gap shrinks cells per axis on the portrait canvas', () => {
+        const cells = computeLayoutCells({ method: 'square', gap: 8 }, 6, W, H);
+        expect(cells).toHaveLength(6);
+        // 2×3: w = (1024 − 8) / 2 = 508, h = (1536 − 16) / 3 = 506.67
+        expect(cells[0].w).toBe(508);
+        expect(cells[0].h).toBeCloseTo(1520 / 3, 5);
+        expect(cells[1].x).toBe(516);
+        expect(cells[2].y).toBeCloseTo(1520 / 3 + 8, 5);
+    });
+});
+
+describe('computeLayoutCells with explicit columns', () => {
+    const W = 1024;
+    const H = 1536;
+
+    test('explicit columns skip the shape search (square method)', () => {
+        // 6 sources would search to 2×3; columns:3 forces 3×2.
+        const cells = computeLayoutCells({ method: 'square', columns: 3 }, 6, W, H, 0);
+        expect(cells).toHaveLength(6);
+        expect(cells[0].w).toBeCloseTo(1024 / 3, 5);
+        expect(cells[0].h).toBe(768);
+        expect(cells[5]).toEqual({ x: 2 * (1024 / 3), y: 768, w: 1024 / 3, h: 768 });
+    });
+
+    test('columns:1 forces a single column; columns beyond the count clamp to the count', () => {
+        const single = computeLayoutCells({ method: 'square', columns: 1 }, 3, W, H, 0);
+        expect(single).toEqual([
+            { x: 0, y: 0, w: 1024, h: 512 },
+            { x: 0, y: 512, w: 1024, h: 512 },
+            { x: 0, y: 1024, w: 1024, h: 512 },
+        ]);
+
+        const clamped = computeLayoutCells({ method: 'square', columns: 99 }, 2, W, H, 0);
+        expect(clamped).toEqual([
+            { x: 0, y: 0, w: 512, h: 1536 },
+            { x: 512, y: 0, w: 512, h: 1536 },
+        ]);
+    });
+
+    test('explicit columns win over the portrait and best-fit searches too', () => {
+        const portrait = computeLayoutCells({ method: 'portrait', aspect: '9:16', columns: 2 }, 6, W, H, 0);
+        expect(portrait[0].w).toBe(512); // 3 rows — NOT the 3×2 search result
+        expect(portrait[0].h).toBe(512);
+
+        const bestFit = computeLayoutCells({ method: 'best-fit', columns: 2 }, 4, W, H, 0, [4, 4, 4, 4]);
+        expect(bestFit[0].w).toBe(512); // landscape images would search to 1 column
+        expect(bestFit[0].h).toBe(768);
+    });
+
+    test('columns:0 (auto) runs the search; garbage columns fall back to auto', () => {
+        const auto = computeLayoutCells({ method: 'square' }, 6, W, H, 0);
+        expect(computeLayoutCells({ method: 'square', columns: 0 }, 6, W, H, 0)).toEqual(auto);
+        expect(computeLayoutCells({ method: 'square', columns: -2 }, 6, W, H, 0)).toEqual(auto);
+        expect(computeLayoutCells({ method: 'square', columns: 'junk' }, 6, W, H, 0)).toEqual(auto);
+    });
+
+    test('explicit columns honor the gap', () => {
+        const cells = computeLayoutCells({ method: 'square', columns: 2, gap: 8 }, 4, W, H);
+        expect(cells[0]).toEqual({ x: 0, y: 0, w: 508, h: 764 });
+        expect(cells[3]).toEqual({ x: 516, y: 772, w: 508, h: 764 });
+    });
+
+    test('resolution never affects the cells', () => {
+        const base = computeLayoutCells({ method: 'portrait', aspect: '2:3' }, 4, W, H, 0);
+        expect(computeLayoutCells({ method: 'portrait', aspect: '2:3', resolution: 1 }, 4, W, H, 0)).toEqual(base);
+        expect(computeLayoutCells({ method: 'portrait', aspect: '2:3', resolution: 4 }, 4, W, H, 0)).toEqual(base);
+    });
+});
+
+describe('resolveAspectGridShape', () => {
+    test('picks the empty-slot-minimizing shape closest to k', () => {
+        expect(resolveAspectGridShape(4, 1)).toEqual({ cols: 2, rows: 2 });
+        expect(resolveAspectGridShape(5, 1)).toEqual({ cols: 3, rows: 2 });
+        expect(resolveAspectGridShape(2, 1.5)).toEqual({ cols: 1, rows: 2 });
+        expect(resolveAspectGridShape(6, 1.5)).toEqual({ cols: 2, rows: 3 });
+        expect(resolveAspectGridShape(2, 6)).toEqual({ cols: 1, rows: 2 });
+    });
+
+    test('ties keep the fewest columns', () => {
+        // k = 2.5 is exactly between 4 (1×4) and 1 (2×2) → 1 column wins.
+        expect(resolveAspectGridShape(4, 2.5)).toEqual({ cols: 1, rows: 4 });
+    });
+
+    test('degenerate input falls back to 1×1 / a balanced target', () => {
+        expect(resolveAspectGridShape(0, 1)).toEqual({ cols: 1, rows: 1 });
+        expect(resolveAspectGridShape(-3, 1)).toEqual({ cols: 1, rows: 1 });
+        expect(resolveAspectGridShape('x', 1)).toEqual({ cols: 1, rows: 1 });
+        expect(resolveAspectGridShape(4, 0)).toEqual({ cols: 2, rows: 2 }); // k → 1
+        expect(resolveAspectGridShape(4, 'junk')).toEqual({ cols: 2, rows: 2 });
+        expect(resolveAspectGridShape(4, -2)).toEqual({ cols: 2, rows: 2 });
     });
 });
 

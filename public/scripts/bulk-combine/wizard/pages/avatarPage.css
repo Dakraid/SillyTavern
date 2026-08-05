@@ -200,6 +200,35 @@
 	width: 5.5em;
 }
 
+/* Reset buttons ("Reset current image" / "Reset all images") in the
+   controls row: secondary-button styling, bottom-aligned with the inputs. */
+.bc-task-avatar-layout-reset {
+	align-self: flex-end;
+	padding: 0.3em 0.9em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-avatar-layout-reset:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-avatar-layout-reset:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-avatar-layout-reset:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
 .bc-task-avatar-compositor-error {
 	margin: 0;
 	padding: 0.5em 0.7em;
@@ -288,6 +317,7 @@
 
 @media (prefers-reduced-motion: reduce) {
 	.bc-task-avatar-retry,
+	.bc-task-avatar-layout-reset,
 	.bc-task-avatar-create-button {
 		transition: none;
 	}
