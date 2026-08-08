@@ -13,7 +13,11 @@ import {
     TaskAlreadyRunningError,
     TaskNotResumableError,
 } from '../util/bulk-combine/task-runner.js';
-import { deriveStaleness } from '../util/bulk-combine/task-state.js';
+import { findSummaryNode, normalizeTemplate } from '../../public/scripts/bulk-combine/structured/templateModel.js';
+import { parseStructured } from '../../public/scripts/bulk-combine/structured/parse.js';
+import { validateAgainstTemplate } from '../../public/scripts/bulk-combine/structured/validate.js';
+import { deriveStaleness, normalizeTask } from '../util/bulk-combine/task-state.js';
+import { toonDecode } from '../util/bulk-combine/toon-codec.js';
 import {
     BulkCombineTaskRepository,
     InvalidTaskIdError,
@@ -27,6 +31,24 @@ const TASKS_DIRECTORY = 'bulk-combine-tasks';
 export const BULK_COMBINE_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
 const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
+const PATCH_ALLOWED_KEYS = new Set([
+    'name',
+    'status',
+    'currentPage',
+    'furthestPage',
+    'sources',
+    'structure',
+    'sourceNotes',
+    'settings',
+    'prompts',
+    'passes',
+    'completion',
+    'lorebook',
+    'post',
+    'review',
+    'avatar',
+    'artifacts',
+]);
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const SANITIZER_ALLOWED_KEYS = new Set([
     'secret_id',
@@ -175,17 +197,67 @@ export function createBulkCombineRouter({ runner: taskRunner = runner, eventBus:
         if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !isRecord(patch)) {
             throw new TaskValidationError('PATCH requires expectedRevision and an object patch');
         }
-        const sanitizedPatch = structuredClone(patch);
+        const sanitizedPatch = Object.fromEntries(Object.entries(structuredClone(patch))
+            .filter(([key]) => PATCH_ALLOWED_KEYS.has(key)));
         if (Object.hasOwn(sanitizedPatch, 'completion')) {
             sanitizedPatch.completion = sanitizeCompletionSettings(sanitizedPatch.completion);
+        }
+        for (const pass of Object.values(sanitizedPatch.passes ?? {})) {
+            for (const item of Object.values(pass?.items ?? {})) {
+                if (isRecord(item)) delete item.issues;
+            }
         }
         const repo = await getRepo(request);
         const task = await repo.updateTask(
             request.params.id,
-            current => deepMergeInto(current, sanitizedPatch),
+            current => normalizeTask(deepMergeInto(current, sanitizedPatch)),
             { expectedRevision },
         );
         return response.send(task);
+    }));
+
+    taskRouter.post('/tasks/:id/validate', route(async (request, response) => {
+        const repo = await getRepo(request);
+        const task = await repo.getTask(request.params.id);
+        const passKey = request.body?.passKey;
+        const itemKey = request.body?.itemKey;
+        const pass = isRecord(task.passes) && typeof passKey === 'string' && Object.hasOwn(task.passes, passKey)
+            ? task.passes[passKey]
+            : null;
+        if (!isRecord(pass)) return response.status(404).send({ error: 'pass_not_found' });
+        const item = isRecord(pass.items) && typeof itemKey === 'string' && Object.hasOwn(pass.items, itemKey)
+            ? pass.items[itemKey]
+            : null;
+        if (!isRecord(item)) return response.status(404).send({ error: 'item_not_found' });
+
+        const format = task.structure.format;
+        let template = task.structure.template;
+        if (passKey === 'summary') {
+            const summary = findSummaryNode(template);
+            if (!summary) return response.send({ ok: true, issues: [], status: item.status });
+            template = normalizeTemplate([summary]);
+        }
+        if (format === 'none') return response.send({ ok: true, issues: [], status: item.status });
+
+        const parsed = parseStructured(item.output, format, { toonDecode });
+        const issues = parsed.ok ? validateAgainstTemplate(parsed.doc, template) : [];
+        const taskResult = await repo.updateTask(request.params.id, draft => {
+            const draftItem = draft.passes[passKey].items[itemKey];
+            draftItem.issues = issues;
+            if (!parsed.ok) {
+                draftItem.status = 'failed';
+                draftItem.error = `Unparseable ${format} output: ${parsed.error}`;
+            } else if (draftItem.status === 'failed' && String(draftItem.error ?? '').startsWith('Unparseable ')) {
+                draftItem.status = 'succeeded';
+                draftItem.error = '';
+            }
+        }, { expectedRevision: task.revision });
+
+        return response.send({
+            ok: parsed.ok,
+            issues,
+            status: taskResult.passes[passKey].items[itemKey].status,
+        });
     }));
 
     taskRouter.delete('/tasks/:id', route(async (request, response) => {

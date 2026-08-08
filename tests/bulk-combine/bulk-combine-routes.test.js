@@ -81,6 +81,13 @@ async function invoke(method, routePath, {
     return response;
 }
 
+async function createSeededTask(mutator) {
+    const created = (await invoke('post', '/tasks', { body: { name: 'Validation task' } })).body;
+    const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
+    const task = await repo.checkpoint(created.id, mutator);
+    return { repo, task };
+}
+
 beforeAll(async () => {
     ({
         createBulkCombineRouter,
@@ -177,6 +184,76 @@ describe('/api/bulk-combine task routes', () => {
         expect(Object.hasOwn(Object.prototype, 'polluted')).toBe(false);
     });
 
+    test('PATCH normalizes structure/sourceNotes and does not expose item issues', async () => {
+        const { repo, task } = await createSeededTask(draft => {
+            draft.passes.transform1.items.a = {
+                status: 'succeeded',
+                output: '<character/>',
+                issues: [{ path: '/old', kind: 'missing', message: 'Old issue' }],
+            };
+        });
+
+        const response = await invoke('patch', '/tasks/:id', {
+            params: { id: task.id },
+            body: {
+                expectedRevision: task.revision,
+                patch: {
+                    structure: {
+                        format: 'toon',
+                        template: [{ name: 42, junk: 'drop', children: 'wrong' }],
+                    },
+                    sourceNotes: { a: 17 },
+                    passes: {
+                        transform1: {
+                            items: {
+                                a: {
+                                    output: '<character name="edited"/>',
+                                    issues: [{ path: '/injected', kind: 'unknown', message: 'Injected' }],
+                                },
+                            },
+                        },
+                    },
+                    completion: { model: 'safe-model', api_key: 'plaintext-secret' },
+                    issues: ['top-level junk'],
+                    junk: true,
+                },
+            },
+        });
+
+        expect(response.body).toMatchObject({
+            structure: {
+                format: 'toon',
+                template: [{ name: '42', children: [] }],
+            },
+            sourceNotes: { a: '17' },
+            completion: { model: 'safe-model' },
+            passes: {
+                transform1: {
+                    items: {
+                        a: {
+                            output: '<character name="edited"/>',
+                            issues: [{ path: '/old', kind: 'missing', message: 'Old issue' }],
+                        },
+                    },
+                },
+            },
+        });
+        expect(response.body).not.toHaveProperty('issues');
+        expect(response.body).not.toHaveProperty('junk');
+        expect(response.body.completion).not.toHaveProperty('api_key');
+
+        const junk = await invoke('patch', '/tasks/:id', {
+            params: { id: task.id },
+            body: {
+                expectedRevision: response.body.revision,
+                patch: { structure: 'wrong', sourceNotes: [] },
+            },
+        });
+        expect(junk.body.structure).toMatchObject({ format: 'xml', template: [{ name: 'character' }] });
+        expect(junk.body.sourceNotes).toEqual({});
+        await expect(repo.getTask(task.id)).resolves.toEqual(junk.body);
+    });
+
     test('returns revision conflicts with the current task', async () => {
         const created = (await invoke('post', '/tasks', { body: { name: 'Conflict' } })).body;
         await invoke('patch', '/tasks/:id', {
@@ -226,6 +303,163 @@ describe('/api/bulk-combine task routes', () => {
         });
         expect(badPatch.statusCode).toBe(400);
         expect(badPatch.body).toEqual({ error: 'invalid_request' });
+    });
+
+    test('validates structured output and persists soft issues', async () => {
+        const { repo, task } = await createSeededTask(draft => {
+            draft.structure = {
+                format: 'xml',
+                template: [{ name: 'character', children: [{ name: 'summary' }, { name: 'appearance' }] }],
+            };
+            draft.passes.transform1.items.a = {
+                status: 'succeeded',
+                output: '<character><summary>Short summary</summary><extra>Unknown</extra></character>',
+            };
+        });
+
+        const response = await invoke('post', '/tasks/:id/validate', {
+            params: { id: task.id },
+            body: { passKey: 'transform1', itemKey: 'a' },
+        });
+
+        expect(response.body).toEqual({
+            ok: true,
+            issues: [
+                { path: '/character/appearance', kind: 'missing', message: 'Missing <appearance> element.' },
+                { path: '/character/extra', kind: 'unknown', message: 'Unknown <extra> element.' },
+            ],
+            status: 'succeeded',
+        });
+        await expect(repo.getTask(task.id)).resolves.toMatchObject({
+            revision: task.revision + 1,
+            passes: { transform1: { items: { a: { issues: response.body.issues } } } },
+        });
+    });
+
+    test('marks malformed structured output failed with an unparseable error', async () => {
+        const { repo, task } = await createSeededTask(draft => {
+            draft.structure = { format: 'xml', template: [{ name: 'character' }] };
+            draft.passes.transform1.items.a = { status: 'succeeded', output: 'plain text' };
+        });
+
+        const response = await invoke('post', '/tasks/:id/validate', {
+            params: { id: task.id },
+            body: { passKey: 'transform1', itemKey: 'a' },
+        });
+        const stored = await repo.getTask(task.id);
+
+        expect(response.body).toEqual({ ok: false, issues: [], status: 'failed' });
+        expect(stored.passes.transform1.items.a).toMatchObject({
+            status: 'failed',
+            issues: [],
+            error: expect.stringMatching(/^Unparseable xml output: /),
+        });
+    });
+
+    test('restores only validation-failed items after their output becomes parseable', async () => {
+        const { repo, task } = await createSeededTask(draft => {
+            draft.structure = { format: 'xml', template: [{ name: 'character' }] };
+            draft.passes.transform1.items.validation = {
+                status: 'failed',
+                output: '<character/>',
+                error: 'Unparseable xml output: No XML document found',
+            };
+            draft.passes.transform1.items.generation = {
+                status: 'failed',
+                output: '<character/>',
+                error: 'Provider rejected generation',
+            };
+        });
+
+        const recovered = await invoke('post', '/tasks/:id/validate', {
+            params: { id: task.id },
+            body: { passKey: 'transform1', itemKey: 'validation' },
+        });
+        const generation = await invoke('post', '/tasks/:id/validate', {
+            params: { id: task.id },
+            body: { passKey: 'transform1', itemKey: 'generation' },
+        });
+        const stored = await repo.getTask(task.id);
+
+        expect(recovered.body).toEqual({ ok: true, issues: [], status: 'succeeded' });
+        expect(generation.body).toEqual({ ok: true, issues: [], status: 'failed' });
+        expect(stored.passes.transform1.items.validation).toMatchObject({ status: 'succeeded', error: '' });
+        expect(stored.passes.transform1.items.generation).toMatchObject({
+            status: 'failed',
+            error: 'Provider rejected generation',
+        });
+    });
+
+    test('skips validation for freeform tasks and freeform summary templates', async () => {
+        const none = await createSeededTask(draft => {
+            draft.structure = { format: 'none', template: [{ name: 'character' }] };
+            draft.passes.transform1.items.a = { status: 'succeeded', output: 'freeform prose' };
+        });
+        const noneResponse = await invoke('post', '/tasks/:id/validate', {
+            params: { id: none.task.id },
+            body: { passKey: 'transform1', itemKey: 'a' },
+        });
+        expect(noneResponse.body).toEqual({ ok: true, issues: [], status: 'succeeded' });
+
+        const summary = await createSeededTask(draft => {
+            draft.structure = { format: 'xml', template: [{ name: 'character', children: [{ name: 'history' }] }] };
+            draft.passes.summary.items.a = { status: 'succeeded', output: 'freeform summary' };
+        });
+        const summaryResponse = await invoke('post', '/tasks/:id/validate', {
+            params: { id: summary.task.id },
+            body: { passKey: 'summary', itemKey: 'a' },
+        });
+        expect(summaryResponse.body).toEqual({ ok: true, issues: [], status: 'succeeded' });
+        await expect(summary.repo.getTask(summary.task.id)).resolves.toMatchObject({ revision: summary.task.revision });
+    });
+
+    test('returns clear 404 responses for unknown validation tasks, passes, and items', async () => {
+        const created = (await invoke('post', '/tasks', { body: { name: 'Validation lookup' } })).body;
+        const missingTask = await invoke('post', '/tasks/:id/validate', {
+            params: { id: '00000000-0000-4000-8000-000000000099' },
+            body: { passKey: 'transform1', itemKey: 'a' },
+        });
+        const missingPass = await invoke('post', '/tasks/:id/validate', {
+            params: { id: created.id },
+            body: { passKey: 'unknown', itemKey: 'a' },
+        });
+        const missingItem = await invoke('post', '/tasks/:id/validate', {
+            params: { id: created.id },
+            body: { passKey: 'transform1', itemKey: 'unknown' },
+        });
+
+        expect(missingTask).toMatchObject({ statusCode: 404, body: { error: 'task_not_found' } });
+        expect(missingPass).toMatchObject({ statusCode: 404, body: { error: 'pass_not_found' } });
+        expect(missingItem).toMatchObject({ statusCode: 404, body: { error: 'item_not_found' } });
+    });
+
+    test('validates summary output against only the derived summary template', async () => {
+        const { repo, task } = await createSeededTask(draft => {
+            draft.structure = {
+                format: 'xml',
+                template: [{
+                    name: 'character',
+                    children: [
+                        { name: 'summary', attributes: [{ name: 'name', values: '' }] },
+                        { name: 'appearance' },
+                    ],
+                }],
+            };
+            draft.passes.summary.items.a = {
+                status: 'succeeded',
+                output: '<summary name="Alice">Short summary</summary>',
+            };
+        });
+
+        const response = await invoke('post', '/tasks/:id/validate', {
+            params: { id: task.id },
+            body: { passKey: 'summary', itemKey: 'a' },
+        });
+
+        expect(response.body).toEqual({ ok: true, issues: [], status: 'succeeded' });
+        await expect(repo.getTask(task.id)).resolves.toMatchObject({
+            passes: { summary: { items: { a: { issues: [] } } } },
+        });
     });
 
     test('never persists credentials supplied through PATCH completion settings', async () => {
