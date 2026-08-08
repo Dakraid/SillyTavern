@@ -92,7 +92,6 @@ function makeTask(overrides = {}) {
             totalContextTokens: null,
             outputTokens: null,
             destination: 'card',
-            xmlEnabled: false,
             xmlMinify: false,
             postProcessingEnabled: false,
             postProcessingMode: 'replace',
