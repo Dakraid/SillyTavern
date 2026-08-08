@@ -7,8 +7,16 @@ import {
     stripSummaryFromCharacterBlock,
     validateGeneratedGroupCardDescription,
 } from '../../../public/scripts/group-card-xml-parser.js';
+import {
+    composeSummaries,
+    lorebookEntriesFromDocs,
+    minifyForFormat,
+    serializeDoc,
+} from '../../../public/scripts/bulk-combine/structured/export.js';
+import { parseStructured } from '../../../public/scripts/bulk-combine/structured/parse.js';
 
 import { COMBINED_KEY } from './task-state.js';
+import { toonDecode, toonEncode } from './toon-codec.js';
 
 function sourceName(source) {
     return String(source?.name ?? source?.fields?.name ?? source?.key ?? '');
@@ -52,11 +60,74 @@ function buildSummaryBlock(name, summary) {
     ].join('\n');
 }
 
+function structuredFormat(task) {
+    const format = task?.structure?.format;
+    return ['xml', 'json', 'toon'].includes(format) ? format : null;
+}
+
+function parseStructuredSource(source, format) {
+    const parsed = parseStructured(source.output, format, { toonDecode });
+    return {
+        ...source,
+        doc: parsed.ok ? parsed.doc : null,
+        output: parsed.ok ? serializeDoc(parsed.doc, format, { toonEncode }) : source.output,
+    };
+}
+
+function getStructuredFullSources(task, format) {
+    const pass = task?.passes?.[selectFullDescriptionPass(task)];
+    const include = item => item?.status === 'succeeded'
+        || (item?.status === 'failed' && String(item.error ?? '').startsWith('Unparseable '));
+    const merged = pass?.items?.[COMBINED_KEY];
+    if (include(merged)) {
+        return [parseStructuredSource({
+            key: COMBINED_KEY,
+            name: sourceName({ name: task?.name }),
+            output: String(merged.output ?? ''),
+        }, format)];
+    }
+    return (Array.isArray(task?.sources) ? task.sources : [])
+        .filter(source => include(pass?.items?.[source.key]))
+        .map(source => parseStructuredSource({
+            key: source.key,
+            name: sourceName(source),
+            output: String(pass.items[source.key].output ?? ''),
+        }, format));
+}
+
+function getStructuredDescriptionSources(task, fullSources, format) {
+    if (task?.settings?.destination !== 'lorebook') return fullSources;
+
+    const summaryItems = task?.passes?.summary?.items ?? {};
+    return fullSources.map((source) => {
+        const summary = summaryItems[source.key];
+        return summary?.status === 'succeeded'
+            ? parseStructuredSource({ ...source, output: String(summary.output ?? '') }, format)
+            : source;
+    });
+}
+
+function minifyStructured(task, text, format) {
+    return format !== 'xml' || task?.settings?.xmlMinify
+        ? minifyForFormat(text, format)
+        : text;
+}
+
 /**
  * In lorebook mode a missing successful summary deliberately falls back to the
  * latest successful full output so a character is not silently omitted.
  */
 export function getCardDescriptionBlocks(task) {
+    const format = structuredFormat(task);
+    if (format) {
+        const fullSources = getStructuredFullSources(task, format);
+        return getStructuredDescriptionSources(task, fullSources, format).map(source => ({
+            key: source.key,
+            name: source.name,
+            xml: source.output,
+        }));
+    }
+
     const fullSources = new Map(getFullDescriptionSources(task).map(source => [source.key, source]));
     if (task?.settings?.destination !== 'lorebook') {
         return [...fullSources.values()].map(source => ({
@@ -92,16 +163,13 @@ function characterName(block, fallback) {
     return String(name ?? '').trim() || fallback;
 }
 
-function buildLorebookEntry(block, source, index) {
-    const name = characterName(block, source.name);
-    const keys = extractKeysFromCharacterBlock(block);
-    const comment = extractCommentFromCharacterBlock(block);
+function lorebookEntry(core, index) {
     return {
         uid: index,
-        key: keys.length ? keys : [name],
+        key: core.key,
         keysecondary: [],
-        comment: comment || name,
-        content: stripSummaryFromCharacterBlock(block.raw),
+        comment: core.comment,
+        content: core.content,
         constant: false,
         selective: false,
         order: 100 - index,
@@ -131,8 +199,39 @@ function buildLorebookEntry(block, source, index) {
     };
 }
 
+function buildLorebookEntry(block, source, index) {
+    const name = characterName(block, source.name);
+    const keys = extractKeysFromCharacterBlock(block);
+    const comment = extractCommentFromCharacterBlock(block);
+    return lorebookEntry({
+        key: keys.length ? keys : [name],
+        comment: comment || name,
+        content: stripSummaryFromCharacterBlock(block.raw),
+    }, index);
+}
+
 export function buildLorebookData(task) {
     if (task?.settings?.destination !== 'lorebook') return { entries: {} };
+
+    const format = structuredFormat(task);
+    if (format) {
+        const entries = getStructuredFullSources(task, format).map((source, index) => {
+            if (!source.doc) {
+                return lorebookEntry({
+                    key: [source.name],
+                    comment: source.name,
+                    content: source.output,
+                }, index);
+            }
+            const core = lorebookEntriesFromDocs([source.doc], format, {
+                sourceNames: [source.name],
+                codecs: { toonEncode },
+            })[0];
+            core.content = minifyStructured(task, core.content, format);
+            return lorebookEntry(core, index);
+        });
+        return { entries: Object.fromEntries(entries.map(entry => [entry.uid, entry])) };
+    }
 
     const entries = [];
     for (const source of getFullDescriptionSources(task)) {
@@ -144,12 +243,33 @@ export function buildLorebookData(task) {
 }
 
 export function buildMergedCardDescription(task) {
-    const description = getCardDescriptionBlocks(task).map(block => block.xml).join('\n\n');
-    return task?.settings?.xmlMinify ? minifyXml(description, { compact: true }) : description;
+    const format = structuredFormat(task);
+    if (!format) {
+        const description = getCardDescriptionBlocks(task).map(block => block.xml).join('\n\n');
+        return task?.settings?.xmlMinify ? minifyXml(description, { compact: true }) : description;
+    }
+
+    let description;
+    if (task?.settings?.destination === 'lorebook') {
+        const fullSources = getStructuredFullSources(task, format);
+        const selected = getStructuredDescriptionSources(task, fullSources, format);
+        const parsedDocs = selected.filter(source => source.doc).map(source => source.doc);
+        const rawOutputs = selected.filter(source => !source.doc).map(source => source.output);
+        description = [composeSummaries(parsedDocs, format, { toonEncode }), ...rawOutputs].join('\n\n');
+    } else {
+        description = getCardDescriptionBlocks(task).map(block => block.xml).join('\n\n');
+    }
+    return minifyStructured(task, description, format);
 }
 
-export function applyPostProcess(baseDescription, postOutput, mode) {
-    const output = validateGeneratedGroupCardDescription(postOutput, 0);
+export function applyPostProcess(baseDescription, postOutput, mode, format = 'none') {
+    if (format !== 'none' && format !== 'xml' && (typeof postOutput !== 'string' || !postOutput.trim())) {
+        throw new Error('Generation returned empty output.');
+    }
+    const output = format === 'none' || format === 'xml'
+        ? validateGeneratedGroupCardDescription(postOutput, 0)
+        : postOutput;
+    if (!output.trim()) throw new Error('Generation returned empty output.');
     if (mode === 'prepend') return { description: `${output}\n\n${baseDescription}` };
     return { description: `${baseDescription}\n\n${output}` };
 }

@@ -100,14 +100,30 @@ describe('bulk combine prompt builders', () => {
     });
 
     describe('prompt composition', () => {
-        test('builds an individual prompt and appends only non-empty guidance', () => {
+        test('keeps the legacy individual prompt byte-identical without extras', () => {
+            const item = source('a', 'Alpha');
+            const block = buildCharacterXmlBlock(item, []);
+            const fixture = `Transform\n\n${block}\n\nAdditional guidance: Focus on voice`;
+
+            expect(buildIndividualPrompt(item, 'Transform', [], 'Focus on voice')).toBe(fixture);
+            expect(buildIndividualPrompt(item, 'Transform', [], 'Focus on voice', {})).toBe(fixture);
+            expect(buildIndividualPrompt(item, 'Transform', [], '   ')).toBe(`Transform\n\n${block}`);
+        });
+
+        test('places structure instructions and notes before regeneration guidance', () => {
             const item = source('a', 'Alpha');
             const block = buildCharacterXmlBlock(item, []);
 
-            expect(buildIndividualPrompt(item, 'Transform', [], 'Focus on voice')).toBe(
-                `Transform\n\n${block}\n\nAdditional guidance: Focus on voice`,
-            );
-            expect(buildIndividualPrompt(item, 'Transform', [], '   ')).toBe(`Transform\n\n${block}`);
+            expect(buildIndividualPrompt(item, 'Transform', [], 'Focus', {
+                note: 'Keep the scar',
+                structureInstructions: 'Return structured XML',
+            })).toBe([
+                'Transform',
+                'Return structured XML',
+                block,
+                'Character notes: Keep the scar',
+                'Additional guidance: Focus',
+            ].join('\n\n'));
         });
 
         test('builds one combined prompt in source order and tolerates an empty prompt', () => {
@@ -123,11 +139,13 @@ describe('bulk combine prompt builders', () => {
             expect(buildCombinedPrompt([alpha], '', [])).toBe(`\n\n${alphaBlock}`);
         });
 
-        test('builds a merged follow-up prompt from the upstream document and a nudge', () => {
+        test('builds a merged follow-up prompt with optional structure instructions', () => {
             expect(buildMergedPassPrompt('Improve', '<character><name>Merged</name></character>', 'Tighter prose')).toBe(
                 'Improve\n\n<character><name>Merged</name></character>\n\nAdditional guidance: Tighter prose',
             );
-            expect(buildMergedPassPrompt('Summarize', '  <character />  ')).toBe('Summarize\n\n<character />');
+            expect(buildMergedPassPrompt('Summarize', '  <character />  ', '', {
+                structureInstructions: 'Return one summary element',
+            })).toBe('Summarize\n\nReturn one summary element\n\n<character />');
         });
     });
 

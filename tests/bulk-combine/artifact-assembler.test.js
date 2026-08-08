@@ -19,6 +19,7 @@ function makeTask({ destination = 'card', secondPassEnabled = false, xmlMinify =
             { key: 'a', name: 'Alice', fields: { name: 'Alice' } },
             { key: 'b', name: 'Bob', fields: { name: 'Bob' } },
         ],
+        structure: { format: 'none', template: [] },
         settings: {
             destination,
             secondPassEnabled,
@@ -178,6 +179,106 @@ describe('bulk combine artifact assembler', () => {
         ].join('\n'));
     });
 
+    test('canonicalizes and joins structured card documents in source order', () => {
+        const task = makeTask();
+        task.structure.format = 'xml';
+        task.passes.transform1.items.a.output = '<character name="Alice"><summary name="Alice" aliases="Al, Ally">Short Alice</summary></character>';
+        task.passes.transform1.items.b.output = '<character name="Bob">Full Bob</character>';
+
+        expect(buildMergedCardDescription(task)).toBe([
+            '<character name="Alice">',
+            '  <summary name="Alice" aliases="Al, Ally">Short Alice</summary>',
+            '</character>',
+            '',
+            '<character name="Bob">Full Bob</character>',
+        ].join('\n'));
+    });
+
+    test('composes XML summaries and structured lorebook identity with full-doc fallback', () => {
+        const task = makeTask({ destination: 'lorebook' });
+        task.structure.format = 'xml';
+        task.passes.transform1.items.a.output = '<character name="Alice"><summary name="Alice" aliases="Al, Ally">Short Alice</summary></character>';
+        task.passes.transform1.items.b.output = '<character name="Bob">Full Bob</character>';
+
+        expect(buildMergedCardDescription(task)).toBe([
+            '<characters>',
+            '  <summary name="Alice" aliases="Al, Ally">Short Alice</summary>',
+            '  <character name="Bob">Full Bob</character>',
+            '</characters>',
+        ].join('\n'));
+        const entries = Object.values(buildLorebookData(task).entries);
+        expect(entries[0]).toMatchObject({
+            key: ['Alice', 'Al', 'Ally'],
+            comment: 'Alice',
+            content: '<character name="Alice">\n  <summary name="Alice" aliases="Al, Ally">Short Alice</summary>\n</character>',
+        });
+        expect(entries[1]).toMatchObject({
+            key: ['Bob'],
+            comment: 'Bob',
+            content: '<character name="Bob">Full Bob</character>',
+        });
+    });
+
+    test('composes JSON summaries and compacts JSON exports', () => {
+        const task = makeTask({ destination: 'lorebook' });
+        task.structure.format = 'json';
+        task.passes.transform1.items.a.output = JSON.stringify({
+            character: {
+                '@name': 'Alice',
+                summary: { '@name': 'Alice', '@aliases': 'Al', '#text': 'Short Alice' },
+            },
+        }, null, 2);
+        task.passes.transform1.items.b.output = JSON.stringify({
+            character: { '@name': 'Bob', '#text': 'Full Bob' },
+        }, null, 2);
+
+        expect(JSON.parse(buildMergedCardDescription(task))).toEqual({
+            characters: [
+                { '@name': 'Alice', '@aliases': 'Al', '#text': 'Short Alice' },
+                { character: { '@name': 'Bob', '#text': 'Full Bob' } },
+            ],
+        });
+        const entries = Object.values(buildLorebookData(task).entries);
+        expect(entries[0].key).toEqual(['Alice', 'Al']);
+        expect(entries[0].content).toBe('{"character":{"@name":"Alice","summary":{"@name":"Alice","@aliases":"Al","#text":"Short Alice"}}}');
+    });
+
+    test('retains raw structured parse failures in card and lorebook artifacts', () => {
+        const cardTask = makeTask();
+        cardTask.structure.format = 'json';
+        cardTask.passes.transform1.items.a.output = 'broken Alice output';
+        expect(buildMergedCardDescription(cardTask)).toContain('broken Alice output');
+
+        const lorebookTask = makeTask({ destination: 'lorebook' });
+        lorebookTask.structure.format = 'json';
+        lorebookTask.passes.transform1.items.a = {
+            status: 'failed',
+            output: 'broken Alice output',
+            error: 'Unparseable json output: bad JSON',
+        };
+        const entries = Object.values(buildLorebookData(lorebookTask).entries);
+        expect(entries[0]).toMatchObject({
+            key: ['Alice'],
+            comment: 'Alice',
+            content: 'broken Alice output',
+        });
+        expect(buildMergedCardDescription(lorebookTask)).toContain('broken Alice output');
+    });
+
+    test('uses format-specific minification rules for structured descriptions', () => {
+        const xmlTask = makeTask({ xmlMinify: true });
+        xmlTask.structure.format = 'xml';
+        xmlTask.passes.transform1.items.a.output = '<character>\n  <summary>A</summary>\n</character>';
+        xmlTask.passes.transform1.items.b.status = 'failed';
+        expect(buildMergedCardDescription(xmlTask)).toBe('<character> <summary>A</summary> </character>');
+
+        const jsonTask = makeTask();
+        jsonTask.structure.format = 'json';
+        jsonTask.passes.transform1.items.a.output = '{\n  "character": { "#text": "A" }\n}';
+        jsonTask.passes.transform1.items.b.status = 'failed';
+        expect(buildMergedCardDescription(jsonTask)).toBe('{"character":{"#text":"A"}}');
+    });
+
     test('applies prepend and append, treating removed or unknown modes as append', () => {
         const base = '<character><name>A</name></character>';
         const addition = '<character><name>B</name></character>';
@@ -188,10 +289,13 @@ describe('bulk combine artifact assembler', () => {
         expect(applyPostProcess(base, addition, 'unknown')).toEqual({ description: `${base}\n\n${addition}` });
     });
 
-    test('validates post output for both supported modes', () => {
+    test('validates post output according to the selected format', () => {
         const base = '<character>A</character>';
         expect(() => applyPostProcess(base, '', 'prepend')).toThrow('Generation returned empty output.');
-        expect(() => applyPostProcess(base, '', 'append')).toThrow('Generation returned empty output.');
+        expect(() => applyPostProcess(base, '', 'append', 'json')).toThrow('Generation returned empty output.');
+        expect(applyPostProcess(base, 'plain non-empty text', 'append', 'json')).toEqual({
+            description: `${base}\n\nplain non-empty text`,
+        });
     });
 
     test('assembles the review payload by derivation and exposes persisted post output', () => {

@@ -1,5 +1,9 @@
 import DiffMatchPatch from 'diff-match-patch';
 
+import { findSummaryNode, normalizeTemplate } from '../../../public/scripts/bulk-combine/structured/templateModel.js';
+import { parseStructured } from '../../../public/scripts/bulk-combine/structured/parse.js';
+import { renderStructureInstructions } from '../../../public/scripts/bulk-combine/structured/renderPrompt.js';
+import { validateAgainstTemplate } from '../../../public/scripts/bulk-combine/structured/validate.js';
 import { runWithConcurrency, throwIfAborted, withRetries } from '../job-manager.js';
 import { applyPostProcess, buildMergedCardDescription } from './artifact-assembler.js';
 import {
@@ -15,6 +19,7 @@ import {
     buildPostProcessPrompt,
     preflightTokens,
 } from './prompt-builders.js';
+import { toonDecode, toonEncode } from './toon-codec.js';
 
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
 const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
@@ -53,6 +58,40 @@ function stripCodeFences(content) {
     const trimmed = content.trim();
     const fenced = trimmed.match(/^```[^\r\n]*\r?\n([\s\S]*?)\r?\n?```$/);
     return (fenced?.[1] ?? trimmed).trim();
+}
+
+function validateGeneratedItem(task, passKey, output) {
+    const format = task.structure.format;
+    if (format === 'none') return null;
+
+    const parsed = parseStructured(output, format, { toonDecode });
+    if (!parsed.ok) {
+        return {
+            status: 'failed',
+            error: `Unparseable ${format} output: ${parsed.error}`,
+        };
+    }
+
+    let template = task.structure.template;
+    if (passKey === 'summary') {
+        const summary = findSummaryNode(template);
+        if (!summary) return { status: 'succeeded', error: null, issues: [] };
+        template = normalizeTemplate([summary]);
+    }
+    return {
+        status: 'succeeded',
+        error: null,
+        issues: validateAgainstTemplate(parsed.doc, template),
+    };
+}
+
+function storeGeneratedItem(item, output, attempts, hint, validation) {
+    item.status = validation?.status ?? 'succeeded';
+    item.output = output;
+    item.error = validation?.error ?? null;
+    if (Array.isArray(validation?.issues)) item.issues = validation.issues;
+    item.attempts += attempts;
+    item.hintApplied = Boolean(hint?.trim());
 }
 
 function promptText(task, passKey) {
@@ -298,6 +337,11 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
             const merged = inputs.has(COMBINED_KEY);
             const keys = targetKeys(task, passKey, scope, itemKeys, inputs);
             const text = promptText(task, passKey);
+            const structureInstructions = renderStructureInstructions(
+                task.structure,
+                passKey === 'summary' ? 'summary' : 'full',
+                { toonEncode },
+            );
             const runnableKeys = keys.filter(key => inputs.has(key));
             const hints = new Map(runnableKeys.map(key => [key, newItem(task.passes[passKey].items[key]).regenHint]));
             const prompts = new Map();
@@ -308,10 +352,14 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                     text,
                     input.document,
                     hints.get(COMBINED_KEY),
+                    { structureInstructions },
                 ));
             } else {
                 for (const key of runnableKeys) {
-                    prompts.set(key, buildIndividualPrompt(inputs.get(key), text, CORE_FIELDS, hints.get(key)));
+                    const extras = passKey === 'transform1'
+                        ? { note: task.sourceNotes?.[key] ?? '', structureInstructions }
+                        : { structureInstructions };
+                    prompts.set(key, buildIndividualPrompt(inputs.get(key), text, CORE_FIELDS, hints.get(key), extras));
                 }
             }
 
@@ -406,15 +454,16 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         return output;
                     }, combinedSignal, 3);
                     // One big pass: the whole response is the merged result.
+                    const validation = validateGeneratedItem(task, passKey, content);
                     await repo.checkpoint(taskId, draft => {
                         const item = draft.passes[passKey].items[COMBINED_KEY];
-                        item.status = 'succeeded';
-                        item.output = content;
-                        item.error = null;
-                        item.attempts += attempts;
-                        item.hintApplied = Boolean(hints.get(COMBINED_KEY)?.trim());
+                        storeGeneratedItem(item, content, attempts, hints.get(COMBINED_KEY), validation);
                     });
-                    sendEvent(taskId, passKey, 'item_succeeded', { itemKey: COMBINED_KEY });
+                    if (validation?.status === 'failed') {
+                        sendEvent(taskId, passKey, 'item_failed', { itemKey: COMBINED_KEY, error: validation.error });
+                    } else {
+                        sendEvent(taskId, passKey, 'item_succeeded', { itemKey: COMBINED_KEY });
+                    }
                 } catch (error) {
                     try {
                         await repo.checkpoint(taskId, draft => {
@@ -463,15 +512,16 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                             if (!output.trim()) throw new Error('Completion returned empty content');
                             return output;
                         }, itemSignal, 3);
+                        const validation = validateGeneratedItem(task, passKey, content);
                         await repo.checkpoint(taskId, draft => {
                             const item = draft.passes[passKey].items[key];
-                            item.status = 'succeeded';
-                            item.output = content;
-                            item.error = null;
-                            item.attempts += attempts;
-                            item.hintApplied = Boolean(hints.get(key)?.trim());
+                            storeGeneratedItem(item, content, attempts, hints.get(key), validation);
                         });
-                        sendEvent(taskId, passKey, 'item_succeeded', { itemKey: key });
+                        if (validation?.status === 'failed') {
+                            sendEvent(taskId, passKey, 'item_failed', { itemKey: key, error: validation.error });
+                        } else {
+                            sendEvent(taskId, passKey, 'item_succeeded', { itemKey: key });
+                        }
                     } catch (error) {
                         try {
                             await repo.checkpoint(taskId, draft => {
@@ -681,7 +731,7 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         signal,
                     }));
                 }, signal, 3);
-                const result = applyPostProcess(input, content, mode);
+                const result = applyPostProcess(input, content, mode, task.structure.format);
                 const ranAt = new Date().toISOString();
                 await repo.checkpoint(taskId, draft => {
                     draft.post = {

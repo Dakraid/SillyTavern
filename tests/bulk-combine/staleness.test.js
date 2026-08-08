@@ -176,6 +176,8 @@ describe('Bulk Combine pass staleness', () => {
             draft.sources = [source('a', 'Alpha')];
             draft.prompts.main.text = 'Transform';
             draft.completion = { model: 'model-a', temperature: 0.5, top_p: 0.9 };
+            // Freeform path: fake completions below return unstructured text.
+            draft.structure.format = 'none';
         }, { expectedRevision: created.revision });
         const runner = createTaskRunner({
             executeCompletion: async () => ({ status: 200, data: {}, content: 'Transformed' }),
@@ -239,6 +241,8 @@ describe('Bulk Combine pass staleness', () => {
             draft.settings.totalContextTokens = 4096;
             draft.settings.outputTokens = 512;
             draft.prompts.main.text = 'Transform';
+            // Freeform path: fake completions below return unstructured text.
+            draft.structure.format = 'none';
         }, { expectedRevision: created.revision });
         const runner = createTaskRunner({
             executeCompletion: async () => ({ status: 200, data: {}, content: 'Transformed' }),
@@ -264,6 +268,8 @@ describe('Bulk Combine pass staleness', () => {
             draft.prompts.main.text = 'Transform';
             draft.prompts.secondPass.text = 'Improve';
             draft.prompts.summary.text = 'Summarize';
+            // Freeform path: fake completions below return unstructured text.
+            draft.structure.format = 'none';
         }, { expectedRevision: created.revision });
         const outputs = {
             transform1: '<character><name>Alpha</name><description>T1</description></character>',
@@ -348,6 +354,8 @@ describe('Bulk Combine pass staleness', () => {
             draft.settings.secondPassMode = 'combined';
             draft.prompts.main.text = 'Transform';
             draft.prompts.secondPass.text = 'Improve';
+            // Freeform path: fake completions below return unstructured text.
+            draft.structure.format = 'none';
         }, { expectedRevision: created.revision });
         let call = 0;
         const runner = createTaskRunner({

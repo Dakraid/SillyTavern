@@ -66,8 +66,10 @@ function appendNudge(prompt, nudge) {
         : prompt;
 }
 
-export function buildIndividualPrompt(source, promptText, fields, nudge) {
-    const prompt = `${toString(promptText)}\n\n${buildCharacterXmlBlock(source, fields)}`;
+export function buildIndividualPrompt(source, promptText, fields, nudge, extras = {}) {
+    const structureInstructions = toString(extras?.structureInstructions);
+    const note = toString(extras?.note);
+    const prompt = `${toString(promptText)}${structureInstructions ? `\n\n${structureInstructions}` : ''}\n\n${buildCharacterXmlBlock(source, fields)}${note ? `\n\nCharacter notes: ${note}` : ''}`;
     return appendNudge(prompt, nudge);
 }
 
@@ -86,10 +88,12 @@ export function buildCombinedPrompt(sources, promptText, fields, nudge) {
  * @param {string} promptText Pass prompt text.
  * @param {string} inputDocument Upstream merged output.
  * @param {string} [nudge] Optional regeneration hint.
+ * @param {{structureInstructions?: string}} [extras] Structured-output instructions.
  * @returns {string} Prompt text.
  */
-export function buildMergedPassPrompt(promptText, inputDocument, nudge) {
-    const prompt = `${toString(promptText)}\n\n${toString(inputDocument).trim()}`;
+export function buildMergedPassPrompt(promptText, inputDocument, nudge, extras = {}) {
+    const structureInstructions = toString(extras?.structureInstructions);
+    const prompt = `${toString(promptText)}${structureInstructions ? `\n\n${structureInstructions}` : ''}\n\n${toString(inputDocument).trim()}`;
     return appendNudge(prompt, nudge);
 }
 

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { BulkCombineTaskRepository } from '../../src/util/bulk-combine/task-repository.js';
+import { deriveStaleness } from '../../src/util/bulk-combine/task-state.js';
 import {
     createTaskRunner,
     TaskAlreadyRunningError,
@@ -37,6 +38,7 @@ async function createTask({ count = 3, secondPassMode = 'individual', concurrenc
             String.fromCharCode(97 + index),
             `Character ${index + 1}`,
         ));
+        task.structure.format = 'none';
         task.settings.secondPassMode = secondPassMode;
         task.settings.concurrency = concurrency;
         task.settings.outputTokens = 2;
@@ -69,6 +71,24 @@ function keyFromPrompt(prompt) {
 
 function completion(content) {
     return { status: 200, data: {}, content };
+}
+
+function structuredTemplate() {
+    return [{
+        id: 'root',
+        name: 'character',
+        hint: 'Full character',
+        attributes: [],
+        maxLength: null,
+        children: [{
+            id: 'summary',
+            name: 'summary',
+            hint: 'Short summary',
+            attributes: [{ name: 'name', values: '' }],
+            maxLength: 20,
+            children: [],
+        }],
+    }];
 }
 
 function completionErrorResponse() {
@@ -125,6 +145,131 @@ describe('bulk combine task runner', () => {
             'pass_completed',
         ]);
         expect(events.every(event => event.taskId === task.id && event.passKey === 'transform1')).toBe(true);
+    });
+
+    test('injects the rendered template and per-source note into transform1 prompts', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.structure = { format: 'xml', template: structuredTemplate() };
+            draft.sourceNotes.a = 'Keep the silver scar';
+        });
+        const executeCompletion = jest.fn(async () => completion('<character><summary name="One">Short</summary></character>'));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+
+        const prompt = executeCompletion.mock.calls[0][0].body.messages[0].content;
+        expect(prompt).toContain('Respond with ONLY a <character> document');
+        expect(prompt).toContain('<!-- Full character -->');
+        expect(prompt.indexOf('Respond with ONLY')).toBeLessThan(prompt.indexOf('<name>Character 1</name>'));
+        expect(prompt.indexOf('<name>Character 1</name>')).toBeLessThan(prompt.indexOf('Character notes: Keep the silver scar'));
+    });
+
+    test('retains unparseable structured output and fails the item', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.structure = { format: 'xml', template: structuredTemplate() };
+        });
+        const runner = createTaskRunner({
+            executeCompletion: jest.fn(async () => completion('not an XML document')),
+            countTokens: async () => 1,
+        });
+
+        const result = await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        const item = (await repo.getTask(task.id)).passes.transform1.items.a;
+
+        expect(result.items).toEqual({ a: 'failed' });
+        expect(item.output).toBe('not an XML document');
+        expect(item.error).toMatch(/^Unparseable xml output: /);
+    });
+
+    test('stores structured template conformance issues without failing generation', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.structure = { format: 'xml', template: structuredTemplate() };
+        });
+        const runner = createTaskRunner({
+            executeCompletion: jest.fn(async () => completion('<character><extra>unknown</extra></character>')),
+            countTokens: async () => 1,
+        });
+
+        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        const item = (await repo.getTask(task.id)).passes.transform1.items.a;
+
+        expect(item.status).toBe('succeeded');
+        expect(item.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({ path: '/character/summary', kind: 'missing' }),
+            expect.objectContaining({ path: '/character/extra', kind: 'unknown' }),
+        ]));
+    });
+
+    test('validates summary output only against the derived summary template', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.structure = { format: 'xml', template: structuredTemplate() };
+            draft.passes.transform1.items.a = {
+                status: 'succeeded',
+                output: '<character><summary name="One">Full</summary></character>',
+            };
+        });
+        const runner = createTaskRunner({
+            executeCompletion: jest.fn(async () => completion('<summary name="One">Short</summary>')),
+            countTokens: async () => 1,
+        });
+
+        await runner.runPass({ taskId: task.id, passKey: 'summary', repo, userDirectories: {} });
+        const item = (await repo.getTask(task.id)).passes.summary.items.a;
+
+        expect(item.status).toBe('succeeded');
+        expect(item.issues).toEqual([]);
+    });
+
+    test('leaves issues undefined when structured output is disabled', async () => {
+        const task = await createTask({ count: 1 });
+        const runner = createTaskRunner({
+            executeCompletion: jest.fn(async () => completion('freeform output')),
+            countTokens: async () => 1,
+        });
+
+        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+
+        expect((await repo.getTask(task.id)).passes.transform1.items.a).not.toHaveProperty('issues');
+    });
+
+    test('injects full structure instructions into a merged transform2 prompt', async () => {
+        const task = await createTask({ count: 1, secondPassMode: 'combined' });
+        await repo.checkpoint(task.id, draft => {
+            draft.structure = { format: 'xml', template: structuredTemplate() };
+            draft.settings.secondPassEnabled = true;
+            draft.passes.transform1.items.a = {
+                status: 'succeeded',
+                output: '<character><summary name="One">T1</summary></character>',
+            };
+        });
+        const executeCompletion = jest.fn(async () => completion('<character><summary name="One">T2</summary></character>'));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        await runner.runPass({ taskId: task.id, passKey: 'transform2', repo, userDirectories: {} });
+
+        const prompt = executeCompletion.mock.calls[0][0].body.messages[0].content;
+        expect(prompt).toContain('Respond with ONLY a <character> document');
+        expect(prompt).toContain('<character><summary name="One">T1</summary></character>');
+    });
+
+    test('records an input revision that becomes stale after a structure change', async () => {
+        const task = await createTask({ count: 1 });
+        const runner = createTaskRunner({
+            executeCompletion: jest.fn(async () => completion('freeform output')),
+            countTokens: async () => 1,
+        });
+        await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+
+        const changed = await repo.checkpoint(task.id, draft => {
+            draft.structure = { format: 'xml', template: structuredTemplate() };
+        });
+
+        expect(changed.passes.transform1.inputRevision).toMatch(/^[0-9a-f]{64}$/);
+        expect(deriveStaleness(changed).transform1).toEqual({ stale: true, reason: 'input_changed' });
     });
 
     test('uses the sanitized completion snapshot for execution and token preflight', async () => {

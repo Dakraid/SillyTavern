@@ -740,6 +740,8 @@ describe('/api/bulk-combine task routes', () => {
         const repo = new BulkCombineTaskRepository(path.join(userRoot, 'bulk-combine-tasks'));
         await repo.checkpoint(created.id, draft => {
             draft.sources = [{ key: 'a', name: 'Alice', fields: { name: 'Alice' } }];
+            // Freeform path: review assembly passes the raw block through.
+            draft.structure.format = 'none';
             draft.passes.transform1.items.a = {
                 status: 'succeeded',
                 output: '<character><name>Alice</name></character>',
