@@ -1,0 +1,576 @@
+/* ==========================================================================
+   StructureBuilder — visual structure-template editor (TASK #58)
+
+   Styles for `components/StructureBuilder.js` (DESIGN §3/§5/§6:
+   Scratch-style nested blocks, depth-tinted via color-mix on SmartTheme
+   vars, 2px accent left border, full keyboard fallback, reduced-motion
+   safe). Imported from `public/style.css`:
+
+       @import url(scripts/bulk-combine/components/StructureBuilder.css);
+
+   Classes: .bc-task-sb-*  |  SmartTheme variables only, no hardcoded colors.
+   ========================================================================== */
+
+.bc-task-sb {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6em;
+}
+
+/* Hidden panels (canvas in text mode, text panel in visual mode, badge). */
+.bc-task-sb-canvas[hidden],
+.bc-task-sb-text-panel[hidden],
+.bc-task-sb-sync-badge[hidden] {
+	display: none;
+}
+
+/* --- Toolbar (mode toggle, format label, sync badge, reset) --- */
+
+.bc-task-sb-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 0.6em;
+	flex-wrap: wrap;
+}
+
+.bc-task-sb-mode {
+	display: inline-flex;
+	border: 1px solid var(--SmartThemeQuoteColor);
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+.bc-task-sb-mode-button {
+	padding: 0.3em 0.9em;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease;
+}
+
+.bc-task-sb-mode-button + .bc-task-sb-mode-button {
+	border-left: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor) 45%, transparent);
+}
+
+.bc-task-sb-mode-button:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
+}
+
+.bc-task-sb-mode-button.bc-task-sb-mode-active {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 25%, transparent);
+	font-weight: 600;
+}
+
+.bc-task-sb-mode-button:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.bc-task-sb-format-label {
+	font-size: 0.85em;
+	opacity: 0.7;
+}
+
+.bc-task-sb-sync-badge {
+	font-size: 0.8em;
+	padding: 0.15em 0.6em;
+	border-radius: 999px;
+	border: 1px solid var(--SmartThemeQuoteColor);
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 14%, transparent);
+}
+
+.bc-task-sb-reset {
+	margin-left: auto;
+	padding: 0.3em 0.9em;
+	border: 1px solid var(--SmartThemeQuoteColor);
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.bc-task-sb-reset:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 15%, transparent);
+}
+
+.bc-task-sb-reset.bc-task-sb-reset-armed {
+	border-color: var(--SmartThemeEmColor);
+	color: var(--SmartThemeEmColor);
+	font-weight: 600;
+}
+
+/* --- Canvas --- */
+
+.bc-task-sb-canvas {
+	min-height: 3em;
+}
+
+/* --- Blocks (depth-tinted, accent left border) --- */
+
+.bc-task-sb-block {
+	border-radius: 10px;
+	border-left: 2px solid var(--SmartThemeQuoteColor);
+	padding: 0.5em 0.6em;
+	margin: 0.4em 0;
+	transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bc-task-sb-depth-0 {
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 8%, var(--SmartThemeBlurTintColor));
+}
+
+.bc-task-sb-depth-1 {
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, var(--SmartThemeBlurTintColor));
+}
+
+.bc-task-sb-depth-2 {
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 16%, var(--SmartThemeBlurTintColor));
+}
+
+.bc-task-sb-depth-3 {
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 20%, var(--SmartThemeBlurTintColor));
+}
+
+.bc-task-sb-depth-4 {
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 24%, var(--SmartThemeBlurTintColor));
+}
+
+.bc-task-sb-depth-5 {
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 28%, var(--SmartThemeBlurTintColor));
+}
+
+.bc-task-sb-block-dragging {
+	opacity: 0.55;
+}
+
+/* --- Block header --- */
+
+.bc-task-sb-block-header {
+	display: flex;
+	align-items: center;
+	gap: 0.4em;
+}
+
+.bc-task-sb-drag {
+	cursor: grab;
+	opacity: 0.6;
+	padding: 0 0.2em;
+	user-select: none;
+	font-size: 1.05em;
+	line-height: 1;
+}
+
+.bc-task-sb-drag:active {
+	cursor: grabbing;
+}
+
+.bc-task-sb-drag.bc-task-sb-drag-disabled {
+	cursor: not-allowed;
+	opacity: 0.3;
+}
+
+.bc-task-sb-name-slot {
+	display: inline-flex;
+	align-items: center;
+	min-width: 0;
+}
+
+.bc-task-sb-name {
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-weight: 600;
+	padding: 0.1em 0.3em;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background-color 0.15s ease;
+}
+
+.bc-task-sb-name:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 15%, transparent);
+}
+
+.bc-task-sb-name-input {
+	font: inherit;
+	font-weight: 600;
+	color: inherit;
+	background: var(--SmartThemeBlurTintColor);
+	border: 1px solid var(--SmartThemeQuoteColor);
+	border-radius: 4px;
+	padding: 0.1em 0.35em;
+	min-width: 9em;
+}
+
+.bc-task-sb-spacer {
+	flex: 1;
+}
+
+.bc-task-sb-move {
+	display: inline-flex;
+	gap: 2px;
+}
+
+.bc-task-sb-icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.7em;
+	height: 1.7em;
+	border: 1px solid transparent;
+	border-radius: 5px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 0.85em;
+	cursor: pointer;
+	opacity: 0.75;
+	transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.bc-task-sb-icon-button:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 18%, transparent);
+	opacity: 1;
+}
+
+.bc-task-sb-icon-button:disabled {
+	opacity: 0.28;
+	cursor: not-allowed;
+}
+
+/* --- Block body --- */
+
+.bc-task-sb-block-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0.45em;
+	padding-top: 0.35em;
+}
+
+/* Attribute chips */
+
+.bc-task-sb-attrs {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4em;
+}
+
+.bc-task-sb-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25em;
+	padding: 0.1em 0.4em;
+	border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor) 40%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent);
+	font-size: 0.88em;
+}
+
+.bc-task-sb-chip-at {
+	opacity: 0.7;
+	font-weight: 600;
+}
+
+.bc-task-sb-chip-name {
+	width: 7em;
+	border: none;
+	border-bottom: 1px dashed color-mix(in srgb, var(--SmartThemeQuoteColor) 50%, transparent);
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 0.95em;
+	font-weight: 600;
+	padding: 0 0.1em;
+}
+
+.bc-task-sb-chip-values {
+	width: 10em;
+	border: none;
+	border-bottom: 1px dashed color-mix(in srgb, var(--SmartThemeQuoteColor) 35%, transparent);
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 0.95em;
+	padding: 0 0.1em;
+}
+
+.bc-task-sb-chip-name::placeholder,
+.bc-task-sb-chip-values::placeholder {
+	opacity: 0.5;
+	font-weight: 400;
+	font-style: italic;
+}
+
+.bc-task-sb-add-attr {
+	border: 1px dashed color-mix(in srgb, var(--SmartThemeQuoteColor) 55%, transparent);
+	border-radius: 999px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 0.82em;
+	padding: 0.1em 0.6em;
+	cursor: pointer;
+	opacity: 0.8;
+	transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.bc-task-sb-add-attr:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 14%, transparent);
+	opacity: 1;
+}
+
+/* Per-block extras (hint, max length) */
+
+.bc-task-sb-extras {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+}
+
+.bc-task-sb-field {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	font-size: 0.88em;
+}
+
+.bc-task-sb-field-label {
+	opacity: 0.7;
+	min-width: 5.5em;
+}
+
+.bc-task-sb-hint {
+	flex: 1;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 5px;
+	background: var(--SmartThemeBlurTintColor);
+	color: inherit;
+	font: inherit;
+	font-size: 0.95em;
+	padding: 0.15em 0.45em;
+}
+
+.bc-task-sb-max {
+	width: 7em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 5px;
+	background: var(--SmartThemeBlurTintColor);
+	color: inherit;
+	font: inherit;
+	font-size: 0.95em;
+	padding: 0.15em 0.45em;
+}
+
+/* Children container (indented drop zone) */
+
+.bc-task-sb-children {
+	display: flex;
+	flex-direction: column;
+	gap: 0.1em;
+	margin-left: 1.1em;
+	padding-left: 0.6em;
+	border-left: 1px dashed color-mix(in srgb, var(--SmartThemeQuoteColor) 30%, transparent);
+	min-height: 1.6em;
+	transition: border-color 0.15s ease;
+}
+
+.bc-task-sb-children .bc-task-sb-block {
+	margin: 0.25em 0;
+}
+
+.bc-task-sb-add-child {
+	align-self: flex-start;
+	border: 1px dashed color-mix(in srgb, var(--SmartThemeQuoteColor) 55%, transparent);
+	border-radius: 7px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 0.85em;
+	padding: 0.2em 0.7em;
+	margin: 0.25em 0;
+	cursor: pointer;
+	opacity: 0.8;
+	transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.bc-task-sb-add-child:hover {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 14%, transparent);
+	opacity: 1;
+}
+
+/* Insertion line indicator (drag-over) */
+
+.bc-task-sb-insert-line {
+	height: 3px;
+	border-radius: 2px;
+	background: var(--SmartThemeQuoteColor);
+	margin: 0.1em 0;
+	box-shadow: 0 0 6px color-mix(in srgb, var(--SmartThemeQuoteColor) 65%, transparent);
+	pointer-events: none;
+}
+
+/* --- Text mode --- */
+
+.bc-task-sb-text-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 0.45em;
+}
+
+.bc-task-sb-textarea {
+	width: 100%;
+	box-sizing: border-box;
+	font-family: monospace;
+	font-size: 0.85em;
+	line-height: 1.45;
+	color: inherit;
+	background: var(--SmartThemeBlurTintColor);
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	padding: 0.6em;
+	resize: vertical;
+}
+
+.bc-task-sb-text-hint {
+	font-size: 0.8em;
+	opacity: 0.65;
+}
+
+.bc-task-sb-validation {
+	font-size: 0.85em;
+}
+
+.bc-task-sb-validation-ok {
+	margin: 0;
+	color: var(--SmartThemeUnderlineColor);
+}
+
+.bc-task-sb-validation-errors {
+	margin: 0;
+	padding-left: 1.2em;
+	color: var(--SmartThemeEmColor);
+}
+
+.bc-task-sb-text-actions {
+	display: flex;
+	gap: 0.5em;
+}
+
+.bc-task-sb-apply {
+	padding: 0.3em 1em;
+	border: 1px solid var(--SmartThemeQuoteColor);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--SmartThemeQuoteColor) 22%, transparent);
+	color: inherit;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+	transition: background-color 0.15s ease;
+}
+
+.bc-task-sb-apply:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 32%, transparent);
+}
+
+.bc-task-sb-apply:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.bc-task-sb-discard {
+	padding: 0.3em 1em;
+	border: 1px solid var(--SmartThemeQuoteColor);
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease;
+}
+
+.bc-task-sb-discard:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 15%, transparent);
+}
+
+.bc-task-sb-discard:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+/* --- Format preview --- */
+
+.bc-task-sb-preview {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+}
+
+.bc-task-sb-preview-caption {
+	margin: 0;
+	font-size: 0.8em;
+	opacity: 0.65;
+}
+
+.bc-task-sb-preview-json {
+	margin: 0;
+	max-height: 16em;
+	overflow: auto;
+	font-family: monospace;
+	font-size: 0.78em;
+	line-height: 1.4;
+	background: var(--SmartThemeBlurTintColor);
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 8px;
+	padding: 0.6em;
+	white-space: pre;
+}
+
+/* --- Focus outlines (DESIGN §5) --- */
+
+.bc-task-sb button:focus-visible,
+.bc-task-sb input:focus-visible,
+.bc-task-sb textarea:focus-visible,
+.bc-task-sb [tabindex]:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+/* --- Reduced motion (DESIGN §5: no transitions on expand/drag indicators) --- */
+
+@media (prefers-reduced-motion: reduce) {
+	.bc-task-sb,
+	.bc-task-sb *,
+	.bc-task-sb *::before,
+	.bc-task-sb *::after {
+		transition: none !important;
+		animation: none !important;
+	}
+}
+
+/* --- Narrow viewports --- */
+
+@media screen and (max-width: 600px) {
+	.bc-task-sb-children {
+		margin-left: 0.45em;
+		padding-left: 0.45em;
+	}
+
+	.bc-task-sb-field {
+		flex-wrap: wrap;
+		gap: 0.3em;
+	}
+
+	.bc-task-sb-field-label {
+		min-width: 0;
+		flex-basis: 100%;
+	}
+
+	.bc-task-sb-reset {
+		margin-left: 0;
+	}
+}

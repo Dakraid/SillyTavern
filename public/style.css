@@ -25,6 +25,7 @@
 @import url(scripts/bulk-combine/wizard/pages/avatarPage.css);
 @import url(scripts/bulk-combine/components/TaskHistoryPanel.css);
 @import url(scripts/bulk-combine/components/AvatarCompositor.css);
+@import url(scripts/bulk-combine/components/StructureBuilder.css);
 
 :root {
 	interpolate-size: allow-keywords;
