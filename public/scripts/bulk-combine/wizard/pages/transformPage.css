@@ -299,6 +299,99 @@
 	text-align: right;
 }
 
+/* --- Structure validation row (under the output textbox, above the count) --- */
+
+.bc-task-transform-validation {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+	font-size: 0.85em;
+}
+
+.bc-task-transform-validation-row {
+	display: flex;
+	align-items: center;
+	gap: 0.45em;
+	flex-wrap: wrap;
+}
+
+.bc-task-transform-validation-format {
+	font-weight: 700;
+	opacity: 0.85;
+}
+
+.bc-task-transform-validation-sep {
+	opacity: 0.5;
+}
+
+.bc-task-transform-validation--ok .bc-task-transform-validation-state {
+	color: var(--bc-task-tone-success, var(--SmartThemeUnderlineColor));
+}
+
+.bc-task-transform-validation--issues .bc-task-transform-validation-state {
+	color: var(--bc-task-tone-warning, color-mix(in srgb, var(--SmartThemeQuoteColor) 60%, var(--SmartThemeEmColor) 40%));
+	font-weight: 600;
+}
+
+.bc-task-transform-validation--unparseable .bc-task-transform-validation-state {
+	color: var(--bc-task-tone-danger, var(--SmartThemeEmColor));
+	font-weight: 600;
+}
+
+.bc-task-transform-validation--failed .bc-task-transform-validation-state {
+	opacity: 0.75;
+}
+
+.bc-task-transform-validate,
+.bc-task-transform-issues-toggle {
+	padding: 0.2em 0.7em;
+	border: 1px solid var(--SmartThemeBorderColor);
+	border-radius: 999px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-task-transform-validate {
+	margin-left: auto;
+}
+
+.bc-task-transform-validate:hover:not(:disabled),
+.bc-task-transform-issues-toggle:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 80%, var(--SmartThemeQuoteColor) 20%);
+	border-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-transform-validate:focus-visible,
+.bc-task-transform-issues-toggle:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-transform-validate:disabled,
+.bc-task-transform-issues-toggle:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.bc-task-transform-issues {
+	margin: 0;
+	padding-left: 1.25em;
+	display: flex;
+	flex-direction: column;
+	gap: 0.15em;
+	overflow-wrap: break-word;
+}
+
+.bc-task-transform-validation-detail,
+.bc-task-transform-validation-request-error {
+	margin: 0;
+	color: var(--bc-task-tone-danger, var(--SmartThemeEmColor));
+	overflow-wrap: break-word;
+}
+
 .bc-task-transform-hint-block {
 	display: flex;
 	flex-direction: column;
@@ -365,6 +458,8 @@
 	.bc-task-transform-regen-all,
 	.bc-task-transform-cancel,
 	.bc-task-transform-regen,
+	.bc-task-transform-validate,
+	.bc-task-transform-issues-toggle,
 	.bc-task-transform-item {
 		transition: none;
 	}

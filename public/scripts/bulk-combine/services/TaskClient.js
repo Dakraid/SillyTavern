@@ -314,6 +314,25 @@ export class TaskClient {
     }
 
     /**
+     * Re-validates one pass item's stored output against the task's structure
+     * template. The server persists the resulting issues (and any status flip
+     * to/from `failed` for unparseable output) on the item; the response
+     * carries them so callers can refresh immediately without waiting for a
+     * full snapshot refresh.
+     *
+     * @param {string|number} id Task id.
+     * @param {string} passKey Pass key (`transform1`, `transform2`, `summary`).
+     * @param {string} itemKey Item (source) key.
+     * @returns {Promise<{ok: boolean, issues: Array<object>, status: string}>} Validation result.
+     */
+    async validateItem(id, passKey, itemKey) {
+        return this.#request(`${this.#taskUrl(id)}/validate`, {
+            method: 'POST',
+            body: { passKey, itemKey },
+        });
+    }
+
+    /**
      * Starts a generation pass in the background (202). Fire-and-forget:
      * progress arrives over the task event stream.
      *

@@ -305,6 +305,7 @@ function makeActions() {
         runPostProcess: jest.fn(async () => {}),
         runPromptAssist: jest.fn(async () => {}),
         getReview: jest.fn(async () => {}),
+        validateItem: jest.fn(async () => ({ ok: true, issues: [], status: 'succeeded' })),
     };
 }
 
@@ -1043,5 +1044,276 @@ describe('transformPage', () => {
         page.dispose();
         expect(() => page.render(container, snapshot, actions)).not.toThrow();
         expect(findAll(container, hasClass('bc-task-transform-item'))).toHaveLength(2);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Structure validation row (TASK #60)
+// ---------------------------------------------------------------------------
+
+describe('transformPage structure validation', () => {
+    /** @type {object} XML structure fixture (format + minimal template). */
+    const XML_STRUCTURE = { format: 'xml', template: [{ id: 'root', name: 'character' }] };
+
+    /**
+     * @param {object} [itemOverrides] Pass item overrides.
+     * @param {object} [taskOverrides] Extra task overrides.
+     * @returns {object} Snapshot with one structured-output transform1 item.
+     */
+    function structuredSnapshot(itemOverrides = {}, taskOverrides = {}) {
+        return makeSnapshot({
+            task: {
+                structure: XML_STRUCTURE,
+                passes: {
+                    transform1: {
+                        items: { 'a.png': makeItem({ status: 'succeeded', output: 'AAA', ...itemOverrides }) },
+                    },
+                },
+                ...taskOverrides,
+            },
+        });
+    }
+
+    test('hides the validation row when the structure format is none or absent', () => {
+        const none = renderTransformPage(makeSnapshot({
+            task: {
+                structure: { format: 'none', template: [] },
+                passes: { transform1: { items: { 'a.png': makeItem({ status: 'succeeded', output: 'AAA' }) } } },
+            },
+        }));
+        expect(findOne(none.root, hasClass('bc-task-transform-validation'))).toBe(null);
+        // The character-count row is still there.
+        expect(findOne(none.root, hasClass('bc-task-transform-output-count'))).not.toBe(null);
+
+        // Legacy task without a structure record at all.
+        const legacy = renderTransformPage(makeSnapshot({
+            task: { passes: { transform1: { items: { 'a.png': makeItem({ status: 'succeeded', output: 'AAA' }) } } } },
+        }));
+        expect(findOne(legacy.root, hasClass('bc-task-transform-validation'))).toBe(null);
+    });
+
+    test('shows the uppercased format badge and ✓ Structure valid for a clean succeeded item', () => {
+        const { root } = renderTransformPage(structuredSnapshot());
+        const block = findOne(root, hasClass('bc-task-transform-validation'));
+        expect(block).not.toBe(null);
+        expect(hasClass('bc-task-transform-validation--ok')(block)).toBe(true);
+        expect(findOne(block, hasClass('bc-task-transform-validation-format')).textContent).toBe('Format: XML');
+        expect(findOne(block, hasClass('bc-task-transform-validation-state')).textContent).toBe('✓ Structure valid');
+        expect(findOne(block, hasClass('bc-task-transform-issues'))).toBe(null);
+
+        for (const [format, label] of [['json', 'Format: JSON'], ['toon', 'Format: TOON']]) {
+            const variant = renderTransformPage(structuredSnapshot({}, { structure: { format, template: [] } }));
+            expect(findOne(variant.root, hasClass('bc-task-transform-validation-format')).textContent).toBe(label);
+        }
+    });
+
+    test('⚠ N issues lists each issue as "path — message" behind a toggle', () => {
+        const { root } = renderTransformPage(structuredSnapshot({
+            issues: [
+                { path: '/character/style', kind: 'missing', message: 'Missing required element' },
+                { path: '/character/summary', kind: 'overlength', message: '812 > 800 characters' },
+            ],
+        }));
+
+        const block = findOne(root, hasClass('bc-task-transform-validation'));
+        expect(hasClass('bc-task-transform-validation--issues')(block)).toBe(true);
+        expect(findOne(block, hasClass('bc-task-transform-validation-state')).textContent).toBe('⚠ 2 issues');
+
+        // Collapsed by default; the toggle expands the list.
+        expect(findOne(block, hasClass('bc-task-transform-issues'))).toBe(null);
+        const toggle = findOne(block, hasClass('bc-task-transform-issues-toggle'));
+        expect(toggle.textContent).toBe('Show issues');
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+        toggle.click();
+
+        const expandedBlock = findOne(container, hasClass('bc-task-transform-validation'));
+        const expandedToggle = findOne(expandedBlock, hasClass('bc-task-transform-issues-toggle'));
+        expect(expandedToggle.textContent).toBe('Hide issues');
+        expect(expandedToggle.getAttribute('aria-expanded')).toBe('true');
+        const entries = findAll(expandedBlock, (element) => element.tagName === 'LI');
+        expect(entries).toHaveLength(2);
+        expect(entries[0].textContent).toBe('/character/style — Missing required element');
+        expect(entries[1].textContent).toBe('/character/summary — 812 > 800 characters');
+
+        // Toggling again collapses the list.
+        expandedToggle.click();
+        expect(findOne(container, hasClass('bc-task-transform-issues'))).toBe(null);
+    });
+
+    test('✗ Unparseable output with the error message for an unparseable failed item', () => {
+        const { root } = renderTransformPage(structuredSnapshot({
+            status: 'failed',
+            error: 'Unparseable toon output: unexpected indent',
+        }, { structure: { format: 'toon', template: [] } }));
+
+        const block = findOne(root, hasClass('bc-task-transform-validation'));
+        expect(hasClass('bc-task-transform-validation--unparseable')(block)).toBe(true);
+        expect(findOne(block, hasClass('bc-task-transform-validation-format')).textContent).toBe('Format: TOON');
+        expect(findOne(block, hasClass('bc-task-transform-validation-state')).textContent).toBe('✗ Unparseable output');
+        expect(findOne(block, hasClass('bc-task-transform-validation-detail')).textContent).toBe('Unparseable toon output: unexpected indent');
+    });
+
+    test('a generation failure is not mislabeled as unparseable; the normal failed UI stays', () => {
+        const { root } = renderTransformPage(structuredSnapshot({ status: 'failed', error: 'rate limited' }));
+
+        const block = findOne(root, hasClass('bc-task-transform-validation'));
+        expect(hasClass('bc-task-transform-validation--unparseable')(block)).toBe(false);
+        expect(findOne(block, hasClass('bc-task-transform-validation-state')).textContent).not.toContain('Unparseable');
+        // The existing failed-item error alert is untouched.
+        const alert = findOne(root, hasClass('bc-task-transform-error'));
+        expect(alert.getAttribute('role')).toBe('alert');
+        expect(alert.textContent).toContain('rate limited');
+    });
+
+    test('Validate calls actions.validateItem and refreshes the row from the response (no new snapshot needed)', async () => {
+        const actions = makeActions();
+        actions.validateItem = jest.fn(async () => ({
+            ok: true,
+            issues: [{ path: '/character/mood', kind: 'unknown', message: 'Unknown element' }],
+            status: 'succeeded',
+        }));
+        const { root } = renderTransformPage(structuredSnapshot(), actions);
+        expect(findOne(root, hasClass('bc-task-transform-validation-state')).textContent).toBe('✓ Structure valid');
+
+        findOne(root, hasClass('bc-task-transform-validate')).click();
+        await flush();
+
+        expect(actions.validateItem).toHaveBeenCalledTimes(1);
+        expect(actions.validateItem).toHaveBeenCalledWith('transform1', 'a.png');
+
+        // The row re-rendered from the RESPONSE (singular "issue") while the
+        // snapshot still holds the old clean item.
+        const block = findOne(container, hasClass('bc-task-transform-validation'));
+        expect(hasClass('bc-task-transform-validation--issues')(block)).toBe(true);
+        expect(findOne(block, hasClass('bc-task-transform-validation-state')).textContent).toBe('⚠ 1 issue');
+        // A snapshot refresh was requested so the rest of the page can settle.
+        expect(actions.refresh).toHaveBeenCalled();
+    });
+
+    test('a Validate response flipping the item to failed shows the unparseable state immediately', async () => {
+        const actions = makeActions();
+        actions.validateItem = jest.fn(async () => ({ ok: false, issues: [], status: 'failed' }));
+        const { root } = renderTransformPage(structuredSnapshot(), actions);
+
+        findOne(root, hasClass('bc-task-transform-validate')).click();
+        await flush();
+
+        const block = findOne(container, hasClass('bc-task-transform-validation'));
+        expect(hasClass('bc-task-transform-validation--unparseable')(block)).toBe(true);
+        expect(findOne(block, hasClass('bc-task-transform-validation-state')).textContent).toBe('✗ Unparseable output');
+    });
+
+    test('a refreshed snapshot takes over from the optimistic result (same state, plus the persisted error)', async () => {
+        const actions = makeActions();
+        actions.validateItem = jest.fn(async () => ({ ok: false, issues: [], status: 'failed' }));
+        const { page, root } = renderTransformPage(structuredSnapshot(), actions);
+
+        findOne(root, hasClass('bc-task-transform-validate')).click();
+        await flush();
+        expect(findOne(container, hasClass('bc-task-transform-validation-state')).textContent).toBe('✗ Unparseable output');
+
+        // The endpoint persisted the failure; the refreshed snapshot (revision
+        // bumped) now drives the row, including the error detail.
+        page.render(container, makeSnapshot({
+            task: {
+                revision: 2,
+                structure: XML_STRUCTURE,
+                passes: {
+                    transform1: {
+                        items: { 'a.png': makeItem({ status: 'failed', output: 'AAA', error: 'Unparseable xml output: tag mismatch' }) },
+                    },
+                },
+            },
+        }), actions);
+        const block = findOne(container, hasClass('bc-task-transform-validation'));
+        expect(findOne(block, hasClass('bc-task-transform-validation-state')).textContent).toBe('✗ Unparseable output');
+        expect(findOne(block, hasClass('bc-task-transform-validation-detail')).textContent).toBe('Unparseable xml output: tag mismatch');
+    });
+
+    test('a failed validate request shows a transient inline error on the row', async () => {
+        const actions = makeActions();
+        actions.validateItem = jest.fn(async () => {
+            throw new Error('{"error":"item_not_found"}');
+        });
+        const { root } = renderTransformPage(structuredSnapshot(), actions);
+
+        findOne(root, hasClass('bc-task-transform-validate')).click();
+        await flush();
+
+        const failure = findOne(container, hasClass('bc-task-transform-validation-request-error'));
+        expect(failure).not.toBe(null);
+        expect(failure.getAttribute('role')).toBe('alert');
+        expect(failure.textContent).toContain('item_not_found');
+        // The row stays in its snapshot-derived state and the button recovers.
+        expect(findOne(container, hasClass('bc-task-transform-validation-state')).textContent).toBe('✓ Structure valid');
+        expect(findOne(container, hasClass('bc-task-transform-validate')).disabled).toBe(false);
+    });
+
+    test('Validate is disabled in read-only mode, for empty output, and while validating', async () => {
+        // Read-only completed task.
+        const readOnly = renderTransformPage(structuredSnapshot({}, {
+            status: 'completed',
+            passes: {
+                transform1: {
+                    status: 'succeeded',
+                    items: { 'a.png': makeItem({ status: 'succeeded', output: 'AAA' }) },
+                },
+            },
+        }));
+        const readOnlyValidate = findOne(readOnly.root, hasClass('bc-task-transform-validate'));
+        expect(readOnlyValidate.disabled).toBe(true);
+        readOnlyValidate.click();
+        expect(readOnly.actions.validateItem).not.toHaveBeenCalled();
+
+        // Empty output: nothing to validate (a validate would flip a pending
+        // item to failed server-side).
+        const empty = renderTransformPage(structuredSnapshot({ status: 'pending', output: '' }));
+        const emptyValidate = findOne(empty.root, hasClass('bc-task-transform-validate'));
+        expect(emptyValidate.disabled).toBe(true);
+        emptyValidate.click();
+        expect(empty.actions.validateItem).not.toHaveBeenCalled();
+
+        // While validating: busy label, disabled, extra clicks are no-ops.
+        let resolveValidate;
+        const actions = makeActions();
+        actions.validateItem = jest.fn(() => new Promise((resolve) => {
+            resolveValidate = resolve;
+        }));
+        const { root } = renderTransformPage(structuredSnapshot(), actions);
+        findOne(root, hasClass('bc-task-transform-validate')).click();
+        await flush();
+        const busy = findOne(container, hasClass('bc-task-transform-validate'));
+        expect(busy.disabled).toBe(true);
+        expect(busy.textContent).toBe('Validating…');
+        busy.click();
+        expect(actions.validateItem).toHaveBeenCalledTimes(1);
+
+        resolveValidate({ ok: true, issues: [], status: 'succeeded' });
+        await flush();
+        expect(findOne(container, hasClass('bc-task-transform-validate')).disabled).toBe(false);
+    });
+
+    test('Validate awaits a pending output commit before calling the endpoint (no stale-output race)', async () => {
+        let resolveUpdate;
+        const actions = makeActions();
+        actions.update = jest.fn(() => new Promise((resolve) => {
+            resolveUpdate = resolve;
+        }));
+        const { root } = renderTransformPage(structuredSnapshot(), actions);
+
+        // Commit an output edit: the PATCH is now in flight.
+        const output = findOne(root, hasClass('bc-task-transform-output'));
+        output.value = 'AAA edited';
+        output.fire('change');
+        expect(actions.update).toHaveBeenCalledWith({ passes: { transform1: { items: { 'a.png': { output: 'AAA edited' } } } } });
+
+        findOne(container, hasClass('bc-task-transform-validate')).click();
+        await flush();
+        expect(actions.validateItem).not.toHaveBeenCalled();
+
+        resolveUpdate();
+        await flush();
+        expect(actions.validateItem).toHaveBeenCalledTimes(1);
+        expect(actions.validateItem).toHaveBeenCalledWith('transform1', 'a.png');
     });
 });

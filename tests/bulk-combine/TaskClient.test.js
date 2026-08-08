@@ -307,6 +307,34 @@ describe('task operations', () => {
         expect(fetchMock).toHaveBeenCalledWith('/api/bulk-combine/tasks/t1/review', expect.objectContaining({ method: 'GET' }));
         expect(result).toEqual(payload);
     });
+
+    test('validateItem posts passKey/itemKey to the validate route and returns the parsed result', async () => {
+        const result = {
+            ok: true,
+            issues: [{ path: '/character/style', kind: 'missing', message: 'Missing required element' }],
+            status: 'succeeded',
+        };
+        fetchMock.mockResolvedValueOnce(jsonResponse(result));
+
+        const value = await client.validateItem('t1', 'transform1', 'a.png');
+
+        expect(fetchMock).toHaveBeenCalledWith('/api/bulk-combine/tasks/t1/validate', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ passKey: 'transform1', itemKey: 'a.png' }),
+        }));
+        expect(value).toEqual(result);
+    });
+
+    test('validateItem URL-encodes the task id and throws the response text for 404 failures', async () => {
+        fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'item_not_found' }, { status: 404 }));
+
+        await expect(client.validateItem('a/b', 'transform1', 'missing.png')).rejects.toThrow('item_not_found');
+
+        expect(fetchMock).toHaveBeenCalledWith('/api/bulk-combine/tasks/a%2Fb/validate', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ passKey: 'transform1', itemKey: 'missing.png' }),
+        }));
+    });
 });
 
 describe('execution operations', () => {

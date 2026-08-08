@@ -281,6 +281,8 @@ export class TaskWizardController {
             runPromptAssist: (promptKey, options) => this.#client.runPromptAssist(this.#state.taskId, promptKey, options),
             /** Assembled review payload. */
             getReview: () => this.#client.getReview(this.#state.taskId),
+            /** Re-validate one item's stored output against the structure template (persists issues server-side). */
+            validateItem: (passKey, itemKey) => this.#client.validateItem(this.#state.taskId, passKey, itemKey),
         });
     }
 

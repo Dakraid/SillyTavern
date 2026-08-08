@@ -13,10 +13,14 @@
  * always per-source) — with avatar
  * thumbnail, name, and status badge, behind a name/status filter. Clicking a row selects it (closure state, local
  * re-render — NEVER a server PATCH) and updates the RIGHT detail inspector:
- * character avatar left of a large editable output textbox, a read-only
- * character-count validation row (`output.length` only — no token API), the
- * per-item regeneration-hint textarea (with the server-set `hintApplied`
- * badge), the item error when failed, and a Regenerate button.
+ * character avatar left of a large editable output textbox, then — only
+ * when the task enforces an output structure (`task.structure.format` ≠
+ * 'none') — a structure-validation row (format badge + valid/issues/
+ * unparseable state + a Validate button that re-checks the stored output
+ * server-side), a read-only character-count row (`output.length` only — no
+ * token API), the per-item regeneration-hint textarea (with the server-set
+ * `hintApplied` badge), the item error when failed, and a Regenerate
+ * button.
  *
  * Execution semantics (mirroring `src/util/bulk-combine/task-runner.js`):
  * - Run → `actions.runPass(passKey, { completionSettings })` (default scope
@@ -103,6 +107,10 @@ const READ_ONLY_NOTE = 'This task is completed — it is read-only. Duplicate it
 const HINT_NOTE = 'A note attached to this item. Recorded as applied when a single-item regeneration runs with it.';
 const HINT_APPLIED_TITLE = 'Set server-side: the last single-item regeneration ran with a non-empty hint.';
 const EMPTY_LIST_NOTE = 'No source cards — add characters on the Cards page.';
+const VALIDATE_TITLE = 'Re-validate the stored output against the structure template (persists the result server-side).';
+const VALIDATE_EMPTY_TITLE = 'Nothing to validate yet — run this card first.';
+const VALIDATE_BUSY_TITLE = 'Validation is already in flight for this card.';
+const VALIDATE_REQUEST_FAILED = 'Validation request failed';
 
 /** Item key of the single merged item in a merged pass (mirrors the server). */
 const COMBINED_ITEM_KEY = '__combined__';
@@ -125,6 +133,20 @@ function recordOf(value) {
  */
 function stringOf(value) {
     return typeof value === 'string' ? value : '';
+}
+
+/**
+ * Normalizes a persisted validation-issues array for display.
+ *
+ * @param {unknown} value Candidate issues array.
+ * @returns {Array<{path: string, kind: string, message: string}>} Issues.
+ */
+function normalizeIssues(value) {
+    return (Array.isArray(value) ? value : []).map((issue) => ({
+        path: stringOf(recordOf(issue).path),
+        kind: stringOf(recordOf(issue).kind),
+        message: stringOf(recordOf(issue).message),
+    }));
 }
 
 /**
@@ -232,6 +254,22 @@ export function createTransformPage({ passKey, title } = {}) {
      * @type {boolean}
      */
     let readOnlyMode = false;
+    /**
+     * Optimistic validate-endpoint results per item key, tagged with the
+     * task revision they were computed against. The endpoint persists
+     * issues/status server-side, so an entry is dropped as soon as the
+     * snapshot moves to a different revision (a refresh is fired after every
+     * successful validate) and the authoritative snapshot takes over.
+     *
+     * @type {Map<string, {ok: boolean, status: string, issues: Array<{path: string, kind: string, message: string}>, revision: number}>}
+     */
+    const validationResults = new Map();
+    /** @type {Map<string, string>} Transient validate request errors per item key (cleared on retry). */
+    const validationErrors = new Map();
+    /** @type {Set<string>} Item keys with an in-flight validate request. */
+    const validatingKeys = new Set();
+    /** @type {Set<string>} Item keys whose issues list is expanded (closure UI state). */
+    const expandedIssueLists = new Set();
 
     /** @returns {object} Current task record (defensive). */
     function taskOf() {
@@ -289,6 +327,17 @@ export function createTransformPage({ passKey, title } = {}) {
     }
 
     /**
+     * The task's output structure format, normalized. Absent/unknown values
+     * mean 'none' (legacy/freeform tasks) — the validation row stays hidden.
+     *
+     * @returns {string} 'xml' | 'json' | 'toon' | 'none'.
+     */
+    function structureFormat() {
+        const format = stringOf(recordOf(taskOf().structure).format).toLowerCase();
+        return ['xml', 'json', 'toon'].includes(format) ? format : 'none';
+    }
+
+    /**
      * Normalized pass status (unknown/absent → 'pending').
      *
      * @returns {string} Pass status.
@@ -313,7 +362,7 @@ export function createTransformPage({ passKey, title } = {}) {
      * Reads one item record defensively, normalized for display.
      *
      * @param {string} key Source key.
-     * @returns {{status: string, output: string, error: string, regenHint: string, hintApplied: boolean}} Item record.
+     * @returns {{status: string, output: string, error: string, regenHint: string, hintApplied: boolean, issues: Array<{path: string, kind: string, message: string}>}} Item record.
      */
     function itemOf(key) {
         const item = recordOf(recordOf(passOf().items)[key]);
@@ -324,6 +373,7 @@ export function createTransformPage({ passKey, title } = {}) {
             error: stringOf(item.error),
             regenHint: stringOf(item.regenHint),
             hintApplied: item.hintApplied === true,
+            issues: normalizeIssues(item.issues),
         };
     }
 
@@ -492,6 +542,75 @@ export function createTransformPage({ passKey, title } = {}) {
         Promise.resolve(result).catch((error) => {
             console.error(`transformPage[${pass}]: item cancel request failed.`, error);
         });
+    }
+
+    /**
+     * Re-renders when the page is still attached. Async handlers may settle
+     * after {@link dispose} ran (e.g. a slow validate response), which would
+     * otherwise rebuild into a null host.
+     *
+     * @returns {void}
+     */
+    function rerender() {
+        if (host) {
+            renderPage();
+        }
+    }
+
+    /**
+     * Re-validates one item's stored output against the task's structure
+     * template. Pending output/hint commits are awaited FIRST so the server
+     * validates the latest committed text (same race as {@link fireRunPass}).
+     * The row re-renders from the response immediately (optimistic — the
+     * endpoint persists issues/status server-side); a fire-and-forget
+     * snapshot refresh then lets the rest of the page (status badge, Continue
+     * gating) settle on the authoritative state. Request failures surface as
+     * a transient inline error on the row (no toast — matching the page's
+     * inline-error pattern).
+     *
+     * @param {string} key Source key to validate.
+     * @returns {Promise<void>}
+     */
+    async function fireValidate(key) {
+        if (validatingKeys.has(key) || typeof latestActions?.validateItem !== 'function') {
+            return;
+        }
+        await Promise.all([...pendingCommits]).catch(() => {});
+
+        validatingKeys.add(key);
+        validationErrors.delete(key);
+        rerender();
+
+        let result;
+        try {
+            result = await latestActions.validateItem(pass, key);
+        } catch (error) {
+            console.error(`transformPage[${pass}]: validate request failed.`, error);
+            validatingKeys.delete(key);
+            validationErrors.set(key, `${VALIDATE_REQUEST_FAILED}: ${stringOf(error?.message) || 'unknown error'}`);
+            rerender();
+            return;
+        }
+
+        validatingKeys.delete(key);
+        validationResults.set(key, {
+            ok: recordOf(result).ok === true,
+            status: stringOf(recordOf(result).status),
+            issues: normalizeIssues(recordOf(result).issues),
+            revision: taskOf().revision,
+        });
+        rerender();
+
+        // The endpoint persisted issues/status server-side: pull the
+        // authoritative snapshot so the whole page settles. Fire-and-forget;
+        // the row already reflects the response.
+        try {
+            Promise.resolve(latestActions?.refresh?.()).catch((error) => {
+                console.error(`transformPage[${pass}]: snapshot refresh after validate failed.`, error);
+            });
+        } catch (error) {
+            console.error(`transformPage[${pass}]: snapshot refresh after validate failed.`, error);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -762,6 +881,155 @@ export function createTransformPage({ passKey, title } = {}) {
     // ------------------------------------------------------------------
 
     /**
+     * Builds the structure-validation block shown under the output textbox
+     * (above the character-count row) when the task enforces an output
+     * structure: a format badge plus one state — `✓ Structure valid` (no
+     * issues, item not failed), `⚠ N issues` with a toggleable issues list
+     * (one `path — message` line per issue), `✗ Unparseable output` (item
+     * failed with an `Unparseable ` error; the error message is shown), or a
+     * muted `Generation failed` (failed for any other reason — never
+     * mislabelled as unparseable; the existing error alert below carries the
+     * detail). The Validate button re-checks the stored output server-side.
+     *
+     * Read-only display plus that one button: the block never touches the
+     * output draft map. An optimistic validate result applies until the
+     * snapshot moves to a new revision (the endpoint persists the same data,
+     * so the refreshed snapshot agrees).
+     *
+     * @param {object} options Block options.
+     * @param {string} options.key Selected source key.
+     * @param {object} options.item Normalized item record (from {@link itemOf}).
+     * @param {boolean} options.itemBusy Whether the item is queued/running.
+     * @returns {Element} Validation block element.
+     */
+    function buildValidationBlock({ key, item, itemBusy }) {
+        const format = structureFormat().toUpperCase();
+
+        let optimistic = validationResults.get(key) ?? null;
+        if (optimistic && taskOf().revision !== optimistic.revision) {
+            validationResults.delete(key);
+            optimistic = null;
+        }
+
+        const status = optimistic ? (optimistic.status || item.status) : item.status;
+        const issues = optimistic ? optimistic.issues : item.issues;
+        // An optimistic unparseable result carries no error text (the
+        // endpoint returns only ok/issues/status); the detail line appears
+        // once the refreshed snapshot delivers the persisted error.
+        const error = optimistic ? '' : item.error;
+        const unparseable = optimistic
+            ? optimistic.ok === false
+            : (status === 'failed' && error.startsWith('Unparseable '));
+
+        let state = 'ok';
+        let stateText = '✓ Structure valid';
+        if (unparseable) {
+            state = 'unparseable';
+            stateText = '✗ Unparseable output';
+        } else if (issues.length > 0) {
+            state = 'issues';
+            stateText = `⚠ ${issues.length} issue${issues.length === 1 ? '' : 's'}`;
+        } else if (status === 'failed') {
+            state = 'failed';
+            stateText = 'Generation failed';
+        }
+
+        const block = document.createElement('div');
+        block.className = `bc-task-transform-validation bc-task-transform-validation--${state}`;
+
+        const row = document.createElement('div');
+        row.className = 'bc-task-transform-validation-row';
+
+        const formatBadge = document.createElement('span');
+        formatBadge.className = 'bc-task-transform-validation-format';
+        formatBadge.textContent = `Format: ${format}`;
+
+        const separator = document.createElement('span');
+        separator.className = 'bc-task-transform-validation-sep';
+        separator.setAttribute('aria-hidden', 'true');
+        separator.textContent = '·';
+
+        const stateElement = document.createElement('span');
+        stateElement.className = 'bc-task-transform-validation-state';
+        stateElement.textContent = stateText;
+
+        row.append(formatBadge, separator, stateElement);
+
+        if (state === 'issues') {
+            const expanded = expandedIssueLists.has(key);
+            const toggle = buildButton({
+                className: 'bc-task-transform-issues-toggle',
+                label: expanded ? 'Hide issues' : 'Show issues',
+                title: expanded ? 'Collapse the issues list.' : 'List every structure issue.',
+                onClick: () => {
+                    if (expandedIssueLists.has(key)) {
+                        expandedIssueLists.delete(key);
+                    } else {
+                        expandedIssueLists.add(key);
+                    }
+                    renderPage();
+                },
+            });
+            toggle.setAttribute('aria-expanded', String(expanded));
+            toggle.setAttribute('data-field-key', `issues-toggle:${key}`);
+            fieldRefs.set(`issues-toggle:${key}`, toggle);
+            row.append(toggle);
+        }
+
+        const validating = validatingKeys.has(key);
+        const outputFieldKey = `output:${key}`;
+        const effectiveOutput = drafts.has(outputFieldKey) ? drafts.get(outputFieldKey) : item.output;
+        const emptyOutput = stringOf(effectiveOutput).trim().length === 0;
+        const validateDisabled = validating || readOnlyMode || itemBusy || emptyOutput;
+        const validateTitle = readOnlyMode
+            ? READ_ONLY_NOTE
+            : (validating
+                ? VALIDATE_BUSY_TITLE
+                : (itemBusy ? ITEM_BUSY_TITLE : (emptyOutput ? VALIDATE_EMPTY_TITLE : VALIDATE_TITLE)));
+        const validate = buildButton({
+            className: 'bc-task-transform-validate',
+            label: validating ? 'Validating…' : 'Validate',
+            title: validateTitle,
+            disabled: validateDisabled,
+            onClick: () => void fireValidate(key),
+        });
+        validate.setAttribute('data-field-key', `validate:${key}`);
+        fieldRefs.set(`validate:${key}`, validate);
+        row.append(validate);
+
+        block.append(row);
+
+        if (state === 'issues' && expandedIssueLists.has(key)) {
+            const list = document.createElement('ul');
+            list.className = 'bc-task-transform-issues';
+            for (const issue of issues) {
+                const entry = document.createElement('li');
+                entry.textContent = [issue.path, issue.message].filter(Boolean).join(' — ') || issue.kind || 'Issue';
+                list.append(entry);
+            }
+            block.append(list);
+        }
+
+        if (state === 'unparseable' && error) {
+            const detail = document.createElement('p');
+            detail.className = 'bc-task-transform-validation-detail';
+            detail.textContent = error;
+            block.append(detail);
+        }
+
+        const requestError = validationErrors.get(key);
+        if (requestError) {
+            const failure = document.createElement('p');
+            failure.className = 'bc-task-transform-validation-request-error';
+            failure.setAttribute('role', 'alert');
+            failure.textContent = requestError;
+            block.append(failure);
+        }
+
+        return block;
+    }
+
+    /**
      * Builds the detail inspector for the selected item: name + status
      * badge header, avatar left of the large editable output textbox, a
      * read-only character-count row, the regeneration-hint textarea (with
@@ -834,7 +1102,13 @@ export function createTransformPage({ passKey, title } = {}) {
             },
         });
 
-        outputColumn.append(outputArea, outputCount);
+        outputColumn.append(outputArea);
+        // Structure validation row (only when the task enforces an output
+        // structure), under the textbox and above the character-count row.
+        if (structureFormat() !== 'none') {
+            outputColumn.append(buildValidationBlock({ key, item, itemBusy }));
+        }
+        outputColumn.append(outputCount);
         main.append(avatar, outputColumn);
         section.append(main);
 
@@ -1071,6 +1345,10 @@ export function createTransformPage({ passKey, title } = {}) {
             fieldRefs = new Map();
             pendingCommits.clear();
             readOnlyMode = false;
+            validationResults.clear();
+            validationErrors.clear();
+            validatingKeys.clear();
+            expandedIssueLists.clear();
         },
     };
 }
