@@ -121,6 +121,82 @@
 	cursor: not-allowed;
 }
 
+/* --- Per-card notes (collapsible) --- */
+
+.bc-task-card-notes {
+	grid-column: 1 / -1;
+	display: flex;
+	flex-direction: column;
+	gap: 0.35em;
+}
+
+.bc-task-card-notes-toggle {
+	display: inline-flex;
+	align-items: center;
+	align-self: flex-start;
+	gap: 0.45em;
+	padding: 0.2em 0.45em;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 0.85em;
+	cursor: pointer;
+	opacity: 0.85;
+}
+
+.bc-task-card-notes-toggle:hover {
+	opacity: 1;
+	background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, var(--SmartThemeQuoteColor) 15%);
+}
+
+.bc-task-card-notes-toggle:focus-visible {
+	outline: 2px solid var(--SmartThemeQuoteColor);
+	outline-offset: 1px;
+}
+
+.bc-task-card-notes-chevron {
+	font-size: 0.75em;
+}
+
+.bc-task-card-notes.expanded .bc-task-card-notes-chevron {
+	transform: rotate(90deg);
+}
+
+/* Filled dot shown while a note exists (visible when collapsed). */
+
+.bc-task-card-notes-badge {
+	width: 0.5em;
+	height: 0.5em;
+	border-radius: 50%;
+	background-color: var(--SmartThemeQuoteColor);
+}
+
+.bc-task-card-notes-badge[hidden] {
+	display: none;
+}
+
+.bc-task-card-notes-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+}
+
+.bc-task-card-notes-body[hidden] {
+	display: none;
+}
+
+.bc-task-card-notes-textarea {
+	width: 100%;
+	box-sizing: border-box;
+	resize: vertical;
+}
+
+.bc-task-card-notes-body .bc-task-field-hint {
+	margin: 0;
+}
+
 /* --- Add-character picker --- */
 
 .bc-task-add {
@@ -254,6 +330,12 @@
 }
 
 /* --- Reduced motion --- */
+
+@media (prefers-reduced-motion: no-preference) {
+	.bc-task-card-notes-chevron {
+		transition: transform 0.15s ease;
+	}
+}
 
 @media (prefers-reduced-motion: reduce) {
 	.bc-task-card-button,

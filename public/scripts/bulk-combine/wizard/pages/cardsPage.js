@@ -7,7 +7,9 @@
  * immutable-snapshot badge, and a compact captured-field summary per card,
  * in `task.sources` array order. Per-card controls move up/down, refresh
  * the snapshot from the live character, or remove the card (a combine needs
- * at least two sources, so removal locks at that floor). A filterable
+ * at least two sources, so removal locks at that floor). Each card also
+ * carries a collapsible "Notes for generation" editor (ephemeral collapse
+ * state; notes commit as sparse `sourceNotes` patches). A filterable
  * picker appends characters that are not sources yet; the footer continues
  * to the Prompt & Settings page.
  *
@@ -45,6 +47,8 @@ const CONTINUE_LOCKED_TITLE = `Add at least ${CARDS_PAGE_MIN_SOURCES} source car
 const REFRESH_TITLE = 'Re-capture name and core fields from the live character. Marks downstream results stale.';
 const REFRESH_MISSING_TITLE = 'The live character for this snapshot no longer exists — refresh is unavailable.';
 const SNAPSHOT_BADGE_TITLE = 'Stored snapshot: generation uses this captured data, never the live card, until you refresh.';
+const NOTES_BADGE_TITLE = 'This card has notes for generation.';
+const NOTES_HINT = 'Injected into this card\'s Transform 1 prompt.';
 
 /**
  * Core-field labels in canonical order, used for the compact field summary.
@@ -172,6 +176,28 @@ function applySources(actions, sources) {
 }
 
 /**
+ * Reads the stored generation note for a source key from a state snapshot,
+ * tolerating partial shapes.
+ *
+ * @param {object} [snapshot] State snapshot (`{ task }`).
+ * @param {string} sourceKey Source key.
+ * @returns {string} Stored note text ('' when absent).
+ */
+function storedNote(snapshot, sourceKey) {
+    return String(snapshot?.task?.sourceNotes?.[sourceKey] ?? '');
+}
+
+/**
+ * Whether a note counts as filled (drives the collapsed-view badge).
+ *
+ * @param {string} text Note text.
+ * @returns {boolean} True when the note has non-whitespace content.
+ */
+function noteFilled(text) {
+    return String(text).trim().length > 0;
+}
+
+/**
  * Builds a small icon-only control button with an accessible label.
  *
  * @param {object} options Button options.
@@ -215,6 +241,57 @@ export function createCardsPage() {
     let latestActions = null;
     /** @type {string} Picker search query — survives state-driven re-renders. */
     let searchQuery = '';
+    /**
+     * Uncommitted note text, keyed by `data-field-key` (`note:<sourceKey>`).
+     * Updated on `input`, committed on `change`, restored across rebuilds so
+     * re-renders never clobber typing.
+     *
+     * @type {Map<string, string>}
+     */
+    const noteDrafts = new Map();
+    /**
+     * Source keys whose notes editor is expanded. Ephemeral UI state —
+     * cards default to collapsed and the set is never persisted.
+     *
+     * @type {Set<string>}
+     */
+    const expandedNotes = new Set();
+    /**
+     * Note textareas built this render, keyed by `data-field-key` — used to
+     * restore focus after a rebuild (the fake DOM has no querySelector).
+     *
+     * @type {Map<string, Element>}
+     */
+    let fieldRefs = new Map();
+
+    /**
+     * Commits one card's note as a sparse PATCH (the server deep-merges
+     * records, so only the one key is sent). The draft is kept until the
+     * patch resolves so a failed update never loses typing; it is cleared
+     * on success when unchanged since. Failures are logged, never thrown
+     * into render/change paths.
+     *
+     * @param {string} sourceKey Source key.
+     * @param {string} draftKey Draft-map key (`note:<sourceKey>`).
+     * @param {string} text Committed note text.
+     * @returns {void}
+     */
+    function commitNote(sourceKey, draftKey, text) {
+        let result;
+        try {
+            result = latestActions?.update?.({ sourceNotes: { [sourceKey]: text } });
+        } catch (error) {
+            console.error('cardsPage: failed to update the note.', error);
+            return;
+        }
+        Promise.resolve(result).then(() => {
+            if (noteDrafts.get(draftKey) === text) {
+                noteDrafts.delete(draftKey);
+            }
+        }).catch((error) => {
+            console.error('cardsPage: failed to update the note.', error);
+        });
+    }
 
     /**
      * Moves the source at `from` to position `to` and patches the array.
@@ -413,8 +490,100 @@ export function createCardsPage() {
             }),
         );
 
-        card.append(avatar, body, controls);
+        card.append(avatar, body, controls, buildNotesSection(source));
         return card;
+    }
+
+    /**
+     * Builds the collapsible per-card notes editor: a chevron toggle row
+     * (with a filled dot while a note exists, so non-empty notes stay
+     * visible when collapsed) over a draft-protected textarea. Collapse
+     * state is ephemeral — held in `expandedNotes`, never persisted — and
+     * the toggle/badge update from local state immediately, without a
+     * server round-trip.
+     *
+     * @param {object} source Source record.
+     * @returns {Element} Notes section element.
+     */
+    function buildNotesSection(source) {
+        const sourceKey = String(source?.key ?? '');
+        const name = String(source?.name ?? '').trim() || 'Unnamed character';
+        const draftKey = `note:${sourceKey}`;
+        const expanded = expandedNotes.has(sourceKey);
+        const text = noteDrafts.has(draftKey) ? noteDrafts.get(draftKey) : storedNote(latestSnapshot, sourceKey);
+
+        const section = document.createElement('div');
+        section.className = `bc-task-card-notes${expanded ? ' expanded' : ''}`;
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'bc-task-card-notes-toggle';
+        toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        toggle.setAttribute('aria-label', `Notes for ${name}`);
+        const bodyId = `bc-task-card-notes-body-${sourceKey}`;
+        toggle.setAttribute('aria-controls', bodyId);
+
+        const chevron = document.createElement('i');
+        chevron.className = 'fa-solid fa-chevron-right bc-task-card-notes-chevron';
+        chevron.setAttribute('aria-hidden', 'true');
+
+        const label = document.createElement('span');
+        label.className = 'bc-task-card-notes-label';
+        label.textContent = 'Notes for generation';
+
+        const badge = document.createElement('span');
+        badge.className = 'bc-task-card-notes-badge';
+        badge.title = NOTES_BADGE_TITLE;
+        badge.setAttribute('role', 'img');
+        badge.setAttribute('aria-label', 'Has notes');
+        badge.hidden = !noteFilled(text);
+
+        toggle.append(chevron, label, badge);
+
+        const body = document.createElement('div');
+        body.className = 'bc-task-card-notes-body';
+        body.id = bodyId;
+        body.hidden = !expanded;
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'bc-task-card-notes-textarea';
+        textarea.rows = 3;
+        textarea.setAttribute('data-field-key', draftKey);
+        textarea.setAttribute('aria-label', `Notes for generation for ${name}`);
+        textarea.value = text;
+        textarea.addEventListener('input', () => {
+            const draft = String(textarea.value ?? '');
+            noteDrafts.set(draftKey, draft);
+            badge.hidden = !noteFilled(draft);
+        });
+        textarea.addEventListener('change', () => {
+            const committed = String(textarea.value ?? '');
+            noteDrafts.set(draftKey, committed);
+            commitNote(sourceKey, draftKey, committed);
+        });
+        fieldRefs.set(draftKey, textarea);
+
+        const hint = document.createElement('p');
+        hint.className = 'bc-task-field-hint';
+        hint.textContent = NOTES_HINT;
+
+        body.append(textarea, hint);
+
+        toggle.addEventListener('click', () => {
+            const nowExpanded = !expandedNotes.has(sourceKey);
+            if (nowExpanded) {
+                expandedNotes.add(sourceKey);
+                section.classList.add('expanded');
+            } else {
+                expandedNotes.delete(sourceKey);
+                section.classList.remove('expanded');
+            }
+            toggle.setAttribute('aria-expanded', nowExpanded ? 'true' : 'false');
+            body.hidden = !nowExpanded;
+        });
+
+        section.append(toggle, body);
+        return section;
     }
 
     /**
@@ -559,11 +728,20 @@ export function createCardsPage() {
 
     /**
      * Rebuilds the whole page from the latest snapshot into the host.
+     * Captures the focused field (by `data-field-key`) plus selection before
+     * the rebuild and restores them afterwards, so state-driven re-renders
+     * never clobber an in-progress note edit.
      *
      * @returns {Element} The page heading (focus target).
      */
     function renderPage() {
         const sources = sourcesOf(latestSnapshot);
+
+        const activeElement = typeof document !== 'undefined' ? document.activeElement : null;
+        const activeKey = activeElement?.getAttribute?.('data-field-key') ?? null;
+        const selectionStart = typeof activeElement?.selectionStart === 'number' ? activeElement.selectionStart : null;
+        const selectionEnd = typeof activeElement?.selectionEnd === 'number' ? activeElement.selectionEnd : null;
+        fieldRefs = new Map();
 
         const root = document.createElement('div');
         root.className = 'bc-task-page bc-task-cards';
@@ -594,6 +772,18 @@ export function createCardsPage() {
 
         root.append(heading, guidance, list, buildAddSection(), buildFooter());
         host.replaceChildren(root);
+
+        if (activeKey && fieldRefs.has(activeKey)) {
+            const element = fieldRefs.get(activeKey);
+            element.focus?.();
+            if (selectionStart !== null && typeof element.setSelectionRange === 'function') {
+                try {
+                    element.setSelectionRange(selectionStart, selectionEnd ?? selectionStart);
+                } catch {
+                    // Not a text-entry element in a real browser — focus is enough.
+                }
+            }
+        }
         return heading;
     }
 
@@ -604,6 +794,8 @@ export function createCardsPage() {
          * Renders the page from the state snapshot. Idempotent: the host is
          * cleared and rebuilt on every call, and all listeners live on the
          * replaced elements (never on the container or external targets).
+         * Uncommitted note drafts win over the server values so re-renders
+         * never clobber typing.
          *
          * @param {Element} container Canvas container.
          * @param {object} snapshot `TaskWizardState#getSnapshot()` payload.
@@ -622,8 +814,8 @@ export function createCardsPage() {
             return renderPage();
         },
         /**
-         * Releases stored references. No listeners were added to external
-         * targets, so there is nothing else to detach.
+         * Releases stored references and ephemeral UI state. No listeners
+         * were added to external targets, so there is nothing else to detach.
          *
          * @returns {void}
          */
@@ -632,6 +824,9 @@ export function createCardsPage() {
             latestSnapshot = null;
             latestActions = null;
             searchQuery = '';
+            noteDrafts.clear();
+            expandedNotes.clear();
+            fieldRefs = new Map();
         },
     };
 }

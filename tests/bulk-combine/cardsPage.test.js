@@ -263,11 +263,12 @@ function makeSource(overrides = {}) {
 
 /**
  * @param {object[]} sources Task sources.
+ * @param {object} [sourceNotes] Per-source generation notes (`{ [key]: text }`).
  * @returns {object} State snapshot payload (mirrors `TaskWizardState#getSnapshot`).
  */
-function makeSnapshot(sources) {
+function makeSnapshot(sources, sourceNotes = {}) {
     return {
-        task: { id: 'task-1', name: 'Task', sources },
+        task: { id: 'task-1', name: 'Task', sources, sourceNotes },
         derivedStaleness: {},
         pageStates: [],
         currentPage: 1,
@@ -300,12 +301,25 @@ function flush() {
  *
  * @param {object[]} sources Task sources.
  * @param {object} [actions] Actions facade mock.
+ * @param {object} [sourceNotes] Per-source generation notes.
  * @returns {{page: object, heading: Element, root: Element, actions: object}} Rendered page pieces.
  */
-function renderCardsPage(sources, actions = makeActions()) {
+function renderCardsPage(sources, actions = makeActions(), sourceNotes = {}) {
     const page = createCardsPage();
-    const heading = page.render(container, makeSnapshot(sources), actions);
+    const heading = page.render(container, makeSnapshot(sources, sourceNotes), actions);
     return { page, heading, root: container.children[0], actions };
+}
+
+/**
+ * Finds the rendered card element for a source key.
+ *
+ * @param {object} root Root fake element.
+ * @param {string} sourceKey Source key (`data-source-key`).
+ * @returns {object|null} Card element, or null.
+ */
+function cardFor(root, sourceKey) {
+    return findOne(root, (element) => typeof element.getAttribute === 'function'
+        && element.getAttribute('data-source-key') === sourceKey);
 }
 
 beforeAll(async () => {
@@ -626,5 +640,182 @@ describe('cardsPage', () => {
 
         page.dispose();
         expect(() => page.render(container, makeSnapshot([a, b]), actions)).not.toThrow();
+    });
+
+    // ------------------------------------------------------------------
+    // Per-card notes (collapsible "Notes for generation" editor)
+    // ------------------------------------------------------------------
+
+    describe('per-card notes', () => {
+        const a = () => makeSource();
+        const b = () => makeSource({ key: 'b.png', name: 'Bob', avatar: 'b.png', fields: { name: 'Bob' } });
+
+        beforeEach(() => {
+            mockCharacters.push(
+                makeCharacter(),
+                makeCharacter({ name: 'Bob', avatar: 'b.png' }),
+            );
+        });
+
+        test('renders the notes editor collapsed by default', () => {
+            const { root } = renderCardsPage([a(), b()]);
+
+            const card = cardFor(root, 'a.png');
+            const section = findOne(card, hasClass('bc-task-card-notes'));
+            expect(section).not.toBe(null);
+            expect(section.classList.contains('expanded')).toBe(false);
+
+            const toggle = findOne(card, hasAriaLabel('Notes for Alice'));
+            expect(toggle).not.toBe(null);
+            expect(toggle.getAttribute('aria-expanded')).toBe('false');
+            expect(toggle.textContent).toContain('Notes for generation');
+
+            const body = findOne(card, hasClass('bc-task-card-notes-body'));
+            expect(body.hidden).toBe(true);
+
+            // The draft-keyed textarea is built even while collapsed.
+            const textarea = findOne(card, hasClass('bc-task-card-notes-textarea'));
+            expect(textarea.rows).toBe(3);
+            expect(textarea.getAttribute('data-field-key')).toBe('note:a.png');
+            expect(textarea.value).toBe('');
+
+            // Empty note: no filled-dot badge.
+            expect(findOne(card, hasClass('bc-task-card-notes-badge')).hidden).toBe(true);
+        });
+
+        test('snapshot note text appears in the textarea when expanded', () => {
+            const { root } = renderCardsPage([a(), b()], makeActions(), { 'a.png': 'Loves earl grey.' });
+
+            const card = cardFor(root, 'a.png');
+            findOne(card, hasAriaLabel('Notes for Alice')).click();
+
+            expect(findOne(card, hasClass('bc-task-card-notes-body')).hidden).toBe(false);
+            expect(findOne(card, hasClass('bc-task-card-notes-textarea')).value).toBe('Loves earl grey.');
+        });
+
+        test('filled-note badge shows while collapsed only when the note is non-empty', () => {
+            const { root } = renderCardsPage(
+                [a(), b(), makeSource({ key: 'c.png', name: 'Carol', avatar: 'c.png', fields: { name: 'Carol' } })],
+                makeActions(),
+                { 'a.png': 'Has a note.', 'b.png': '   ' },
+            );
+
+            // Non-empty note: badge visible, editor still collapsed.
+            const cardA = cardFor(root, 'a.png');
+            expect(findOne(cardA, hasClass('bc-task-card-notes-badge')).hidden).toBe(false);
+            expect(findOne(cardA, hasClass('bc-task-card-notes-body')).hidden).toBe(true);
+
+            // Whitespace-only and absent notes count as empty: badge hidden.
+            expect(findOne(cardFor(root, 'b.png'), hasClass('bc-task-card-notes-badge')).hidden).toBe(true);
+            expect(findOne(cardFor(root, 'c.png'), hasClass('bc-task-card-notes-badge')).hidden).toBe(true);
+        });
+
+        test('chevron toggles expansion; the ephemeral collapse state survives re-renders', () => {
+            const { page, root, actions } = renderCardsPage([a(), b()]);
+
+            const card = cardFor(root, 'a.png');
+            const toggle = findOne(card, hasAriaLabel('Notes for Alice'));
+
+            toggle.click();
+            expect(findOne(card, hasClass('bc-task-card-notes')).classList.contains('expanded')).toBe(true);
+            expect(toggle.getAttribute('aria-expanded')).toBe('true');
+            expect(findOne(card, hasClass('bc-task-card-notes-body')).hidden).toBe(false);
+
+            toggle.click();
+            expect(findOne(card, hasClass('bc-task-card-notes')).classList.contains('expanded')).toBe(false);
+            expect(toggle.getAttribute('aria-expanded')).toBe('false');
+            expect(findOne(card, hasClass('bc-task-card-notes-body')).hidden).toBe(true);
+
+            // Expand again, then re-render from a fresh snapshot: the
+            // closure state keeps Alice expanded and Bob collapsed.
+            toggle.click();
+            page.render(container, makeSnapshot([a(), b()]), actions);
+            const rebuiltA = cardFor(container, 'a.png');
+            expect(findOne(rebuiltA, hasClass('bc-task-card-notes')).classList.contains('expanded')).toBe(true);
+            expect(findOne(rebuiltA, hasClass('bc-task-card-notes-body')).hidden).toBe(false);
+            expect(findOne(rebuiltA, hasAriaLabel('Notes for Alice')).getAttribute('aria-expanded')).toBe('true');
+            const rebuiltB = cardFor(container, 'b.png');
+            expect(findOne(rebuiltB, hasClass('bc-task-card-notes')).classList.contains('expanded')).toBe(false);
+            expect(findOne(rebuiltB, hasClass('bc-task-card-notes-body')).hidden).toBe(true);
+
+            // Toggling never touches the server.
+            expect(actions.update).not.toHaveBeenCalled();
+        });
+
+        test('input updates the draft without patching; the badge follows the draft immediately', () => {
+            const { root, actions } = renderCardsPage([a(), b()]);
+
+            const card = cardFor(root, 'a.png');
+            findOne(card, hasAriaLabel('Notes for Alice')).click();
+            const textarea = findOne(card, hasClass('bc-task-card-notes-textarea'));
+            const badge = findOne(card, hasClass('bc-task-card-notes-badge'));
+            expect(badge.hidden).toBe(true);
+
+            textarea.value = 'Uncommitted thought';
+            textarea.fire('input');
+
+            expect(actions.update).not.toHaveBeenCalled();
+            expect(badge.hidden).toBe(false);
+
+            // Clearing the text hides the badge again, still without a patch.
+            textarea.value = '';
+            textarea.fire('input');
+            expect(badge.hidden).toBe(true);
+            expect(actions.update).not.toHaveBeenCalled();
+        });
+
+        test('change commits a sparse sourceNotes patch for exactly the one card', async () => {
+            const { page, root, actions } = renderCardsPage([a(), b()]);
+
+            const card = cardFor(root, 'a.png');
+            findOne(card, hasAriaLabel('Notes for Alice')).click();
+            const textarea = findOne(card, hasClass('bc-task-card-notes-textarea'));
+
+            textarea.value = 'Keep her sarcastic.';
+            textarea.fire('input');
+            textarea.fire('change');
+
+            expect(actions.update).toHaveBeenCalledTimes(1);
+            expect(actions.update).toHaveBeenCalledWith({ sourceNotes: { 'a.png': 'Keep her sarcastic.' } });
+
+            // After the patch resolves the draft clears, so a re-render
+            // shows the (now stored) snapshot value rather than a stale draft.
+            await flush();
+            page.render(container, makeSnapshot([a(), b()], { 'a.png': 'Keep her sarcastic.' }), actions);
+            expect(findOne(cardFor(container, 'a.png'), hasClass('bc-task-card-notes-textarea')).value).toBe('Keep her sarcastic.');
+        });
+
+        test('a snapshot refresh while the textarea is focused does not clobber the focused value', () => {
+            const { page, root, actions } = renderCardsPage([a(), b()]);
+
+            const card = cardFor(root, 'a.png');
+            findOne(card, hasAriaLabel('Notes for Alice')).click();
+            const textarea = findOne(card, hasClass('bc-task-card-notes-textarea'));
+            textarea.focus();
+            textarea.value = 'Uncommitted draft';
+            textarea.fire('input');
+
+            // State-driven re-render; the server snapshot still holds the
+            // old (empty) note, which must NOT replace the in-progress text.
+            page.render(container, makeSnapshot([a(), b()], { 'a.png': '' }), actions);
+
+            const rebuilt = findOne(cardFor(container, 'a.png'), hasClass('bc-task-card-notes-textarea'));
+            expect(rebuilt).not.toBe(null);
+            expect(rebuilt.value).toBe('Uncommitted draft');
+            // Focus is restored to the rebuilt textarea.
+            expect(fakeDocument.activeElement).toBe(rebuilt);
+            expect(actions.update).not.toHaveBeenCalled();
+        });
+
+        test('hint line is present in the notes body', () => {
+            const { root } = renderCardsPage([a(), b()]);
+
+            const card = cardFor(root, 'a.png');
+            findOne(card, hasAriaLabel('Notes for Alice')).click();
+
+            const hint = findOne(card, hasClass('bc-task-field-hint'));
+            expect(hint).not.toBe(null);
+            expect(hint.textContent).toBe('Injected into this card\'s Transform 1 prompt.');
+        });
     });
 });
