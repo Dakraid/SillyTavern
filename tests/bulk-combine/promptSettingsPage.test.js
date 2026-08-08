@@ -12,7 +12,9 @@
  * prompt-preset feature runs the REAL `promptPresets` service on top of
  * mocked `script.js` (`saveSettingsDebounced`), `power-user.js`
  * (`power_user`), `popup.js` (`callGenericPopup`), and `utils.js`
- * (`escapeHtml`). The Node test environment has no DOM, so a minimal fake
+ * (`escapeHtml`). `components/StructureBuilder.js` is mocked with a
+ * minimal `{element, setStructure, getValue, dispose}` fake — page-level
+ * tests only assert the wiring. The Node test environment has no DOM, so a minimal fake
  * `document`/element tree backs the page (the implementation uses plain
  * DOM APIs only — no jQuery, no HTML parsing).
  */
@@ -37,6 +39,8 @@ const mockPresets = [];
 const mockPowerUser = {};
 /** @type {object} Mock backing the `callGenericPopup` export. */
 const mockCallGenericPopup = jest.fn();
+/** @type {object[]} Builder instances created through the mocked StructureBuilder module (reset per test). */
+const mockBuilders = [];
 
 jest.unstable_mockModule('../../public/scripts/extensions.js', () => ({
     extension_settings: mockExtensionSettings,
@@ -75,6 +79,39 @@ jest.unstable_mockModule('../../public/scripts/popup.js', () => ({
 
 jest.unstable_mockModule('../../public/scripts/utils.js', () => ({
     escapeHtml: (value) => String(value ?? ''),
+}));
+
+jest.unstable_mockModule('../../public/scripts/bulk-combine/components/StructureBuilder.js', () => ({
+    /**
+     * Minimal component fake implementing the
+     * `{element, setStructure, getValue, dispose}` contract with plain
+     * data; creation options (including `onCommit`) stay reachable.
+     *
+     * @param {object} [options] Component options (`{ structure, onCommit }`).
+     * @returns {object} Fake builder instance.
+     */
+    createStructureBuilder: (options = {}) => {
+        let current = {
+            format: typeof options.structure?.format === 'string' ? options.structure.format : 'xml',
+            template: Array.isArray(options.structure?.template) ? options.structure.template : [],
+        };
+        const element = fakeDocument.createElement('div');
+        element.className = 'bc-task-sb-mock';
+        const builder = {
+            element,
+            options,
+            setStructure: jest.fn((next = {}) => {
+                current = {
+                    format: typeof next.format === 'string' ? next.format : current.format,
+                    template: Array.isArray(next.template) ? next.template : current.template,
+                };
+            }),
+            getValue: jest.fn(() => JSON.parse(JSON.stringify(current))),
+            dispose: jest.fn(),
+        };
+        mockBuilders.push(builder);
+        return builder;
+    },
 }));
 
 // ---------------------------------------------------------------------------
@@ -302,19 +339,38 @@ function makePrompt(text = '', assistant = {}) {
 }
 
 /**
+ * @param {object} [overrides] Shallow-merged root-node overrides.
+ * @returns {object[]} Single-root template fixture (mirrors `templateModel` nodes).
+ */
+function makeTemplate(overrides = {}) {
+    return [{
+        id: 'structured-0',
+        name: 'character',
+        hint: '',
+        attributes: [{ name: 'name', values: '' }],
+        maxLength: null,
+        children: [],
+        ...overrides,
+    }];
+}
+
+/**
  * @param {object} [options] Fixture options.
  * @param {object} [options.settings] Settings overrides.
  * @param {object} [options.prompts] Prompt overrides (whole records).
  * @param {string} [options.status] Task lifecycle status (`draft` | `completed`).
+ * @param {object} [options.structure] Structure override (`{ format, template }`).
+ * @param {object} [options.passes] Pass records override (`{ transform1, … }`).
  * @returns {object} State snapshot payload (mirrors `TaskWizardState#getSnapshot`).
  */
-function makeSnapshot({ settings = {}, prompts = {}, status = 'draft' } = {}) {
+function makeSnapshot({ settings = {}, prompts = {}, status = 'draft', structure, passes } = {}) {
     return {
         task: {
             id: 'task-1',
             name: 'Task',
             status,
             sources: [],
+            structure: structure ?? { format: 'xml', template: makeTemplate() },
             settings: {
                 concurrency: 2,
                 connectionProfile: null,
@@ -322,7 +378,6 @@ function makeSnapshot({ settings = {}, prompts = {}, status = 'draft' } = {}) {
                 totalContextTokens: null,
                 outputTokens: null,
                 destination: 'card',
-                xmlEnabled: false,
                 xmlMinify: false,
                 postProcessingEnabled: false,
                 postProcessingMode: 'append',
@@ -337,6 +392,7 @@ function makeSnapshot({ settings = {}, prompts = {}, status = 'draft' } = {}) {
                 post: makePrompt(''),
                 ...prompts,
             },
+            passes: passes ?? {},
         },
         derivedStaleness: {},
         pageStates: [],
@@ -431,6 +487,7 @@ beforeEach(() => {
         delete mockPowerUser[key];
     }
     mockCallGenericPopup.mockReset();
+    mockBuilders.length = 0;
     delete global.toastr;
 });
 
@@ -684,11 +741,6 @@ describe('promptSettingsPage', () => {
         destination.fire('change');
         expect(actions.update).toHaveBeenLastCalledWith({ settings: { destination: 'lorebook' } });
 
-        const xmlEnabled = findOne(container, hasAriaLabel('XML tagging'));
-        xmlEnabled.checked = true;
-        xmlEnabled.fire('change');
-        expect(actions.update).toHaveBeenLastCalledWith({ settings: { xmlEnabled: true } });
-
         const secondPass = findOne(container, hasAriaLabel('Second pass'));
         secondPass.checked = true;
         secondPass.fire('change');
@@ -699,7 +751,7 @@ describe('promptSettingsPage', () => {
         postMode.fire('change');
         expect(actions.update).toHaveBeenLastCalledWith({ settings: { postProcessingMode: 'prepend' } });
 
-        expect(actions.update).toHaveBeenCalledTimes(5);
+        expect(actions.update).toHaveBeenCalledTimes(4);
     });
 
     test('the processing mode radios are gone; concurrency is always enabled; pass rows hide unless enabled; summary needs lorebook', () => {
@@ -772,6 +824,164 @@ describe('promptSettingsPage', () => {
         // Unknown values fall back to append as well.
         const unknown = renderPage(makeSnapshot({ settings: { postProcessingEnabled: true, postProcessingMode: 'weird' } }));
         expect(findOne(unknown.root, hasAriaLabel('Post-processing mode')).value).toBe('append');
+    });
+
+    // ------------------------------------------------------------------
+    // Output format & structure template
+    // ------------------------------------------------------------------
+
+    /**
+     * @param {object} root Root fake element.
+     * @returns {object|null} The mounted mock builder element, or null.
+     */
+    function findBuilderElement(root) {
+        return findOne(root, hasClass('bc-task-sb-mock'));
+    }
+
+    test('the XML tagging checkbox is gone; the output format select lists the four formats with the current one selected', () => {
+        const { root } = renderPage(makeSnapshot());
+
+        expect(findOne(root, hasAriaLabel('XML tagging'))).toBe(null);
+
+        const formatSelect = findOne(root, hasAriaLabel('Output format'));
+        expect(formatSelect.tagName).toBe('SELECT');
+        expect(formatSelect.children.map((option) => option.value)).toEqual(['xml', 'json', 'toon', 'none']);
+        expect(formatSelect.children.map((option) => option.textContent)).toEqual(['XML', 'JSON', 'TOON', 'None (freeform)']);
+        expect(formatSelect.value).toBe('xml');
+
+        // A stored format renders selected.
+        const toon = renderPage(makeSnapshot({ structure: { format: 'toon', template: makeTemplate() } }));
+        expect(findOne(toon.root, hasAriaLabel('Output format')).value).toBe('toon');
+    });
+
+    test('changing the output format PATCHes { structure: { format } } exactly', () => {
+        const { actions } = renderPage(makeSnapshot());
+
+        const formatSelect = findOne(container, hasAriaLabel('Output format'));
+        formatSelect.value = 'json';
+        formatSelect.fire('change');
+        expect(actions.update).toHaveBeenCalledTimes(1);
+        expect(actions.update).toHaveBeenCalledWith({ structure: { format: 'json' } });
+    });
+
+    test('the format stale-warning hint only shows when generated pass outputs exist', () => {
+        // No pass has produced output yet → no warning.
+        const clean = renderPage(makeSnapshot({
+            passes: { transform1: { status: 'running', items: { 'a.png': { status: 'running' } } } },
+        }));
+        expect(findOne(clean.root, hasClass('bc-task-format-stale'))).toBe(null);
+
+        // A succeeded pass item → the warning line renders under the select.
+        const generated = renderPage(makeSnapshot({
+            passes: {
+                transform1: {
+                    status: 'succeeded',
+                    items: { 'a.png': { status: 'succeeded', output: 'AAA' }, 'b.png': { status: 'pending' } },
+                },
+            },
+        }));
+        const hint = findOne(generated.root, hasClass('bc-task-format-stale'));
+        expect(hint).not.toBe(null);
+        expect(hint.textContent).toBe('Changing the format marks all passes stale.');
+        expect(hint.parentElement).toBe(findOne(generated.root, hasAriaLabel('Output format')).parentElement);
+    });
+
+    test('the Minify XML row is visible for xml and hidden for other formats; it still PATCHes xmlMinify', () => {
+        const xml = renderPage(makeSnapshot());
+        const minify = findOne(xml.root, hasAriaLabel('Minify XML'));
+        expect(minify.parentElement.hidden).toBe(false);
+
+        minify.checked = true;
+        minify.fire('change');
+        expect(xml.actions.update).toHaveBeenCalledTimes(1);
+        expect(xml.actions.update).toHaveBeenLastCalledWith({ settings: { xmlMinify: true } });
+
+        for (const format of ['json', 'toon', 'none']) {
+            const page = renderPage(makeSnapshot({ structure: { format, template: makeTemplate() } }));
+            expect(findOne(page.root, hasAriaLabel('Minify XML')).parentElement.hidden).toBe(true);
+        }
+    });
+
+    test('the structure builder mounts once with the snapshot template and is kept across re-renders', () => {
+        const actions = makeActions();
+        const page = createPromptSettingsPage();
+        page.render(container, makeSnapshot(), actions);
+
+        expect(mockBuilders).toHaveLength(1);
+        const builder = mockBuilders[0];
+        expect(builder.options.structure).toEqual({ format: 'xml', template: makeTemplate() });
+        expect(findBuilderElement(container)).toBe(builder.element);
+
+        // State-driven re-render with identical structure: no new instance,
+        // no setStructure, and the same element re-appends into the rebuilt DOM.
+        page.render(container, makeSnapshot(), actions);
+        expect(mockBuilders).toHaveLength(1);
+        expect(builder.setStructure).not.toHaveBeenCalled();
+        expect(findBuilderElement(container)).toBe(builder.element);
+    });
+
+    test('builder commits PATCH { structure: { template } } sparsely', () => {
+        const { actions } = renderPage(makeSnapshot());
+        const builder = mockBuilders[0];
+
+        const nextTemplate = makeTemplate({ name: 'hero' });
+        builder.options.onCommit(nextTemplate);
+        expect(actions.update).toHaveBeenCalledTimes(1);
+        expect(actions.update).toHaveBeenCalledWith({ structure: { template: nextTemplate } });
+    });
+
+    test('format none swaps the builder canvas for the freeform hint; the tree is retained when switching back', () => {
+        const actions = makeActions();
+        const page = createPromptSettingsPage();
+        page.render(container, makeSnapshot({ structure: { format: 'none', template: makeTemplate() } }), actions);
+
+        expect(mockBuilders).toHaveLength(1);
+        const builder = mockBuilders[0];
+        expect(findBuilderElement(container)).toBe(null);
+        const hint = findOne(container, hasClass('bc-task-structure-freeform'));
+        expect(hint).not.toBe(null);
+        expect(hint.textContent).toBe('Freeform output — no structure enforced.');
+
+        // Switch back to xml: the same instance returns to the DOM with the
+        // same template (no reset to default).
+        page.render(container, makeSnapshot(), actions);
+        expect(mockBuilders).toHaveLength(1);
+        expect(findBuilderElement(container)).toBe(builder.element);
+        expect(builder.setStructure).toHaveBeenCalledTimes(1);
+        expect(builder.setStructure).toHaveBeenCalledWith({ format: 'xml', template: makeTemplate() });
+        expect(builder.getValue().template).toEqual(makeTemplate());
+    });
+
+    test('the builder absorbs a newer server-confirmed structure via setStructure', () => {
+        const actions = makeActions();
+        const page = createPromptSettingsPage();
+        page.render(container, makeSnapshot(), actions);
+        const builder = mockBuilders[0];
+        expect(builder.setStructure).not.toHaveBeenCalled();
+
+        const nextTemplate = makeTemplate({ name: 'hero', hint: 'new hint' });
+        page.render(container, makeSnapshot({ structure: { format: 'xml', template: nextTemplate } }), actions);
+        expect(builder.setStructure).toHaveBeenCalledTimes(1);
+        expect(builder.setStructure).toHaveBeenCalledWith({ format: 'xml', template: nextTemplate });
+        expect(builder.getValue().template).toEqual(nextTemplate);
+
+        // The absorbed state sticks: re-rendering the same snapshot does not push it again.
+        page.render(container, makeSnapshot({ structure: { format: 'xml', template: nextTemplate } }), actions);
+        expect(builder.setStructure).toHaveBeenCalledTimes(1);
+    });
+
+    test('page dispose disposes the builder; a later render mounts a fresh one', () => {
+        const actions = makeActions();
+        const page = createPromptSettingsPage();
+        page.render(container, makeSnapshot(), actions);
+        const builder = mockBuilders[0];
+
+        page.dispose();
+        expect(builder.dispose).toHaveBeenCalledTimes(1);
+
+        page.render(container, makeSnapshot(), actions);
+        expect(mockBuilders).toHaveLength(2);
+        expect(mockBuilders[1]).not.toBe(builder);
     });
 
     test('pass prompt textareas commit on change as sparse prompt patches', () => {

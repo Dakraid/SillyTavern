@@ -294,6 +294,20 @@
 	overflow-wrap: break-word;
 }
 
+/* --- Output group: format stale warning + structure template section --- */
+
+.bc-task-format-stale {
+	color: var(--SmartThemeEmColor);
+	opacity: 0.9;
+}
+
+.bc-task-structure-freeform {
+	margin: 0;
+	font-size: 0.85em;
+	font-style: italic;
+	opacity: 0.75;
+}
+
 /* --- Reduced motion --- */
 
 @media (prefers-reduced-motion: reduce) {

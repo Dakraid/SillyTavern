@@ -13,7 +13,12 @@
  * Apply/Dismiss. Below the workspaces, a grouped settings drawer (native
  * `<details>` sections) edits connection, token windows, processing
  * concurrency, output/lorebook, and optional passes — every control PATCHes sparsely on
- * `change`. Each prompt field (main, second pass, summary, post-processing)
+ * `change`. The Output group also selects the structured output format
+ * (XML/JSON/TOON/None — `structure.format`) and mounts the StructureBuilder
+ * component for the task's structure template (`structure.template`); the
+ * builder instance is created once and retained across re-renders, swapped
+ * for a freeform hint when the format is 'none'.
+ * Each prompt field (main, second pass, summary, post-processing)
  * has a preset row (select + Apply/Save/Delete) backed by the new
  * `bulk_combine_task_prompt_presets` store (`services/promptPresets.js`);
  * the legacy preset lists are migrated into that store lazily on first
@@ -35,6 +40,7 @@ import { openai_setting_names, openai_settings } from '../../../openai.js';
 import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 import { CONNECT_API_MAP } from '../../../slash-commands.js';
 import { escapeHtml } from '../../../utils.js';
+import { createStructureBuilder } from '../../components/StructureBuilder.js';
 import { deletePromptPreset, findPromptPresetIndex, getPromptPresets, savePromptPreset } from '../../services/promptPresets.js';
 import { resolveApiEntry, resolveCompletionSettings } from '../../services/resolveCompletionSettings.js';
 
@@ -59,6 +65,15 @@ const PRESET_LOAD_OPTION = '— Load preset —';
 const PRESET_APPLY_TITLE = 'Load the selected preset into the prompt and save it to the task.';
 const PRESET_SAVE_TITLE = 'Save the current prompt text as a named preset.';
 const PRESET_DELETE_TITLE = 'Delete the selected preset.';
+const STRUCTURE_STALE_HINT = 'Changing the format marks all passes stale.';
+const FREEFORM_STRUCTURE_HINT = 'Freeform output — no structure enforced.';
+
+/**
+ * Valid output formats (mirrors the server-side structure normalizer).
+ *
+ * @type {ReadonlyArray<string>}
+ */
+const STRUCTURE_FORMATS = Object.freeze(['xml', 'json', 'toon', 'none']);
 
 /**
  * Reads a record defensively (null/array/non-object → empty object).
@@ -168,6 +183,14 @@ export function createPromptSettingsPage() {
      * @type {Map<string, number|string>}
      */
     const selectedPresets = new Map();
+    /**
+     * The mounted StructureBuilder instance — created once and kept across
+     * re-renders (its element is re-appended after each rebuild; server
+     * state is absorbed via `setStructure`). Null until the first render.
+     *
+     * @type {{element: Element, setStructure: (structure: object) => void, getValue: () => {format: string, template: object[]}, dispose: () => void}|null}
+     */
+    let structureBuilder = null;
 
     /** @returns {object} Current task record (defensive). */
     function taskOf() {
@@ -177,6 +200,22 @@ export function createPromptSettingsPage() {
     /** @returns {object} Current task settings (defensive). */
     function settingsOf() {
         return recordOf(taskOf().settings);
+    }
+
+    /**
+     * Reads the task structure record (`{ format, template }`) defensively.
+     * Real snapshots always carry a server-normalized structure; missing
+     * pieces fall back to the new-task defaults (xml, builder default
+     * template).
+     *
+     * @returns {{format: string, template: object[]}} Structure record.
+     */
+    function structureOf() {
+        const structure = recordOf(taskOf().structure);
+        return {
+            format: STRUCTURE_FORMATS.includes(structure.format) ? structure.format : 'xml',
+            template: Array.isArray(structure.template) ? structure.template : [],
+        };
     }
 
     /**
@@ -243,6 +282,18 @@ export function createPromptSettingsPage() {
      */
     function patchSettings(key, value) {
         applyPatch(latestActions, { settings: { [key]: value } });
+    }
+
+    /**
+     * PATCHes the task structure sparsely. The server deep-merges records,
+     * so `{ format }` touches only the format and `{ template }` only the
+     * tree.
+     *
+     * @param {object} patch Sparse structure patch (`{ format }` or `{ template }`).
+     * @returns {void}
+     */
+    function patchStructure(patch) {
+        applyPatch(latestActions, { structure: patch });
     }
 
     /**
@@ -1069,13 +1120,88 @@ export function createPromptSettingsPage() {
     }
 
     /**
-     * Builds the Output / Lorebook group (destination + XML options).
+     * Whether any generated pass output exists (any pass item with status
+     * 'succeeded'). The format stale warning only matters once a format
+     * change would invalidate real results.
+     *
+     * @returns {boolean} True when at least one pass item succeeded.
+     */
+    function hasGeneratedOutputs() {
+        const passes = recordOf(taskOf().passes);
+        for (const pass of Object.values(passes)) {
+            const items = recordOf(recordOf(pass).items);
+            for (const item of Object.values(items)) {
+                if (recordOf(item).status === 'succeeded') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Mounts the StructureBuilder once and absorbs server-confirmed
+     * structure into it on later renders: when the snapshot's structure
+     * differs from the builder's committed value, `setStructure` pushes the
+     * snapshot state in (never clobbering an in-progress text draft — the
+     * component guards that internally). Returns the retained instance.
+     *
+     * @returns {{element: Element, setStructure: (structure: object) => void, getValue: () => {format: string, template: object[]}, dispose: () => void}} Builder instance.
+     */
+    function ensureStructureBuilder() {
+        const structure = structureOf();
+        if (structureBuilder === null) {
+            structureBuilder = createStructureBuilder({
+                structure,
+                onCommit: (template) => patchStructure({ template }),
+            });
+            return structureBuilder;
+        }
+        const current = structureBuilder.getValue();
+        if (current.format !== structure.format || JSON.stringify(current.template) !== JSON.stringify(structure.template)) {
+            structureBuilder.setStructure(structure);
+        }
+        return structureBuilder;
+    }
+
+    /**
+     * Builds the Structure template section: the mounted builder canvas, or
+     * — for freeform output — a hint paragraph (the builder instance is
+     * retained off-DOM so toggling back restores the same tree).
+     *
+     * @param {string} format Current output format.
+     * @returns {Element} Structure section.
+     */
+    function buildStructureSection(format) {
+        const builder = ensureStructureBuilder();
+        const section = document.createElement('div');
+        section.className = 'bc-task-field bc-task-structure';
+        const label = document.createElement('span');
+        label.className = 'bc-task-field-label';
+        label.textContent = 'Structure template';
+        section.append(label);
+        if (format === 'none') {
+            const hint = document.createElement('p');
+            hint.className = 'bc-task-structure-freeform';
+            hint.textContent = FREEFORM_STRUCTURE_HINT;
+            section.append(hint);
+        } else {
+            section.append(builder.element);
+        }
+        return section;
+    }
+
+    /**
+     * Builds the Output / Lorebook group (destination, output format, and
+     * the structure template editor).
      *
      * @returns {Element} Settings group.
      */
     function buildOutputGroup() {
         const settings = settingsOf();
+        const structure = structureOf();
         const destination = settings.destination === 'lorebook' ? 'lorebook' : 'card';
+        const format = structure.format;
 
         const destinationSelect = buildSelect({
             ariaLabel: 'Output destination',
@@ -1087,18 +1213,37 @@ export function createPromptSettingsPage() {
             onChange: (value) => patchSettings('destination', value === 'lorebook' ? 'lorebook' : 'card'),
         });
 
+        const formatSelect = buildSelect({
+            ariaLabel: 'Output format',
+            options: [
+                { value: 'xml', label: 'XML' },
+                { value: 'json', label: 'JSON' },
+                { value: 'toon', label: 'TOON' },
+                { value: 'none', label: 'None (freeform)' },
+            ],
+            value: format,
+            onChange: (value) => patchStructure({ format: STRUCTURE_FORMATS.includes(value) ? value : 'xml' }),
+        });
+        const formatField = buildField('Output format', formatSelect);
+        if (hasGeneratedOutputs()) {
+            const staleHint = document.createElement('span');
+            staleHint.className = 'bc-task-field-hint bc-task-format-stale';
+            staleHint.textContent = STRUCTURE_STALE_HINT;
+            formatField.append(staleHint);
+        }
+
+        const minifyRow = buildCheckbox({
+            label: 'Minify XML',
+            checked: settings.xmlMinify === true,
+            onChange: (checked) => patchSettings('xmlMinify', checked),
+        });
+        minifyRow.hidden = format !== 'xml';
+
         return buildGroup('output', 'Output / Lorebook', [
             buildField('Destination', destinationSelect, 'Lorebook output adds a summary pass over the combined cards.'),
-            buildCheckbox({
-                label: 'XML tagging',
-                checked: settings.xmlEnabled === true,
-                onChange: (checked) => patchSettings('xmlEnabled', checked),
-            }),
-            buildCheckbox({
-                label: 'Minify XML',
-                checked: settings.xmlMinify === true,
-                onChange: (checked) => patchSettings('xmlMinify', checked),
-            }),
+            formatField,
+            minifyRow,
+            buildStructureSection(format),
         ]);
     }
 
@@ -1416,6 +1561,8 @@ export function createPromptSettingsPage() {
             assistLaunchError = '';
             readOnlyMode = false;
             fieldRefs = new Map();
+            structureBuilder?.dispose?.();
+            structureBuilder = null;
         },
     };
 }
