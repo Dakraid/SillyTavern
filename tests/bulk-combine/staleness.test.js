@@ -115,6 +115,48 @@ describe('Bulk Combine pass staleness', () => {
         });
     });
 
+    test('includes source notes only in the transform1 input hash', () => {
+        const task = successfulTask();
+        const before = Object.fromEntries(['transform1', 'transform2', 'summary']
+            .map(passKey => [passKey, computePassInputHash(task, passKey)]));
+
+        task.sourceNotes.a = 'Emphasize Alpha';
+
+        expect(computePassInputHash(task, 'transform1')).not.toBe(before.transform1);
+        expect(computePassInputHash(task, 'transform2')).toBe(before.transform2);
+        expect(computePassInputHash(task, 'summary')).toBe(before.summary);
+    });
+
+    test('includes structure format and template in every pass input hash', () => {
+        const mutations = [
+            task => { task.structure.format = 'json'; },
+            task => { task.structure.template[0].hint = 'Changed contract'; },
+        ];
+
+        for (const mutate of mutations) {
+            const task = successfulTask();
+            const before = Object.fromEntries(['transform1', 'transform2', 'summary']
+                .map(passKey => [passKey, computePassInputHash(task, passKey)]));
+            mutate(task);
+
+            for (const passKey of ['transform1', 'transform2', 'summary']) {
+                expect(computePassInputHash(task, passKey)).not.toBe(before[passKey]);
+            }
+        }
+    });
+
+    test('computes identical pass hashes regardless of record key order', () => {
+        const first = successfulTask();
+        first.sourceNotes = { a: 'Alpha note', b: 'Beta note' };
+        const second = structuredClone(first);
+        second.sourceNotes = { b: 'Beta note', a: 'Alpha note' };
+        second.structure = { template: second.structure.template, format: second.structure.format };
+
+        for (const passKey of ['transform1', 'transform2', 'summary']) {
+            expect(computePassInputHash(second, passKey)).toBe(computePassInputHash(first, passKey));
+        }
+    });
+
     test('stales on token-window changes but not concurrency-only changes', () => {
         const tokenTask = successfulTask();
         tokenTask.settings.totalContextTokens++;

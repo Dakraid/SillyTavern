@@ -1,5 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 
+import { DEFAULT_TEMPLATE } from '../../public/scripts/bulk-combine/structured/templateModel.js';
 import {
     SCHEMA_VERSION,
     createEmptyTask,
@@ -54,6 +55,8 @@ describe('Bulk Combine task state', () => {
             secondPassEnabled: false,
         });
         expect(task.settings).not.toHaveProperty('mode');
+        expect(task.structure).toEqual({ format: 'xml', template: DEFAULT_TEMPLATE });
+        expect(task.sourceNotes).toEqual({});
         expect(task.prompts.main).toEqual({
             text: '',
             assistant: { request: '', proposal: '', diff: '', applied: false, error: '' },
@@ -62,6 +65,20 @@ describe('Bulk Combine task state', () => {
         expect(task.passes.transform2).toEqual({ status: 'pending', inputRevision: null, items: {} });
         expect(task.passes.summary).toEqual({ status: 'pending', inputRevision: null, items: {} });
         expect(isValidTask(task)).toBe(true);
+    });
+
+    test('deep-clones the default structure for every new task', () => {
+        const first = createEmptyTask({ name: 'First' });
+        const second = createEmptyTask({ name: 'Second' });
+
+        expect(first.structure.template).not.toBe(second.structure.template);
+        expect(first.structure.template).not.toBe(DEFAULT_TEMPLATE);
+        first.structure.template[0].name = 'changed';
+        first.structure.template[0].attributes[0].name = 'changed-attribute';
+
+        expect(second.structure.template).toEqual(DEFAULT_TEMPLATE);
+        expect(DEFAULT_TEMPLATE[0].name).toBe('character');
+        expect(DEFAULT_TEMPLATE[0].attributes[0].name).toBe('name');
     });
 
     test('repairs malformed partial records and normalization is idempotent', () => {
@@ -93,11 +110,57 @@ describe('Bulk Combine task state', () => {
         expect(normalizeTask(normalized)).toEqual(normalized);
     });
 
+    test('normalizes legacy tasks without structure as freeform without changing other fields', () => {
+        const legacy = {
+            id: '00000000-0000-4000-8000-000000000002',
+            name: 'Legacy',
+            revision: 3,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-02T00:00:00.000Z',
+            lastActivityAt: '2026-08-03T00:00:00.000Z',
+            sources: [{ key: 'alpha', name: 'Alpha' }],
+            settings: { xmlMinify: true },
+        };
+
+        const normalized = normalizeTask(legacy);
+        const explicitlyFreeform = normalizeTask({
+            ...legacy,
+            structure: { format: 'none', template: DEFAULT_TEMPLATE },
+            sourceNotes: {},
+        });
+
+        expect(normalized).toEqual(explicitlyFreeform);
+        expect(normalized.structure).toEqual({ format: 'none', template: DEFAULT_TEMPLATE });
+    });
+
+    test('normalizes present junk structure and source notes', () => {
+        expect(normalizeTask({ structure: null, sourceNotes: [] })).toMatchObject({
+            structure: { format: 'xml', template: DEFAULT_TEMPLATE },
+            sourceNotes: {},
+        });
+        expect(normalizeTask({
+            structure: { format: 'junk', template: 'junk' },
+            sourceNotes: { alpha: 42, beta: null, gamma: false },
+        })).toMatchObject({
+            structure: { format: 'xml', template: DEFAULT_TEMPLATE },
+            sourceNotes: { alpha: '42', beta: 'null', gamma: 'false' },
+        });
+    });
+
     test('rejects partial and malformed records with the shape guard', () => {
         expect(isValidTask(null)).toBe(false);
         expect(isValidTask({})).toBe(false);
         expect(isValidTask({ ...createEmptyTask({ name: 'Valid' }), revision: 0 })).toBe(false);
         expect(isValidTask({ ...createEmptyTask({ name: 'Valid' }), completion: null })).toBe(false);
+
+        const valid = createEmptyTask({ name: 'Valid' });
+        valid.sourceNotes = { alpha: 'Remember this' };
+        expect(isValidTask(valid)).toBe(true);
+        expect(isValidTask({ ...valid, structure: null })).toBe(false);
+        expect(isValidTask({ ...valid, structure: { format: 'csv', template: DEFAULT_TEMPLATE } })).toBe(false);
+        expect(isValidTask({ ...valid, structure: { format: 'xml', template: {} } })).toBe(false);
+        expect(isValidTask({ ...valid, sourceNotes: [] })).toBe(false);
+        expect(isValidTask({ ...valid, sourceNotes: { alpha: 7 } })).toBe(false);
     });
 
     test('migrates legacy combined and replace settings', () => {
@@ -115,6 +178,13 @@ describe('Bulk Combine task state', () => {
             postProcessingMode: 'append',
         });
         expect(normalized.settings).not.toHaveProperty('mode');
+    });
+
+    test('drops the removed xmlEnabled setting from legacy tasks', () => {
+        const normalized = normalizeTask({ settings: { xmlEnabled: true, xmlMinify: true } });
+
+        expect(normalized.settings).not.toHaveProperty('xmlEnabled');
+        expect(normalized.settings.xmlMinify).toBe(true);
     });
 
     test('joins transform1 outputs in source order and falls back to a legacy merged item', () => {

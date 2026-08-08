@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { DEFAULT_TEMPLATE, normalizeTemplate } from '../../../public/scripts/bulk-combine/structured/templateModel.js';
+
 export const SCHEMA_VERSION = 1;
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
 const PROMPT_KEYS = ['main', 'secondPass', 'summary', 'post'];
+const STRUCTURE_FORMATS = ['xml', 'json', 'toon', 'none'];
 
 /** Item key of the single merged item in merged passes. */
 export const COMBINED_KEY = '__combined__';
@@ -39,6 +42,10 @@ export function newPass() {
     return { status: 'pending', inputRevision: null, items: {} };
 }
 
+function defaultStructure(format = 'xml') {
+    return { format, template: normalizeTemplate(DEFAULT_TEMPLATE) };
+}
+
 function defaultSettings() {
     return {
         secondPassMode: 'individual',
@@ -48,7 +55,6 @@ function defaultSettings() {
         totalContextTokens: null,
         outputTokens: null,
         destination: 'card',
-        xmlEnabled: false,
         xmlMinify: false,
         postProcessingEnabled: false,
         postProcessingMode: 'append',
@@ -96,6 +102,8 @@ export function createEmptyTask({ name, id, createdAt } = {}) {
             interruptedAt: null,
         },
         sources: [],
+        structure: defaultStructure(),
+        sourceNotes: {},
         settings: defaultSettings(),
         prompts: defaultPrompts(),
         passes: defaultPasses(),
@@ -119,6 +127,20 @@ function normalizeInputRevision(value) {
         : null;
 }
 
+function normalizeStructure(input, isLegacy) {
+    if (isLegacy) return defaultStructure('none');
+    const structure = isRecord(input) ? input : {};
+    return {
+        format: STRUCTURE_FORMATS.includes(structure.format) ? structure.format : 'xml',
+        template: normalizeTemplate(Array.isArray(structure.template) ? structure.template : DEFAULT_TEMPLATE),
+    };
+}
+
+function normalizeSourceNotes(input) {
+    if (!isRecord(input)) return {};
+    return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, typeof value === 'string' ? value : String(value)]));
+}
+
 function normalizeSettings(input) {
     const defaults = defaultSettings();
     if (!isRecord(input)) return defaults;
@@ -131,7 +153,6 @@ function normalizeSettings(input) {
         totalContextTokens: normalizeNullableInteger(input.totalContextTokens),
         outputTokens: normalizeNullableInteger(input.outputTokens),
         destination: ['card', 'lorebook'].includes(input.destination) ? input.destination : defaults.destination,
-        xmlEnabled: typeof input.xmlEnabled === 'boolean' ? input.xmlEnabled : defaults.xmlEnabled,
         xmlMinify: typeof input.xmlMinify === 'boolean' ? input.xmlMinify : defaults.xmlMinify,
         postProcessingEnabled: typeof input.postProcessingEnabled === 'boolean' ? input.postProcessingEnabled : defaults.postProcessingEnabled,
         postProcessingMode: ['prepend', 'append'].includes(input.postProcessingMode)
@@ -219,6 +240,8 @@ export function normalizeTask(input) {
         activePass: typeof source.activePass === 'string' && source.activePass ? source.activePass : null,
         execution: normalizeExecution(source.execution),
         sources: Array.isArray(source.sources) ? clone(source.sources, []) : [],
+        structure: normalizeStructure(source.structure, !Object.hasOwn(source, 'structure')),
+        sourceNotes: normalizeSourceNotes(source.sourceNotes),
         settings: normalizeSettings(source.settings),
         prompts: Object.fromEntries(PROMPT_KEYS.map(key => [key, normalizePrompt(source.prompts?.[key])])),
         passes: Object.fromEntries(PASS_KEYS.map(key => [key, normalizePass(source.passes?.[key])])),
@@ -256,6 +279,14 @@ function isNullableInteger(value) {
     return value === null || (Number.isSafeInteger(value) && value >= 0);
 }
 
+function isStructure(value) {
+    return isRecord(value) && STRUCTURE_FORMATS.includes(value.format) && Array.isArray(value.template);
+}
+
+function isSourceNotes(value) {
+    return isRecord(value) && Object.values(value).every(note => typeof note === 'string');
+}
+
 function isSettings(value) {
     return isRecord(value)
         && ['individual', 'combined'].includes(value.secondPassMode)
@@ -265,7 +296,6 @@ function isSettings(value) {
         && isNullableInteger(value.totalContextTokens)
         && isNullableInteger(value.outputTokens)
         && ['card', 'lorebook'].includes(value.destination)
-        && typeof value.xmlEnabled === 'boolean'
         && typeof value.xmlMinify === 'boolean'
         && typeof value.postProcessingEnabled === 'boolean'
         && ['prepend', 'append'].includes(value.postProcessingMode)
@@ -294,6 +324,8 @@ export function isValidTask(input) {
         && (input.activePass === null || typeof input.activePass === 'string')
         && isExecution(input.execution)
         && Array.isArray(input.sources)
+        && isStructure(input.structure)
+        && isSourceNotes(input.sourceNotes)
         && isSettings(input.settings)
         && PROMPT_KEYS.every(key => isPrompt(input.prompts?.[key]))
         && PASS_KEYS.every(key => isPass(input.passes?.[key]))
@@ -397,11 +429,6 @@ function passStaleness(pass, currentRevision, upstreamStale = false) {
         : { stale: true, reason: 'input_changed' };
 }
 
-/**
- * Derives pass staleness without changing the persisted task or its outputs.
- * @param {object} task Bulk Combine task
- * @returns {object} Derived staleness for each generated pass
- */
 // Shared input-hash contract used by BOTH the runner (to record inputRevision on
 // success) and deriveStaleness (to detect drift). They MUST agree field-for-field
 // or staleness will be wrong. Mirrors the runner's per-pass input/prompt derivation.
@@ -411,7 +438,9 @@ function passInputPrompts(task, passKey) {
     return [task.prompts.main.text];
 }
 function passInputSources(task, passKey) {
-    if (passKey === 'transform1') return task.sources;
+    if (passKey === 'transform1') {
+        return task.sources.map(source => ({ ...source, notes: task.sourceNotes?.[source.key] ?? '' }));
+    }
     if (passKey === 'transform2') {
         if (!task.settings.secondPassEnabled) return [];
         if (task.settings.secondPassMode === 'combined') {
@@ -441,6 +470,7 @@ export function computePassInputHash(task, passKey) {
         sources: passInputSources(task, passKey),
         prompts: passInputPrompts(task, passKey),
         settings: relevantSettings(task.settings, task.completion),
+        structure: { format: task.structure.format, template: task.structure.template },
     });
 }
 
