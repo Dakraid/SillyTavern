@@ -13,12 +13,13 @@ import {
     transform2CombinedDocument,
 } from './task-state.js';
 import {
-    CORE_FIELDS,
     buildIndividualPrompt,
     buildMergedPassPrompt,
     buildPostProcessPrompt,
     preflightTokens,
+    resolveCaptureFields,
 } from './prompt-builders.js';
+import { isRefusal } from './refusal.js';
 import { toonDecode, toonEncode } from './toon-codec.js';
 
 const PASS_KEYS = ['transform1', 'transform2', 'summary'];
@@ -52,6 +53,61 @@ function completionContent(result) {
         throw completionError(result);
     }
     return typeof result.content === 'string' ? result.content : String(result.content ?? '');
+}
+
+class RefusalRetryableError extends Error {}
+
+class RefusalPersistedError extends Error {
+    constructor(output, retries, attempts) {
+        super(`Model refusal persisted after ${retries} retries`);
+        this.name = 'RefusalPersistedError';
+        this.output = output;
+        this.attempts = attempts;
+        // Stops withRetries after the configured refusal budget is exhausted.
+        this.status = 400;
+    }
+}
+
+async function generatePassContent({
+    executeCompletion,
+    prompt,
+    task,
+    userDirectories,
+    signal,
+    onAttempt,
+}) {
+    const limit = task.settings.refusalRetries;
+    let apiAttempts = 0;
+    let refusals = 0;
+    let transientFailures = 0;
+    const content = await withRetries(async () => {
+        apiAttempts++;
+        onAttempt?.();
+        let output;
+        try {
+            output = completionContent(await executeCompletion({
+                body: {
+                    ...(task.completion || {}),
+                    messages: [{ role: 'user', content: prompt }],
+                    stream: false,
+                },
+                userDirectories,
+                signal,
+            }));
+            if (!output.trim()) throw new Error('Completion returned empty content');
+        } catch (error) {
+            transientFailures++;
+            if (transientFailures >= 3 && error && typeof error === 'object') error.status = 400;
+            throw error;
+        }
+        if (limit > 0 && isRefusal(output)) {
+            refusals++;
+            if (refusals <= limit) throw new RefusalRetryableError();
+            throw new RefusalPersistedError(output, limit, apiAttempts);
+        }
+        return output;
+    }, signal, 3 + limit);
+    return { content, apiAttempts };
 }
 
 function stripCodeFences(content) {
@@ -359,7 +415,13 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                     const extras = passKey === 'transform1'
                         ? { note: task.sourceNotes?.[key] ?? '', structureInstructions }
                         : { structureInstructions };
-                    prompts.set(key, buildIndividualPrompt(inputs.get(key), text, CORE_FIELDS, hints.get(key), extras));
+                    prompts.set(key, buildIndividualPrompt(
+                        inputs.get(key),
+                        text,
+                        resolveCaptureFields(task, key),
+                        hints.get(key),
+                        extras,
+                    ));
                 }
             }
 
@@ -442,17 +504,14 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         draft.passes[passKey].items[COMBINED_KEY].status = 'running';
                     });
                     sendEvent(taskId, passKey, 'item_started', { itemKey: COMBINED_KEY });
-                    const content = await withRetries(async () => {
-                        attempts++;
-                        // This run-time completion snapshot is the frontend's sanitized config-resolution seam; the executor resolves secret_id.
-                        const output = completionContent(await executeCompletion({
-                            body: { ...(task.completion || {}), messages: [{ role: 'user', content: prompts.get(COMBINED_KEY) }], stream: false },
-                            userDirectories,
-                            signal: combinedSignal,
-                        }));
-                        if (!output.trim()) throw new Error('Completion returned empty content');
-                        return output;
-                    }, combinedSignal, 3);
+                    const { content } = await generatePassContent({
+                        executeCompletion,
+                        prompt: prompts.get(COMBINED_KEY),
+                        task,
+                        userDirectories,
+                        signal: combinedSignal,
+                        onAttempt: () => attempts++,
+                    });
                     // One big pass: the whole response is the merged result.
                     const validation = validateGeneratedItem(task, passKey, content);
                     await repo.checkpoint(taskId, draft => {
@@ -472,7 +531,12 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                                 if (item.status === 'running') item.status = 'interrupted';
                             } else {
                                 item.status = 'failed';
-                                item.error = String(error);
+                                if (error instanceof RefusalPersistedError) {
+                                    item.output = error.output;
+                                    item.error = error.message;
+                                } else {
+                                    item.error = String(error);
+                                }
                             }
                             item.attempts += attempts;
                             if (attempts > 0) item.hintApplied = Boolean(hints.get(COMBINED_KEY)?.trim());
@@ -480,7 +544,10 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                         if (!signal.aborted && combinedSignal.aborted) {
                             sendEvent(taskId, passKey, 'item_cancelled', { itemKey: COMBINED_KEY });
                         } else if (!signal.aborted) {
-                            sendEvent(taskId, passKey, 'item_failed', { itemKey: COMBINED_KEY, error: String(error) });
+                            sendEvent(taskId, passKey, 'item_failed', {
+                                itemKey: COMBINED_KEY,
+                                error: error instanceof RefusalPersistedError ? error.message : String(error),
+                            });
                         }
                     } catch {
                         // A failed checkpoint must not escape the settled combined queue item.
@@ -501,17 +568,14 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                             draft.passes[passKey].items[key].status = 'running';
                         });
                         sendEvent(taskId, passKey, 'item_started', { itemKey: key });
-                        const content = await withRetries(async () => {
-                            attempts++;
-                            // This run-time completion snapshot is the frontend's sanitized config-resolution seam; the executor resolves secret_id.
-                            const output = completionContent(await executeCompletion({
-                                body: { ...(task.completion || {}), messages: [{ role: 'user', content: prompts.get(key) }], stream: false },
-                                userDirectories,
-                                signal: itemSignal,
-                            }));
-                            if (!output.trim()) throw new Error('Completion returned empty content');
-                            return output;
-                        }, itemSignal, 3);
+                        const { content } = await generatePassContent({
+                            executeCompletion,
+                            prompt: prompts.get(key),
+                            task,
+                            userDirectories,
+                            signal: itemSignal,
+                            onAttempt: () => attempts++,
+                        });
                         const validation = validateGeneratedItem(task, passKey, content);
                         await repo.checkpoint(taskId, draft => {
                             const item = draft.passes[passKey].items[key];
@@ -534,7 +598,12 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                                     if (item.status === 'running' || item.status === 'queued') item.status = 'interrupted';
                                 } else {
                                     item.status = 'failed';
-                                    item.error = String(error);
+                                    if (error instanceof RefusalPersistedError) {
+                                        item.output = error.output;
+                                        item.error = error.message;
+                                    } else {
+                                        item.error = String(error);
+                                    }
                                 }
                                 item.attempts += attempts;
                                 if (attempts > 0) item.hintApplied = Boolean(hints.get(key)?.trim());
@@ -542,7 +611,10 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                             if (itemSignal.aborted && !signal.aborted) {
                                 sendEvent(taskId, passKey, 'item_cancelled', { itemKey: key });
                             } else if (!signal.aborted) {
-                                sendEvent(taskId, passKey, 'item_failed', { itemKey: key, error: String(error) });
+                                sendEvent(taskId, passKey, 'item_failed', {
+                                    itemKey: key,
+                                    error: error instanceof RefusalPersistedError ? error.message : String(error),
+                                });
                             }
                         } catch {
                             // Every pool task settles even when its failure checkpoint cannot be written.
@@ -719,18 +791,13 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 }, countTokens);
                 if (!preflight.ok) throw tokenLimitError(preflight, task.settings.totalContextTokens);
 
-                const content = await withRetries(async () => {
-                    throwIfAborted(signal);
-                    return completionContent(await executeCompletion({
-                        body: {
-                            ...(task.completion || {}),
-                            messages: [{ role: 'user', content: prompt }],
-                            stream: false,
-                        },
-                        userDirectories,
-                        signal,
-                    }));
-                }, signal, 3);
+                const { content } = await generatePassContent({
+                    executeCompletion,
+                    prompt,
+                    task,
+                    userDirectories,
+                    signal,
+                });
                 const result = applyPostProcess(input, content, mode, task.structure.format);
                 const ranAt = new Date().toISOString();
                 await repo.checkpoint(taskId, draft => {
@@ -746,16 +813,18 @@ export function createTaskRunner({ executeCompletion, countTokens, emit } = {}) 
                 sendEvent(taskId, 'post', 'post_process_completed');
                 return { status: 'succeeded', output: result.description };
             } catch (error) {
+                const refusal = error instanceof RefusalPersistedError;
+                const message = refusal ? error.message : String(error);
                 await repo.checkpoint(taskId, draft => {
                     draft.post = {
                         status: 'failed',
                         mode,
                         input,
-                        output: '',
-                        error: String(error),
+                        output: refusal ? error.output : '',
+                        error: message,
                     };
                 });
-                sendEvent(taskId, 'post', 'post_process_failed', { error: String(error) });
+                sendEvent(taskId, 'post', 'post_process_failed', { error: message });
                 throw error;
             }
         } finally {

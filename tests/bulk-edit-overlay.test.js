@@ -297,7 +297,7 @@ describe('minifyXml', () => {
         const input =
 			'<character>\n  <name>Alice</name>\n  <desc>Text</desc>\n</character>';
         expect(parserMod.minifyXml(input, { singleLine: true })).toBe(
-            '<character> <name>Alice</name> <desc>Text</desc> </character>',
+            '<character><name>Alice</name><desc>Text</desc></character>',
         );
     });
 

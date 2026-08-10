@@ -4,12 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { BulkCombineTaskRepository } from '../../src/util/bulk-combine/task-repository.js';
+import { resolveCaptureFields } from '../../src/util/bulk-combine/prompt-builders.js';
 import { createTaskRunner } from '../../src/util/bulk-combine/task-runner.js';
 import {
     COMBINED_KEY,
     computePassInputHash,
     createEmptyTask,
     deriveStaleness,
+    hashInputs,
     relevantSettings,
 } from '../../src/util/bulk-combine/task-state.js';
 
@@ -157,14 +159,47 @@ describe('Bulk Combine pass staleness', () => {
         }
     });
 
-    test('stales on token-window changes but not concurrency-only changes', () => {
+    test('hashes resolved capture fields exactly as the runner uses them', () => {
+        const task = successfulTask();
+        task.settings.fields = ['scenario'];
+        task.sourceFields = { a: ['first_mes'], b: null };
+
+        const transform1Sources = task.sources.map(item => ({
+            ...item,
+            notes: task.sourceNotes[item.key] ?? '',
+            captureFields: resolveCaptureFields(task, item.key),
+        }));
+        expect(computePassInputHash(task, 'transform1')).toBe(hashInputs({
+            sources: transform1Sources,
+            prompts: [task.prompts.main.text],
+            settings: relevantSettings(task.settings, task.completion),
+            structure: { format: task.structure.format, template: task.structure.template },
+        }));
+
+        const transform2Sources = task.sources.map(item => ({
+            ...item,
+            fields: { ...item.fields, description: task.passes.transform1.items[item.key].output },
+            captureFields: resolveCaptureFields(task, item.key),
+        }));
+        expect(computePassInputHash(task, 'transform2')).toBe(hashInputs({
+            sources: transform2Sources,
+            prompts: [task.prompts.main.text, task.prompts.secondPass.text],
+            settings: relevantSettings(task.settings, task.completion),
+            structure: { format: task.structure.format, template: task.structure.template },
+        }));
+    });
+
+    test('stales on token-window changes but not execution-only changes', () => {
         const tokenTask = successfulTask();
         tokenTask.settings.totalContextTokens++;
         expect(deriveStaleness(tokenTask).transform1).toEqual({ stale: true, reason: 'input_changed' });
 
-        const concurrencyTask = successfulTask();
-        concurrencyTask.settings.concurrency++;
-        expect(deriveStaleness(concurrencyTask).transform1).toEqual({ stale: false, reason: 'current' });
+        for (const setting of ['concurrency', 'refusalRetries']) {
+            const task = successfulTask();
+            task.settings[setting]++;
+            expect(deriveStaleness(task).transform1).toEqual({ stale: false, reason: 'current' });
+            expect(relevantSettings(task.settings, task.completion)).not.toHaveProperty(setting);
+        }
     });
 
     test('stales a real normalized transform when model or temperature changes', async () => {

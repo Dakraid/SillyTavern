@@ -270,7 +270,7 @@ describe('bulk combine artifact assembler', () => {
         xmlTask.structure.format = 'xml';
         xmlTask.passes.transform1.items.a.output = '<character>\n  <summary>A</summary>\n</character>';
         xmlTask.passes.transform1.items.b.status = 'failed';
-        expect(buildMergedCardDescription(xmlTask)).toBe('<character> <summary>A</summary> </character>');
+        expect(buildMergedCardDescription(xmlTask)).toBe('<character><summary>A</summary></character>');
 
         const jsonTask = makeTask();
         jsonTask.structure.format = 'json';

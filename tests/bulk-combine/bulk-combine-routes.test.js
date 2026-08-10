@@ -184,7 +184,7 @@ describe('/api/bulk-combine task routes', () => {
         expect(Object.hasOwn(Object.prototype, 'polluted')).toBe(false);
     });
 
-    test('PATCH normalizes structure/sourceNotes and does not expose item issues', async () => {
+    test('PATCH normalizes structure/sourceNotes/sourceFields and does not expose item issues', async () => {
         const { repo, task } = await createSeededTask(draft => {
             draft.passes.transform1.items.a = {
                 status: 'succeeded',
@@ -203,6 +203,7 @@ describe('/api/bulk-combine task routes', () => {
                         template: [{ name: 42, junk: 'drop', children: 'wrong' }],
                     },
                     sourceNotes: { a: 17 },
+                    sourceFields: { a: ['scenario', 'junk'], b: null },
                     passes: {
                         transform1: {
                             items: {
@@ -226,6 +227,7 @@ describe('/api/bulk-combine task routes', () => {
                 template: [{ name: '42', children: [] }],
             },
             sourceNotes: { a: '17' },
+            sourceFields: { a: ['scenario'] },
             completion: { model: 'safe-model' },
             passes: {
                 transform1: {
@@ -246,11 +248,12 @@ describe('/api/bulk-combine task routes', () => {
             params: { id: task.id },
             body: {
                 expectedRevision: response.body.revision,
-                patch: { structure: 'wrong', sourceNotes: [] },
+                patch: { structure: 'wrong', sourceNotes: [], sourceFields: { a: null } },
             },
         });
         expect(junk.body.structure).toMatchObject({ format: 'xml', template: [{ name: 'character' }] });
         expect(junk.body.sourceNotes).toEqual({});
+        expect(junk.body.sourceFields).toEqual({});
         await expect(repo.getTask(task.id)).resolves.toEqual(junk.body);
     });
 

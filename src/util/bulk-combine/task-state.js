@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { DEFAULT_TEMPLATE, normalizeTemplate } from '../../../public/scripts/bulk-combine/structured/templateModel.js';
+import { OPTIONAL_FIELDS, resolveCaptureFields } from './prompt-builders.js';
 
 export const SCHEMA_VERSION = 1;
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -59,6 +60,8 @@ function defaultSettings() {
         postProcessingEnabled: false,
         postProcessingMode: 'append',
         secondPassEnabled: false,
+        fields: [...OPTIONAL_FIELDS],
+        refusalRetries: 3,
     };
 }
 
@@ -104,6 +107,7 @@ export function createEmptyTask({ name, id, createdAt } = {}) {
         sources: [],
         structure: defaultStructure(),
         sourceNotes: {},
+        sourceFields: {},
         settings: defaultSettings(),
         prompts: defaultPrompts(),
         passes: defaultPasses(),
@@ -141,6 +145,13 @@ function normalizeSourceNotes(input) {
     return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, typeof value === 'string' ? value : String(value)]));
 }
 
+function normalizeSourceFields(input) {
+    if (!isRecord(input)) return {};
+    return Object.fromEntries(Object.entries(input)
+        .filter(([, fields]) => Array.isArray(fields))
+        .map(([key, fields]) => [key, OPTIONAL_FIELDS.filter(field => fields.includes(field))]));
+}
+
 function normalizeSettings(input) {
     const defaults = defaultSettings();
     if (!isRecord(input)) return defaults;
@@ -159,6 +170,12 @@ function normalizeSettings(input) {
             ? input.postProcessingMode
             : defaults.postProcessingMode,
         secondPassEnabled: typeof input.secondPassEnabled === 'boolean' ? input.secondPassEnabled : defaults.secondPassEnabled,
+        fields: Array.isArray(input.fields)
+            ? OPTIONAL_FIELDS.filter(field => input.fields.includes(field))
+            : defaults.fields,
+        refusalRetries: Number.isSafeInteger(input.refusalRetries) && input.refusalRetries >= 0 && input.refusalRetries <= 5
+            ? input.refusalRetries
+            : defaults.refusalRetries,
     };
 }
 
@@ -242,6 +259,7 @@ export function normalizeTask(input) {
         sources: Array.isArray(source.sources) ? clone(source.sources, []) : [],
         structure: normalizeStructure(source.structure, !Object.hasOwn(source, 'structure')),
         sourceNotes: normalizeSourceNotes(source.sourceNotes),
+        sourceFields: normalizeSourceFields(source.sourceFields),
         settings: normalizeSettings(source.settings),
         prompts: Object.fromEntries(PROMPT_KEYS.map(key => [key, normalizePrompt(source.prompts?.[key])])),
         passes: Object.fromEntries(PASS_KEYS.map(key => [key, normalizePass(source.passes?.[key])])),
@@ -287,6 +305,14 @@ function isSourceNotes(value) {
     return isRecord(value) && Object.values(value).every(note => typeof note === 'string');
 }
 
+function isFieldSelection(value) {
+    return Array.isArray(value) && value.every(field => OPTIONAL_FIELDS.includes(field));
+}
+
+function isSourceFields(value) {
+    return isRecord(value) && Object.values(value).every(isFieldSelection);
+}
+
 function isSettings(value) {
     return isRecord(value)
         && ['individual', 'combined'].includes(value.secondPassMode)
@@ -299,7 +325,10 @@ function isSettings(value) {
         && typeof value.xmlMinify === 'boolean'
         && typeof value.postProcessingEnabled === 'boolean'
         && ['prepend', 'append'].includes(value.postProcessingMode)
-        && typeof value.secondPassEnabled === 'boolean';
+        && typeof value.secondPassEnabled === 'boolean'
+        && isFieldSelection(value.fields)
+        && Number.isSafeInteger(value.refusalRetries)
+        && value.refusalRetries >= 0 && value.refusalRetries <= 5;
 }
 
 function isExecution(value) {
@@ -326,6 +355,7 @@ export function isValidTask(input) {
         && Array.isArray(input.sources)
         && isStructure(input.structure)
         && isSourceNotes(input.sourceNotes)
+        && isSourceFields(input.sourceFields)
         && isSettings(input.settings)
         && PROMPT_KEYS.every(key => isPrompt(input.prompts?.[key]))
         && PASS_KEYS.every(key => isPass(input.passes?.[key]))
@@ -392,6 +422,7 @@ function sourcesWithSucceededOutputs(task, pass) {
                 ...source.fields,
                 description: pass.items[source.key].output,
             },
+            captureFields: resolveCaptureFields(task, source.key),
         }));
 }
 
@@ -439,7 +470,11 @@ function passInputPrompts(task, passKey) {
 }
 function passInputSources(task, passKey) {
     if (passKey === 'transform1') {
-        return task.sources.map(source => ({ ...source, notes: task.sourceNotes?.[source.key] ?? '' }));
+        return task.sources.map(source => ({
+            ...source,
+            notes: task.sourceNotes?.[source.key] ?? '',
+            captureFields: resolveCaptureFields(task, source.key),
+        }));
     }
     if (passKey === 'transform2') {
         if (!task.settings.secondPassEnabled) return [];

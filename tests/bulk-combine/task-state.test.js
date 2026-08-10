@@ -53,10 +53,13 @@ describe('Bulk Combine task state', () => {
             postProcessingEnabled: false,
             postProcessingMode: 'append',
             secondPassEnabled: false,
+            fields: ['personality', 'scenario', 'first_mes', 'mes_example'],
+            refusalRetries: 3,
         });
         expect(task.settings).not.toHaveProperty('mode');
         expect(task.structure).toEqual({ format: 'xml', template: DEFAULT_TEMPLATE });
         expect(task.sourceNotes).toEqual({});
+        expect(task.sourceFields).toEqual({});
         expect(task.prompts.main).toEqual({
             text: '',
             assistant: { request: '', proposal: '', diff: '', applied: false, error: '' },
@@ -133,18 +136,46 @@ describe('Bulk Combine task state', () => {
         expect(normalized.structure).toEqual({ format: 'none', template: DEFAULT_TEMPLATE });
     });
 
-    test('normalizes present junk structure and source notes', () => {
-        expect(normalizeTask({ structure: null, sourceNotes: [] })).toMatchObject({
+    test('normalizes present junk structure, source notes, and source fields', () => {
+        expect(normalizeTask({ structure: null, sourceNotes: [], sourceFields: [] })).toMatchObject({
             structure: { format: 'xml', template: DEFAULT_TEMPLATE },
             sourceNotes: {},
+            sourceFields: {},
         });
         expect(normalizeTask({
             structure: { format: 'junk', template: 'junk' },
             sourceNotes: { alpha: 42, beta: null, gamma: false },
+            sourceFields: {
+                alpha: ['scenario', 'junk', 'scenario'],
+                beta: null,
+                gamma: 'personality',
+                delta: [42, 'first_mes'],
+            },
         })).toMatchObject({
             structure: { format: 'xml', template: DEFAULT_TEMPLATE },
             sourceNotes: { alpha: '42', beta: 'null', gamma: 'false' },
+            sourceFields: {
+                alpha: ['scenario'],
+                delta: ['first_mes'],
+            },
         });
+    });
+
+    test('normalizes captured fields and bounded refusal retries', () => {
+        expect(normalizeTask({ settings: {
+            fields: ['mes_example', 'junk', 'personality', 'mes_example'],
+            refusalRetries: 0,
+        } }).settings).toMatchObject({
+            fields: ['personality', 'mes_example'],
+            refusalRetries: 0,
+        });
+
+        for (const refusalRetries of [-1, 6, 2.5, '2', null]) {
+            expect(normalizeTask({ settings: { fields: 'scenario', refusalRetries } }).settings).toMatchObject({
+                fields: ['personality', 'scenario', 'first_mes', 'mes_example'],
+                refusalRetries: 3,
+            });
+        }
     });
 
     test('rejects partial and malformed records with the shape guard', () => {
@@ -161,6 +192,10 @@ describe('Bulk Combine task state', () => {
         expect(isValidTask({ ...valid, structure: { format: 'xml', template: {} } })).toBe(false);
         expect(isValidTask({ ...valid, sourceNotes: [] })).toBe(false);
         expect(isValidTask({ ...valid, sourceNotes: { alpha: 7 } })).toBe(false);
+        expect(isValidTask({ ...valid, sourceFields: [] })).toBe(false);
+        expect(isValidTask({ ...valid, sourceFields: { alpha: null } })).toBe(false);
+        expect(isValidTask({ ...valid, settings: { ...valid.settings, fields: ['junk'] } })).toBe(false);
+        expect(isValidTask({ ...valid, settings: { ...valid.settings, refusalRetries: 6 } })).toBe(false);
     });
 
     test('migrates legacy combined and replace settings', () => {

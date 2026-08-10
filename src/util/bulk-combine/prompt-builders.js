@@ -41,6 +41,11 @@ export function normalizeSelectedFields(fields) {
     ];
 }
 
+export function resolveCaptureFields(task, sourceKey) {
+    const override = task?.sourceFields?.[sourceKey];
+    return normalizeSelectedFields(Array.isArray(override) ? override : task?.settings?.fields);
+}
+
 export function getSourceField(source, field) {
     try {
         const value = field === 'name'

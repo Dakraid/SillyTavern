@@ -165,6 +165,41 @@ describe('bulk combine task runner', () => {
         expect(prompt.indexOf('<name>Character 1</name>')).toBeLessThan(prompt.indexOf('Character notes: Keep the silver scar'));
     });
 
+    test('uses per-source capture fields and preserves all fields for legacy tasks', async () => {
+        const selected = await createTask({ count: 1 });
+        await repo.checkpoint(selected.id, draft => {
+            draft.settings.fields = ['scenario'];
+            draft.sourceFields.a = ['first_mes'];
+        });
+        const selectedExecutor = jest.fn(async () => completion('selected output'));
+        const selectedRunner = createTaskRunner({ executeCompletion: selectedExecutor, countTokens: async () => 1 });
+
+        await selectedRunner.runPass({ taskId: selected.id, passKey: 'transform1', repo, userDirectories: {} });
+
+        const selectedPrompt = selectedExecutor.mock.calls[0][0].body.messages[0].content;
+        expect(selectedPrompt).toContain('<name>Character 1</name>');
+        expect(selectedPrompt).toContain('<description>Character 1 description</description>');
+        expect(selectedPrompt).toContain('<first_mes></first_mes>');
+        expect(selectedPrompt).not.toContain('<personality>');
+        expect(selectedPrompt).not.toContain('<scenario>');
+        expect(selectedPrompt).not.toContain('<mes_example>');
+
+        const legacy = await createTask({ count: 1 });
+        await repo.checkpoint(legacy.id, draft => {
+            delete draft.settings.fields;
+            delete draft.sourceFields;
+        });
+        const legacyExecutor = jest.fn(async () => completion('legacy output'));
+        const legacyRunner = createTaskRunner({ executeCompletion: legacyExecutor, countTokens: async () => 1 });
+
+        await legacyRunner.runPass({ taskId: legacy.id, passKey: 'transform1', repo, userDirectories: {} });
+
+        const legacyPrompt = legacyExecutor.mock.calls[0][0].body.messages[0].content;
+        for (const field of ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example']) {
+            expect(legacyPrompt).toContain(`<${field}>`);
+        }
+    });
+
     test('retains unparseable structured output and fails the item', async () => {
         const task = await createTask({ count: 1 });
         await repo.checkpoint(task.id, draft => {
@@ -357,6 +392,65 @@ describe('bulk combine task runner', () => {
         });
     });
 
+    test('retries a refusal and counts every completion attempt', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.refusalRetries = 1;
+        });
+        const executeCompletion = jest.fn()
+            .mockResolvedValueOnce(completion('I\'m sorry, but I can\'t do that.'))
+            .mockResolvedValueOnce(completion('Accepted output'));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const result = await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        const item = (await repo.getTask(task.id)).passes.transform1.items.a;
+
+        expect(result.items).toEqual({ a: 'succeeded' });
+        expect(executeCompletion).toHaveBeenCalledTimes(2);
+        expect(item).toMatchObject({ status: 'succeeded', output: 'Accepted output', attempts: 2, error: null });
+    });
+
+    test('fails after persistent refusals while retaining the last output', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.refusalRetries = 1;
+        });
+        const lastRefusal = 'I must decline this request.';
+        const executeCompletion = jest.fn()
+            .mockResolvedValueOnce(completion('I can\'t help with that.'))
+            .mockResolvedValueOnce(completion(lastRefusal));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const result = await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        const item = (await repo.getTask(task.id)).passes.transform1.items.a;
+
+        expect(result).toMatchObject({ status: 'failed', items: { a: 'failed' } });
+        expect(executeCompletion).toHaveBeenCalledTimes(2);
+        expect(item).toMatchObject({
+            status: 'failed',
+            output: lastRefusal,
+            error: 'Model refusal persisted after 1 retries',
+            attempts: 2,
+        });
+    });
+
+    test('does not detect or retry refusals when refusal retries are disabled', async () => {
+        const task = await createTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.refusalRetries = 0;
+        });
+        const refusal = 'I can\'t do that.';
+        const executeCompletion = jest.fn(async () => completion(refusal));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const result = await runner.runPass({ taskId: task.id, passKey: 'transform1', repo, userDirectories: {} });
+        const item = (await repo.getTask(task.id)).passes.transform1.items.a;
+
+        expect(result.items).toEqual({ a: 'succeeded' });
+        expect(executeCompletion).toHaveBeenCalledTimes(1);
+        expect(item).toMatchObject({ status: 'succeeded', output: refusal, attempts: 1, error: null });
+    });
+
     test('blocks only overflowing individual prompts before execution', async () => {
         const task = await createTask();
         await repo.checkpoint(task.id, draft => {
@@ -414,6 +508,30 @@ describe('bulk combine task runner', () => {
         expect(executeCompletion).toHaveBeenCalledTimes(2);
         expect(summaryPrompt).toContain('<merged>T2</merged>');
         expect(summary.items).toEqual({ __combined__: 'succeeded' });
+    });
+
+    test('retains a persistent refusal from a merged pass', async () => {
+        const task = await createTask({ count: 1, secondPassMode: 'combined' });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.secondPassEnabled = true;
+            draft.settings.refusalRetries = 1;
+            draft.passes.transform1.items.a = { status: 'succeeded', output: 'T1 Alpha' };
+        });
+        const refusal = 'I refuse this request.';
+        const executeCompletion = jest.fn(async () => completion(refusal));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        const result = await runner.runPass({ taskId: task.id, passKey: 'transform2', repo, userDirectories: {} });
+        const item = (await repo.getTask(task.id)).passes.transform2.items.__combined__;
+
+        expect(result).toMatchObject({ status: 'failed', items: { __combined__: 'failed' } });
+        expect(executeCompletion).toHaveBeenCalledTimes(2);
+        expect(item).toMatchObject({
+            status: 'failed',
+            output: refusal,
+            error: 'Model refusal persisted after 1 retries',
+            attempts: 2,
+        });
     });
 
     test('skips a combined transform2 without any transform1 outputs (no LLM call)', async () => {
@@ -842,6 +960,27 @@ describe('bulk combine task runner', () => {
             ranAt: expect.any(String),
         });
         expect(events.at(-1).type).toBe('post_process_completed');
+    });
+
+    test('retains a persistent refusal from post processing', async () => {
+        const task = await preparePostTask({ count: 1 });
+        await repo.checkpoint(task.id, draft => {
+            draft.settings.refusalRetries = 1;
+        });
+        const refusal = 'I am unable to comply with that request.';
+        const executeCompletion = jest.fn(async () => completion(refusal));
+        const runner = createTaskRunner({ executeCompletion, countTokens: async () => 1 });
+
+        await expect(runner.runPostProcess({ taskId: task.id, repo, userDirectories: {} }))
+            .rejects.toThrow('Model refusal persisted after 1 retries');
+        const post = (await repo.getTask(task.id)).post;
+
+        expect(executeCompletion).toHaveBeenCalledTimes(2);
+        expect(post).toMatchObject({
+            status: 'failed',
+            output: refusal,
+            error: 'Model refusal persisted after 1 retries',
+        });
     });
 
     test('normalizes a legacy replace post mode to append before execution', async () => {

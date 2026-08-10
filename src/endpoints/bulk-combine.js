@@ -39,6 +39,7 @@ const PATCH_ALLOWED_KEYS = new Set([
     'sources',
     'structure',
     'sourceNotes',
+    'sourceFields',
     'settings',
     'prompts',
     'passes',

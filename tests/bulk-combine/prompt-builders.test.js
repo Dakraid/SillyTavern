@@ -5,6 +5,7 @@ import {
     ALWAYS_INCLUDED_FIELDS,
     OPTIONAL_FIELDS,
     normalizeSelectedFields,
+    resolveCaptureFields,
     getSourceField,
     buildCharacterXmlBlock,
     buildIndividualPrompt,
@@ -70,6 +71,23 @@ describe('bulk combine prompt builders', () => {
                 'mes_example',
                 'name',
             ])).toEqual(['name', 'description', 'personality', 'mes_example']);
+        });
+
+        test('resolves task defaults, per-source overrides, and invalid values', () => {
+            const task = {
+                settings: { fields: ['personality', 'scenario'] },
+                sourceFields: {
+                    override: ['first_mes', 'junk', 'first_mes'],
+                    inherit: null,
+                    junk: 'scenario',
+                },
+            };
+
+            expect(resolveCaptureFields(task, 'missing')).toEqual(['name', 'description', 'personality', 'scenario']);
+            expect(resolveCaptureFields(task, 'override')).toEqual(['name', 'description', 'first_mes']);
+            expect(resolveCaptureFields(task, 'inherit')).toEqual(['name', 'description', 'personality', 'scenario']);
+            expect(resolveCaptureFields(task, 'junk')).toEqual(['name', 'description', 'personality', 'scenario']);
+            expect(resolveCaptureFields({}, 'legacy')).toEqual(CORE_FIELDS);
         });
     });
 

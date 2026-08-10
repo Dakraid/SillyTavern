@@ -546,21 +546,28 @@ export function buildSummaryCharacterBlock(
     return lines.join('\n');
 }
 
+const XML_TAG_PATTERN = /<(?:[^>"']|"[^"]*"|'[^']*')*>/g;
+
+function splitXmlTokens(text) {
+    const tokens = [];
+    let index = 0;
+    for (const match of text.matchAll(XML_TAG_PATTERN)) {
+        if (match.index > index) tokens.push({ tag: false, value: text.slice(index, match.index) });
+        tokens.push({ tag: true, value: match[0] });
+        index = match.index + match[0].length;
+    }
+    if (index < text.length) tokens.push({ tag: false, value: text.slice(index) });
+    return tokens;
+}
+
 /**
  * Collapses whitespace in XML text nodes without changing tag contents.
  * @param {string} text XML text.
  * @returns {string} XML text with compact text nodes.
  */
 function collapseXmlTextNodeWhitespace(text) {
-    return text
-        .split(/(<[^>]+>)/g)
-        .map((part) => {
-            if (!part || part.startsWith('<')) {
-                return part;
-            }
-
-            return part.replace(/[\t\r\n ]+/g, ' ').trim();
-        })
+    return splitXmlTokens(text)
+        .map(token => token.tag ? token.value : token.value.replace(/[\t\r\n ]+/g, ' ').trim())
         .join('');
 }
 
@@ -578,28 +585,15 @@ export function minifyXml(xmlString, options = {}) {
     }
 
     const { compact = false, singleLine = false } = options ?? {};
-    let text = input.replace(/<!--[\s\S]*?-->/g, '');
-    text = collapseXmlTextNodeWhitespace(text);
+    const text = collapseXmlTextNodeWhitespace(input.replace(/<!--[\s\S]*?-->/g, ''));
+    const tokens = splitXmlTokens(text).filter(token => token.value);
 
-    if (compact || singleLine) {
-        text = text.replace(/>\s*</g, '>\n<');
+    if (!compact || singleLine) {
+        return tokens.map(token => token.value).join('');
     }
 
-    let lines = text
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
-
-    if (compact || singleLine) {
-        lines = lines.map((line) => line.replace(/^\s+/, ''));
-    }
-
-    if (singleLine) {
-        return lines
-            .join(' ')
-            .replace(/[\t ]+/g, ' ')
-            .trim();
-    }
-
-    return lines.join('\n');
+    return tokens.reduce((output, token, index) => {
+        const separator = index > 0 && token.tag && tokens[index - 1].tag ? '\n' : '';
+        return output + separator + token.value;
+    }, '');
 }
