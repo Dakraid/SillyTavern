@@ -57,6 +57,7 @@ const NOTES_BADGE_TITLE = 'This card has notes for generation.';
 const NOTES_HINT = 'Injected into this card\'s Transform 1 prompt.';
 const CAPTURED_FIELDS_LABEL = 'Captured fields';
 const FIELDS_INHERIT_LABEL = 'Use task default';
+const READ_ONLY_NOTE = 'This task is completed — it is read-only. Duplicate it from Task History to keep iterating.';
 
 /**
  * Core-field labels in canonical order, used for the compact field summary.
@@ -271,6 +272,13 @@ export function createCardsPage() {
      * @type {Map<string, Element>}
      */
     let fieldRefs = new Map();
+    /**
+     * Whether the task is completed and therefore read-only: recomputed on
+     * every render from the snapshot.
+     *
+     * @type {boolean}
+     */
+    let readOnlyMode = false;
 
     /**
      * Commits one card's note as a sparse PATCH (the server deep-merges
@@ -389,6 +397,7 @@ export function createCardsPage() {
             label: FIELDS_INHERIT_LABEL,
             ariaLabel: `Use the task default captured fields for ${name}`,
             checked: inheriting,
+            disabled: readOnlyMode,
             fieldKey: `fields-inherit:${sourceKey}`,
             onChange: (checked) => {
                 if (checked) {
@@ -406,7 +415,7 @@ export function createCardsPage() {
                 label: fieldLabel,
                 ariaLabel: `Capture ${fieldLabel} for ${name}`,
                 checked: selection.has(key),
-                disabled: inheriting,
+                disabled: inheriting || readOnlyMode,
                 fieldKey: `fields:${sourceKey}:${key}`,
                 onChange: (checked) => {
                     if (checked) {
@@ -604,28 +613,28 @@ export function createCardsPage() {
                 icon: 'fa-arrow-up',
                 label: `Move ${name} up`,
                 title: index === 0 ? 'Already at the top.' : `Move ${name} up.`,
-                disabled: index === 0,
+                disabled: index === 0 || readOnlyMode,
                 onClick: () => moveSource(index, index - 1),
             }),
             buildControlButton({
                 icon: 'fa-arrow-down',
                 label: `Move ${name} down`,
                 title: index === total - 1 ? 'Already at the bottom.' : `Move ${name} down.`,
-                disabled: index === total - 1,
+                disabled: index === total - 1 || readOnlyMode,
                 onClick: () => moveSource(index, index + 1),
             }),
             buildControlButton({
                 icon: 'fa-arrows-rotate',
                 label: `Refresh ${name} snapshot`,
                 title: liveCharacter ? REFRESH_TITLE : REFRESH_MISSING_TITLE,
-                disabled: !liveCharacter,
+                disabled: !liveCharacter || readOnlyMode,
                 onClick: () => void refreshSource(index),
             }),
             buildControlButton({
                 icon: 'fa-xmark',
                 label: `Remove ${name}`,
                 title: removeLocked ? REMOVE_LOCKED_TITLE : `Remove ${name} from this task.`,
-                disabled: removeLocked,
+                disabled: removeLocked || readOnlyMode,
                 onClick: () => removeSource(index),
             }),
         );
@@ -690,6 +699,7 @@ export function createCardsPage() {
         textarea.rows = 3;
         textarea.setAttribute('data-field-key', draftKey);
         textarea.setAttribute('aria-label', `Notes for generation for ${name}`);
+        textarea.readOnly = readOnlyMode === true;
         textarea.value = text;
         textarea.addEventListener('input', () => {
             const draft = String(textarea.value ?? '');
@@ -754,6 +764,7 @@ export function createCardsPage() {
         addButton.type = 'button';
         addButton.className = 'bc-task-picker-add';
         addButton.setAttribute('aria-label', `Add ${name}`);
+        addButton.disabled = readOnlyMode === true;
         addButton.textContent = 'Add';
         addButton.addEventListener('click', () => void addCharacter(character, id));
 
@@ -815,6 +826,7 @@ export function createCardsPage() {
         search.placeholder = 'Filter characters…';
         search.setAttribute('aria-label', 'Filter characters to add');
         search.value = searchQuery;
+        search.disabled = readOnlyMode === true;
 
         const list = document.createElement('div');
         list.className = 'bc-task-picker-list';
@@ -875,6 +887,7 @@ export function createCardsPage() {
      * @returns {Element} The page heading (focus target).
      */
     function renderPage() {
+        readOnlyMode = recordOfTask().status === 'completed';
         const sources = sourcesOf(latestSnapshot);
 
         const activeElement = typeof document !== 'undefined' ? document.activeElement : null;
@@ -911,7 +924,17 @@ export function createCardsPage() {
             }
         }
 
-        root.append(heading, guidance, list, buildAddSection(), buildFooter());
+        root.append(heading, guidance);
+
+        if (readOnlyMode) {
+            const readOnly = document.createElement('p');
+            readOnly.className = 'bc-task-readonly-note';
+            readOnly.setAttribute('role', 'status');
+            readOnly.textContent = READ_ONLY_NOTE;
+            root.append(readOnly);
+        }
+
+        root.append(list, buildAddSection(), buildFooter());
         const scrollPositions = captureScroll(host);
         host.replaceChildren(root);
         restoreScroll(host, scrollPositions);
@@ -970,6 +993,7 @@ export function createCardsPage() {
             noteDrafts.clear();
             expandedNotes.clear();
             fieldRefs = new Map();
+            readOnlyMode = false;
         },
     };
 }

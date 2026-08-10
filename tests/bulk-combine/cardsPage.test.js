@@ -981,4 +981,121 @@ describe('cardsPage', () => {
             }
         });
     });
+
+    // ------------------------------------------------------------------
+    // Read-only lifecycle (completed tasks)
+    // ------------------------------------------------------------------
+
+    describe('read-only completed tasks', () => {
+        const a = () => makeSource();
+        const b = () => makeSource({ key: 'b.png', name: 'Bob', avatar: 'b.png', fields: { name: 'Bob' } });
+        const c = () => makeSource({ key: 'c.png', name: 'Carol', avatar: 'c.png', fields: { name: 'Carol' } });
+        const FIELD_LABELS = ['Personality', 'Scenario', 'First message', 'Example messages'];
+
+        beforeEach(() => {
+            mockCharacters.push(
+                makeCharacter(),
+                makeCharacter({ name: 'Bob', avatar: 'b.png' }),
+                makeCharacter({ name: 'Carol', avatar: 'c.png' }),
+                makeCharacter({ name: 'Dave', avatar: 'd.png' }), // Never a source: stays addable.
+            );
+        });
+
+        test('completed task: banner shown, every mutating control disabled, Continue stays navigable', () => {
+            const taskExtras = { status: 'completed', sourceFields: { 'a.png': ['personality'] } };
+            const { root, actions } = renderCardsPage([a(), b(), c()], makeActions(), {}, taskExtras);
+
+            // Banner mirrors the other wizard pages' read-only note.
+            const banner = findOne(root, hasClass('bc-task-readonly-note'));
+            expect(banner).not.toBe(null);
+            expect(banner.getAttribute('role')).toBe('status');
+            expect(banner.textContent).toBe('This task is completed — it is read-only. Duplicate it from Task History to keep iterating.');
+
+            // Per-card move/refresh/remove controls are disabled (Bob is
+            // mid-list with a live character, so nothing else locks them).
+            for (const label of ['Move Bob up', 'Move Bob down', 'Refresh Bob snapshot', 'Remove Bob']) {
+                expect(findOne(root, hasAriaLabel(label)).disabled).toBe(true);
+            }
+            findOne(root, hasAriaLabel('Move Bob up')).click();
+            findOne(root, hasAriaLabel('Remove Bob')).click();
+            expect(actions.update).not.toHaveBeenCalled();
+
+            // The notes chevron stays usable (view-only), but the textarea is read-only.
+            const card = cardFor(root, 'a.png');
+            const toggle = findOne(card, hasAriaLabel('Notes for Alice'));
+            expect(toggle.disabled).toBe(false);
+            toggle.click();
+            expect(findOne(card, hasClass('bc-task-card-notes-body')).hidden).toBe(false);
+            expect(findOne(card, hasClass('bc-task-card-notes-textarea')).readOnly).toBe(true);
+
+            // Inherit toggle + all four field boxes disabled (Alice has an
+            // override, so the boxes would be enabled on a draft task).
+            const block = findOne(card, hasClass('bc-task-card-captured-fields'));
+            expect(findOne(block, hasAriaLabel('Use the task default captured fields for Alice')).disabled).toBe(true);
+            for (const label of FIELD_LABELS) {
+                expect(findOne(block, hasAriaLabel(`Capture ${label} for Alice`)).disabled).toBe(true);
+            }
+
+            // Picker search + per-character add buttons disabled.
+            expect(findOne(root, hasClass('bc-task-add-search')).disabled).toBe(true);
+            const addButtons = findAll(root, hasClass('bc-task-picker-add'));
+            expect(addButtons).toHaveLength(1);
+            expect(addButtons[0].disabled).toBe(true);
+            findOne(root, hasAriaLabel('Add Dave')).click();
+            expect(actions.update).not.toHaveBeenCalled();
+
+            // Continue is pure navigation: still enabled and working.
+            const continueButton = findOne(root, hasClass('bc-task-continue'));
+            expect(continueButton.disabled).toBe(false);
+            continueButton.click();
+            expect(actions.goToPage).toHaveBeenCalledTimes(1);
+            expect(actions.goToPage).toHaveBeenCalledWith(2);
+        });
+
+        test('non-completed task keeps every control enabled (regression guard)', () => {
+            const taskExtras = { status: 'draft', sourceFields: { 'a.png': ['personality'] } };
+            const { root } = renderCardsPage([a(), b(), c()], makeActions(), {}, taskExtras);
+
+            expect(findOne(root, hasClass('bc-task-readonly-note'))).toBe(null);
+            for (const label of ['Move Bob up', 'Move Bob down', 'Refresh Bob snapshot', 'Remove Bob']) {
+                expect(findOne(root, hasAriaLabel(label)).disabled).toBe(false);
+            }
+
+            const card = cardFor(root, 'a.png');
+            findOne(card, hasAriaLabel('Notes for Alice')).click();
+            expect(findOne(card, hasClass('bc-task-card-notes-textarea')).readOnly).toBe(false);
+            const block = findOne(card, hasClass('bc-task-card-captured-fields'));
+            expect(findOne(block, hasAriaLabel('Use the task default captured fields for Alice')).disabled).toBe(false);
+            for (const label of FIELD_LABELS) {
+                expect(findOne(block, hasAriaLabel(`Capture ${label} for Alice`)).disabled).toBe(false);
+            }
+
+            expect(findOne(root, hasClass('bc-task-add-search')).disabled).toBe(false);
+            expect(findOne(root, hasAriaLabel('Add Dave')).disabled).toBe(false);
+        });
+
+        test('read-only is recomputed per render: draft → completed → draft toggles controls', () => {
+            const page = createCardsPage();
+            const actions = makeActions();
+
+            page.render(container, makeSnapshot([a(), b(), c()], {}, { status: 'draft' }), actions);
+            expect(findOne(container, hasClass('bc-task-readonly-note'))).toBe(null);
+            expect(findOne(container, hasAriaLabel('Move Bob up')).disabled).toBe(false);
+            expect(findOne(container, hasAriaLabel('Add Dave')).disabled).toBe(false);
+
+            page.render(container, makeSnapshot([a(), b(), c()], {}, { status: 'completed' }), actions);
+            expect(findOne(container, hasClass('bc-task-readonly-note'))).not.toBe(null);
+            expect(findOne(container, hasAriaLabel('Move Bob up')).disabled).toBe(true);
+            expect(findOne(container, hasAriaLabel('Add Dave')).disabled).toBe(true);
+            const completedCard = cardFor(container, 'a.png');
+            findOne(completedCard, hasAriaLabel('Notes for Alice')).click();
+            expect(findOne(completedCard, hasClass('bc-task-card-notes-textarea')).readOnly).toBe(true);
+
+            page.render(container, makeSnapshot([a(), b(), c()], {}, { status: 'draft' }), actions);
+            expect(findOne(container, hasClass('bc-task-readonly-note'))).toBe(null);
+            expect(findOne(container, hasAriaLabel('Move Bob up')).disabled).toBe(false);
+            expect(findOne(container, hasAriaLabel('Add Dave')).disabled).toBe(false);
+            expect(findOne(cardFor(container, 'a.png'), hasClass('bc-task-card-notes-textarea')).readOnly).toBe(false);
+        });
+    });
 });
