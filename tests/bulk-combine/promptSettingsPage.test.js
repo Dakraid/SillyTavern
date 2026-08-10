@@ -754,6 +754,107 @@ describe('promptSettingsPage', () => {
         expect(actions.update).toHaveBeenCalledTimes(4);
     });
 
+    // ------------------------------------------------------------------
+    // Captured fields (Processing group)
+    // ------------------------------------------------------------------
+
+    test('captured fields render from settings.fields; legacy absent means all four checked', () => {
+        // Legacy task (no fields key): every optional field checked.
+        const legacy = renderPage(makeSnapshot());
+        for (const label of ['Personality', 'Scenario', 'First message', 'Example messages']) {
+            const box = findOne(legacy.root, hasAriaLabel(label));
+            expect(box).not.toBe(null);
+            expect(box.type).toBe('checkbox');
+            expect(box.checked).toBe(true);
+            expect(box.disabled).toBe(false);
+        }
+        expect(legacy.root.textContent).toContain('Name and description are always captured');
+
+        // A stored subset checks only those, in the task default's clothes.
+        const subset = renderPage(makeSnapshot({ settings: { fields: ['personality', 'first_mes'] } }));
+        expect(findOne(subset.root, hasAriaLabel('Personality')).checked).toBe(true);
+        expect(findOne(subset.root, hasAriaLabel('Scenario')).checked).toBe(false);
+        expect(findOne(subset.root, hasAriaLabel('First message')).checked).toBe(true);
+        expect(findOne(subset.root, hasAriaLabel('Example messages')).checked).toBe(false);
+
+        // Junk keys in the stored array are ignored.
+        const junk = renderPage(makeSnapshot({ settings: { fields: ['scenario', 'bogus'] } }));
+        expect(findOne(junk.root, hasAriaLabel('Scenario')).checked).toBe(true);
+        expect(findOne(junk.root, hasAriaLabel('Personality')).checked).toBe(false);
+    });
+
+    test('captured fields PATCH the checked optional keys in canonical order', () => {
+        const { actions } = renderPage(makeSnapshot());
+
+        // Uncheck Scenario: the other three remain, in canonical order.
+        const scenario = findOne(container, hasAriaLabel('Scenario'));
+        scenario.checked = false;
+        scenario.fire('change');
+        expect(actions.update).toHaveBeenCalledTimes(1);
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { fields: ['personality', 'first_mes', 'mes_example'] } });
+
+        // Re-checking restores Scenario to its canonical position (the
+        // selection accumulates until the snapshot round-trip rebuilds).
+        scenario.checked = true;
+        scenario.fire('change');
+        expect(actions.update).toHaveBeenCalledTimes(2);
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { fields: ['personality', 'scenario', 'first_mes', 'mes_example'] } });
+
+        // Unchecking everything patches an explicit empty selection.
+        for (const label of ['Personality', 'Scenario', 'First message', 'Example messages']) {
+            const box = findOne(container, hasAriaLabel(label));
+            box.checked = false;
+            box.fire('change');
+        }
+        expect(actions.update).toHaveBeenCalledTimes(6);
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { fields: [] } });
+    });
+
+    // ------------------------------------------------------------------
+    // Refusal retries (Processing group)
+    // ------------------------------------------------------------------
+
+    test('refusal retries renders the default 3, clamps to 0–5 integers, and ignores junk', () => {
+        const { root, actions } = renderPage(makeSnapshot());
+
+        const retries = findOne(root, hasAriaLabel('Refusal retries'));
+        expect(retries).not.toBe(null);
+        expect(retries.type).toBe('number');
+        expect(retries.getAttribute('min')).toBe('0');
+        expect(retries.getAttribute('max')).toBe('5');
+        expect(retries.getAttribute('step')).toBe('1');
+        // Absent on legacy tasks → default 3.
+        expect(retries.value).toBe('3');
+        expect(root.textContent).toContain('model refusals');
+        expect(root.textContent).toContain('0 disables');
+
+        retries.value = '4';
+        retries.fire('change');
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { refusalRetries: 4 } });
+
+        // Out-of-range commits clamp into 0–5; fractions truncate.
+        retries.value = '9';
+        retries.fire('change');
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { refusalRetries: 5 } });
+        retries.value = '-2';
+        retries.fire('change');
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { refusalRetries: 0 } });
+        retries.value = '2.9';
+        retries.fire('change');
+        expect(actions.update).toHaveBeenLastCalledWith({ settings: { refusalRetries: 2 } });
+
+        // Blank/non-numeric input never PATCHes.
+        retries.value = '';
+        retries.fire('change');
+        retries.value = 'abc';
+        retries.fire('change');
+        expect(actions.update).toHaveBeenCalledTimes(4);
+
+        // A stored value renders as-is.
+        const stored = renderPage(makeSnapshot({ settings: { refusalRetries: 5 } }));
+        expect(findOne(stored.root, hasAriaLabel('Refusal retries')).value).toBe('5');
+    });
+
     test('the processing mode radios are gone; concurrency is always enabled; pass rows hide unless enabled; summary needs lorebook', () => {
         const page = createPromptSettingsPage();
         const actions = makeActions();
@@ -1381,6 +1482,10 @@ describe('promptSettingsPage', () => {
         expect(findOne(container, hasAriaLabel('Connection profile')).disabled).toBe(true);
         expect(findOne(container, hasAriaLabel('Second pass')).disabled).toBe(true);
         expect(findOne(container, hasAriaLabel('Total context tokens')).disabled).toBe(true);
+        expect(findOne(container, hasAriaLabel('Refusal retries')).disabled).toBe(true);
+        for (const label of ['Personality', 'Scenario', 'First message', 'Example messages']) {
+            expect(findOne(container, hasAriaLabel(label)).disabled).toBe(true);
+        }
 
         // Navigation still works: Continue is pure navigation.
         const continueButton = findOne(container, hasClass('bc-task-continue'));

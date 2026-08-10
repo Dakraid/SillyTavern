@@ -53,7 +53,9 @@
  * replaced children. Uncommitted output/hint edits are held in a closure
  * draft map (`input` updates the draft, `change` sends a sparse PATCH, and
  * re-renders always prefer the draft) plus a focus/selection restore, so
- * state-driven re-renders never clobber an in-progress edit.
+ * state-driven re-renders never clobber an in-progress edit. Scroll
+ * positions of the item list (`data-scroll-key="item-list"`) and the
+ * draft-keyed textareas are preserved across rebuilds via `scrollRestore`.
  *
  * Rendering NEVER executes: only the explicit toolbar/inspector buttons
  * fire actions. Plain DOM only (no jQuery) so the page runs under the Node
@@ -62,6 +64,7 @@
 
 import { getThumbnailUrl } from '../../../../script.js';
 import { resolveCompletionSettings } from '../../services/resolveCompletionSettings.js';
+import { captureScroll, restoreScroll } from './scrollRestore.js';
 
 /**
  * Pass keys this factory serves.
@@ -102,7 +105,7 @@ const NO_MODEL_NOTE = 'No chat completion model is resolved for this task — se
 const STALE_NOTE = 'Inputs for this pass changed since it ran — results may be outdated. Re-run to refresh.';
 const CONTINUE_RUNNING_TITLE = 'This pass is still running.';
 const CONTINUE_UNSETTLED_TITLE = 'Run this pass to completion (full or partial) before continuing.';
-const CONTINUE_STALE_TITLE = 'Inputs changed since this pass ran — re-run it before continuing.';
+const CONTINUE_STALE_TITLE = 'Inputs changed since this pass ran — continuing uses the existing (stale) results.';
 const READ_ONLY_NOTE = 'This task is completed — it is read-only. Duplicate it from Task History to keep iterating.';
 const HINT_NOTE = 'A note attached to this item. Recorded as applied when a single-item regeneration runs with it.';
 const HINT_APPLIED_TITLE = 'Set server-side: the last single-item regeneration ran with a non-empty hint.';
@@ -864,6 +867,7 @@ export function createTransformPage({ passKey, title } = {}) {
 
         const list = document.createElement('div');
         list.className = 'bc-task-transform-item-list';
+        list.setAttribute('data-scroll-key', 'item-list');
 
         filter.addEventListener('input', () => {
             filterQuery = String(filter.value ?? '');
@@ -1183,9 +1187,11 @@ export function createTransformPage({ passKey, title } = {}) {
 
     /**
      * Builds the footer with the Continue button (next non-disabled page,
-     * Review fallback). Continue requires a SETTLED, NON-STALE pass:
-     * pending/failed/interrupted/running passes — and stale results — must
-     * be (re-)run first, so downstream pages never consume invalid output.
+     * Review fallback). Continue requires a SETTLED, NON-RUNNING pass:
+     * pending/failed/interrupted/running passes must be (re-)run first.
+     * STALE results no longer block — the button stays enabled and its
+     * title warns that continuing uses the existing (stale) results; the
+     * stale banner above stays as-is.
      *
      * @returns {Element} Footer element.
      */
@@ -1195,7 +1201,7 @@ export function createTransformPage({ passKey, title } = {}) {
         const staleness = recordOf(latestSnapshot?.derivedStaleness ?? taskOf().derivedStaleness);
         const stale = recordOf(staleness[pass]).stale === true;
         const running = isRunning();
-        const canContinue = settled && !stale && !running;
+        const canContinue = settled && !running;
         const title = running
             ? CONTINUE_RUNNING_TITLE
             : (!settled ? CONTINUE_UNSETTLED_TITLE : (stale ? CONTINUE_STALE_TITLE : `Go to ${target.title}.`));
@@ -1289,7 +1295,9 @@ export function createTransformPage({ passKey, title } = {}) {
         layout.append(buildListColumn(), buildInspector());
         root.append(layout, buildFooter());
 
+        const scrollPositions = captureScroll(host);
         host.replaceChildren(root);
+        restoreScroll(host, scrollPositions);
 
         if (activeKey && fieldRefs.has(activeKey)) {
             const element = fieldRefs.get(activeKey);

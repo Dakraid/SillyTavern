@@ -197,6 +197,40 @@
 	margin: 0;
 }
 
+/* --- Per-card captured fields (inside the notes editor) --- */
+
+.bc-task-card-captured-fields {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+	padding-top: 0.4em;
+	border-top: 1px dashed var(--SmartThemeBorderColor);
+}
+
+.bc-task-card-captured-fields-label {
+	font-size: 0.82em;
+	font-weight: 600;
+	opacity: 0.85;
+}
+
+.bc-task-card-captured-fields-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25em 1em;
+}
+
+.bc-task-card-field-option {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4em;
+	font-size: 0.85em;
+	cursor: pointer;
+}
+
+.bc-task-card-field-option input:disabled {
+	cursor: not-allowed;
+}
+
 /* --- Add-character picker --- */
 
 .bc-task-add {

@@ -845,6 +845,41 @@ describe('transformPage', () => {
         expect(actions.update).not.toHaveBeenCalled();
     });
 
+    test('re-render preserves scroll positions of the item list and keyed textareas', () => {
+        const snapshot = makeSnapshot({
+            task: { passes: { transform1: { items: { 'a.png': makeItem({ output: 'server text' }) } } } },
+        });
+        const page = createTransformPage({ passKey: 'transform1', title: 'Transform 1' });
+        const actions = makeActions();
+        page.render(container, snapshot, actions);
+
+        const oldList = findOne(container, hasClass('bc-task-transform-item-list'));
+        expect(oldList.getAttribute('data-scroll-key')).toBe('item-list');
+        oldList.scrollTop = 120;
+        const oldOutput = findOne(container, hasClass('bc-task-transform-output'));
+        oldOutput.scrollTop = 42;
+        const oldHint = findOne(container, hasClass('bc-task-transform-hint'));
+        oldHint.scrollTop = 7;
+
+        // State-driven re-render: rebuilt elements inherit the old offsets.
+        page.render(container, snapshot, actions);
+
+        const newList = findOne(container, hasClass('bc-task-transform-item-list'));
+        expect(newList).not.toBe(oldList);
+        expect(newList.scrollTop).toBe(120);
+        const newOutput = findOne(container, hasClass('bc-task-transform-output'));
+        expect(newOutput).not.toBe(oldOutput);
+        expect(newOutput.scrollTop).toBe(42);
+        expect(findOne(container, hasClass('bc-task-transform-hint')).scrollTop).toBe(7);
+
+        // A first render into a pristine host has nothing to capture: the
+        // list starts unscrolled.
+        const freshHost = fakeDocument.createElement('div');
+        const freshPage = createTransformPage({ passKey: 'transform1', title: 'Transform 1' });
+        freshPage.render(freshHost, snapshot, makeActions());
+        expect(findOne(freshHost, hasClass('bc-task-transform-item-list')).scrollTop ?? 0).toBe(0);
+    });
+
     test('filter narrows the list by name or status', () => {
         const { root } = renderTransformPage(makeSnapshot({
             task: {
@@ -901,7 +936,7 @@ describe('transformPage', () => {
         expect(stale.title).toBe('Sources changed');
     });
 
-    test('Continue is gated on a settled, non-stale pass and goes to the next non-disabled page', () => {
+    test('Continue is gated on a settled, non-running pass and goes to the next non-disabled page', () => {
         // Pending pass: Continue is disabled with an explanation.
         const pending = renderTransformPage();
         const pendingContinue = findOne(pending.root, hasClass('bc-task-continue'));
@@ -927,20 +962,58 @@ describe('transformPage', () => {
         expect(settled.actions.goToPage).toHaveBeenCalledTimes(1);
         expect(settled.actions.goToPage).toHaveBeenCalledWith(6);
 
-        // Settled but stale: locked with a re-run explanation.
+        // Settled but stale: STILL enabled (stale no longer blocks) — the
+        // title warns that continuing uses the existing (stale) results.
         const stale = renderTransformPage(makeSnapshot({
             derivedStaleness: { transform1: { stale: true, reasons: ['Sources changed'] } },
             task: { passes: { transform1: { status: 'succeeded', items: { 'a.png': makeItem({ status: 'succeeded' }) } } } },
         }));
         const staleContinue = findOne(stale.root, hasClass('bc-task-continue'));
-        expect(staleContinue.disabled).toBe(true);
-        expect(staleContinue.title).toContain('re-run');
+        expect(staleContinue.disabled).toBe(false);
+        expect(staleContinue.title).toContain('stale');
+        staleContinue.click();
+        expect(stale.actions.goToPage).toHaveBeenCalledTimes(1);
 
         // Partial counts as settled; running locks it again.
         const running = renderTransformPage(makeSnapshot({
             task: { passes: { transform1: { status: 'running' } } },
         }));
         expect(findOne(running.root, hasClass('bc-task-continue')).disabled).toBe(true);
+    });
+
+    test('Continue with stale results navigates; stale+running and stale+unsettled still block', () => {
+        // Stale + settled (partial) → enabled with the exact warning title; click navigates.
+        const stale = renderTransformPage(makeSnapshot({
+            derivedStaleness: { transform1: { stale: true, reasons: ['Sources changed'] } },
+            task: { passes: { transform1: { status: 'partial', items: { 'a.png': makeItem({ status: 'succeeded' }) } } } },
+        }));
+        const staleContinue = findOne(stale.root, hasClass('bc-task-continue'));
+        expect(staleContinue.disabled).toBe(false);
+        expect(staleContinue.title).toBe('Inputs changed since this pass ran — continuing uses the existing (stale) results.');
+        staleContinue.click();
+        expect(stale.actions.goToPage).toHaveBeenCalledTimes(1);
+        expect(stale.actions.goToPage).toHaveBeenCalledWith(6);
+
+        // Stale + running → still disabled with the running title.
+        const running = renderTransformPage(makeSnapshot({
+            derivedStaleness: { transform1: { stale: true, reasons: ['Sources changed'] } },
+            task: { passes: { transform1: { status: 'running', items: { 'a.png': makeItem({ status: 'running' }) } } } },
+        }));
+        const runningContinue = findOne(running.root, hasClass('bc-task-continue'));
+        expect(runningContinue.disabled).toBe(true);
+        expect(runningContinue.title).toContain('still running');
+        runningContinue.click();
+        expect(running.actions.goToPage).not.toHaveBeenCalled();
+
+        // Stale + unsettled (pending) → still disabled with the unsettled title.
+        const pending = renderTransformPage(makeSnapshot({
+            derivedStaleness: { transform1: { stale: true, reasons: ['Sources changed'] } },
+        }));
+        const pendingContinue = findOne(pending.root, hasClass('bc-task-continue'));
+        expect(pendingContinue.disabled).toBe(true);
+        expect(pendingContinue.title).toContain('Run this pass');
+        pendingContinue.click();
+        expect(pending.actions.goToPage).not.toHaveBeenCalled();
     });
 
     test('Continue falls back to Review (page 7) when every later page is disabled', () => {

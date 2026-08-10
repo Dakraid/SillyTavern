@@ -9,9 +9,13 @@
  * the snapshot from the live character, or remove the card (a combine needs
  * at least two sources, so removal locks at that floor). Each card also
  * carries a collapsible "Notes for generation" editor (ephemeral collapse
- * state; notes commit as sparse `sourceNotes` patches). A filterable
+ * state; notes commit as sparse `sourceNotes` patches) with a
+ * captured-fields block below it (a "Use task default" inherit toggle plus
+ * the four optional-field checkboxes, committing sparse `sourceFields`
+ * patches). A filterable
  * picker appends characters that are not sources yet; the footer continues
- * to the Prompt & Settings page.
+ * to the Prompt & Settings page. Rebuilds preserve scroll positions via
+ * `scrollRestore` (the card list carries `data-scroll-key="card-list"`).
  *
  * Page-module contract: `render(container, snapshot, actions) → Element`
  * (the page heading, used as the focus target). The page is a pure function
@@ -27,6 +31,8 @@
 
 import { characters, getThumbnailUrl, unshallowCharacter } from '../../../../script.js';
 import { getCharacterName, getCoreCharacterPayload } from '../../helpers.js';
+import { ALL_CAPTURABLE_KEYS, CAPTURABLE_FIELDS, effectiveSourceFields, sourceFieldsOverride } from './fieldsModel.js';
+import { captureScroll, restoreScroll } from './scrollRestore.js';
 
 /**
  * Minimum number of source cards a combine task needs.
@@ -49,6 +55,8 @@ const REFRESH_MISSING_TITLE = 'The live character for this snapshot no longer ex
 const SNAPSHOT_BADGE_TITLE = 'Stored snapshot: generation uses this captured data, never the live card, until you refresh.';
 const NOTES_BADGE_TITLE = 'This card has notes for generation.';
 const NOTES_HINT = 'Injected into this card\'s Transform 1 prompt.';
+const CAPTURED_FIELDS_LABEL = 'Captured fields';
+const FIELDS_INHERIT_LABEL = 'Use task default';
 
 /**
  * Core-field labels in canonical order, used for the compact field summary.
@@ -291,6 +299,138 @@ export function createCardsPage() {
         }).catch((error) => {
             console.error('cardsPage: failed to update the note.', error);
         });
+    }
+
+    /**
+     * Commits one card's captured-fields selection as a sparse PATCH (the
+     * server deep-merges records, so only the one key is sent). `null`
+     * clears the override, returning the card to the task default.
+     * Failures are logged, never thrown into render/change paths.
+     *
+     * @param {string} sourceKey Source key.
+     * @param {string[]|null} fields Selected optional keys, or null to inherit.
+     * @returns {void}
+     */
+    function patchSourceFields(sourceKey, fields) {
+        let result;
+        try {
+            result = latestActions?.update?.({ sourceFields: { [sourceKey]: fields } });
+        } catch (error) {
+            console.error('cardsPage: failed to update captured fields.', error);
+            return;
+        }
+        Promise.resolve(result).catch((error) => {
+            console.error('cardsPage: failed to update captured fields.', error);
+        });
+    }
+
+    /**
+     * Builds a small checkbox row (input + text label) that commits on
+     * `change`. A field key registers the input in the focus-restore map
+     * so state-driven rebuilds do not strand keyboard users.
+     *
+     * @param {object} options Checkbox options.
+     * @param {string} options.label Visible label.
+     * @param {string} options.ariaLabel Accessible name.
+     * @param {boolean} options.checked Current state.
+     * @param {boolean} [options.disabled] Disabled state.
+     * @param {string} [options.fieldKey] Stable `data-field-key` for focus tracking.
+     * @param {(checked: boolean) => void} options.onChange Commit callback.
+     * @returns {Element} Label element wrapping the input.
+     */
+    function buildFieldsCheckbox({ label, ariaLabel, checked, disabled, fieldKey, onChange }) {
+        const wrapper = document.createElement('label');
+        wrapper.className = 'bc-task-card-field-option';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked === true;
+        input.disabled = disabled === true;
+        input.setAttribute('aria-label', ariaLabel);
+        if (fieldKey) {
+            input.setAttribute('data-field-key', fieldKey);
+            fieldRefs.set(fieldKey, input);
+        }
+        input.addEventListener('change', () => onChange(input.checked === true));
+        const text = document.createElement('span');
+        text.className = 'bc-task-card-field-option-label';
+        text.textContent = label;
+        wrapper.append(input, text);
+        return wrapper;
+    }
+
+    /**
+     * Builds the per-card captured-fields block: a "Use task default"
+     * inherit toggle plus the four optional-field checkboxes showing the
+     * EFFECTIVE selection (override ?? task default). While inheriting,
+     * the four boxes are disabled; turning inherit off commits the current
+     * effective selection as the card's override, and turning it back on
+     * clears the override with a null patch. Checkbox toggles while not
+     * inheriting PATCH the new selection sparsely (canonical order).
+     *
+     * @param {object} source Source record.
+     * @param {string} name Display name (for accessible names).
+     * @returns {Element} Captured-fields block.
+     */
+    function buildCapturedFieldsBlock(source, name) {
+        const sourceKey = String(source?.key ?? '');
+        const task = recordOfTask();
+        const inheriting = sourceFieldsOverride(task, sourceKey) === null;
+        const selection = new Set(effectiveSourceFields(task, sourceKey));
+        const commitSelection = () => patchSourceFields(sourceKey, ALL_CAPTURABLE_KEYS.filter((key) => selection.has(key)));
+
+        const block = document.createElement('div');
+        block.className = 'bc-task-card-captured-fields';
+
+        const label = document.createElement('span');
+        label.className = 'bc-task-card-captured-fields-label';
+        label.textContent = CAPTURED_FIELDS_LABEL;
+
+        const inheritToggle = buildFieldsCheckbox({
+            label: FIELDS_INHERIT_LABEL,
+            ariaLabel: `Use the task default captured fields for ${name}`,
+            checked: inheriting,
+            fieldKey: `fields-inherit:${sourceKey}`,
+            onChange: (checked) => {
+                if (checked) {
+                    patchSourceFields(sourceKey, null);
+                } else {
+                    commitSelection();
+                }
+            },
+        });
+
+        const options = document.createElement('div');
+        options.className = 'bc-task-card-captured-fields-options';
+        for (const { key, label: fieldLabel } of CAPTURABLE_FIELDS) {
+            options.append(buildFieldsCheckbox({
+                label: fieldLabel,
+                ariaLabel: `Capture ${fieldLabel} for ${name}`,
+                checked: selection.has(key),
+                disabled: inheriting,
+                fieldKey: `fields:${sourceKey}:${key}`,
+                onChange: (checked) => {
+                    if (checked) {
+                        selection.add(key);
+                    } else {
+                        selection.delete(key);
+                    }
+                    commitSelection();
+                },
+            }));
+        }
+
+        block.append(label, inheritToggle, options);
+        return block;
+    }
+
+    /**
+     * Reads the current task record defensively.
+     *
+     * @returns {object} Task record (possibly empty).
+     */
+    function recordOfTask() {
+        const task = latestSnapshot?.task;
+        return task !== null && typeof task === 'object' && !Array.isArray(task) ? task : {};
     }
 
     /**
@@ -567,7 +707,7 @@ export function createCardsPage() {
         hint.className = 'bc-task-field-hint';
         hint.textContent = NOTES_HINT;
 
-        body.append(textarea, hint);
+        body.append(textarea, hint, buildCapturedFieldsBlock(source, name));
 
         toggle.addEventListener('click', () => {
             const nowExpanded = !expandedNotes.has(sourceKey);
@@ -759,6 +899,7 @@ export function createCardsPage() {
         list.className = 'bc-task-cards-list';
         list.setAttribute('role', 'list');
         list.setAttribute('aria-label', 'Source cards');
+        list.setAttribute('data-scroll-key', 'card-list');
         if (sources.length === 0) {
             const empty = document.createElement('p');
             empty.className = 'bc-task-cards-empty';
@@ -771,7 +912,9 @@ export function createCardsPage() {
         }
 
         root.append(heading, guidance, list, buildAddSection(), buildFooter());
+        const scrollPositions = captureScroll(host);
         host.replaceChildren(root);
+        restoreScroll(host, scrollPositions);
 
         if (activeKey && fieldRefs.has(activeKey)) {
             const element = fieldRefs.get(activeKey);

@@ -264,11 +264,12 @@ function makeSource(overrides = {}) {
 /**
  * @param {object[]} sources Task sources.
  * @param {object} [sourceNotes] Per-source generation notes (`{ [key]: text }`).
+ * @param {object} [taskExtras] Extra task fields (`settings`, `sourceFields`, …).
  * @returns {object} State snapshot payload (mirrors `TaskWizardState#getSnapshot`).
  */
-function makeSnapshot(sources, sourceNotes = {}) {
+function makeSnapshot(sources, sourceNotes = {}, taskExtras = {}) {
     return {
-        task: { id: 'task-1', name: 'Task', sources, sourceNotes },
+        task: { id: 'task-1', name: 'Task', sources, sourceNotes, ...taskExtras },
         derivedStaleness: {},
         pageStates: [],
         currentPage: 1,
@@ -302,11 +303,12 @@ function flush() {
  * @param {object[]} sources Task sources.
  * @param {object} [actions] Actions facade mock.
  * @param {object} [sourceNotes] Per-source generation notes.
+ * @param {object} [taskExtras] Extra task fields (`settings`, `sourceFields`, …).
  * @returns {{page: object, heading: Element, root: Element, actions: object}} Rendered page pieces.
  */
-function renderCardsPage(sources, actions = makeActions(), sourceNotes = {}) {
+function renderCardsPage(sources, actions = makeActions(), sourceNotes = {}, taskExtras = {}) {
     const page = createCardsPage();
-    const heading = page.render(container, makeSnapshot(sources, sourceNotes), actions);
+    const heading = page.render(container, makeSnapshot(sources, sourceNotes, taskExtras), actions);
     return { page, heading, root: container.children[0], actions };
 }
 
@@ -642,6 +644,28 @@ describe('cardsPage', () => {
         expect(() => page.render(container, makeSnapshot([a, b]), actions)).not.toThrow();
     });
 
+    test('re-render preserves the card-list scroll position', () => {
+        const a = makeSource();
+        const b = makeSource({ key: 'b.png', name: 'Bob', avatar: 'b.png', fields: { name: 'Bob' } });
+        mockCharacters.push(
+            makeCharacter(),
+            makeCharacter({ name: 'Bob', avatar: 'b.png' }),
+        );
+        const page = createCardsPage();
+        const actions = makeActions();
+        page.render(container, makeSnapshot([a, b]), actions);
+
+        const oldList = findOne(container, hasClass('bc-task-cards-list'));
+        expect(oldList.getAttribute('data-scroll-key')).toBe('card-list');
+        oldList.scrollTop = 96;
+
+        // State-driven re-render: the rebuilt list inherits the old offset.
+        page.render(container, makeSnapshot([a, b]), actions);
+        const newList = findOne(container, hasClass('bc-task-cards-list'));
+        expect(newList).not.toBe(oldList);
+        expect(newList.scrollTop).toBe(96);
+    });
+
     // ------------------------------------------------------------------
     // Per-card notes (collapsible "Notes for generation" editor)
     // ------------------------------------------------------------------
@@ -816,6 +840,145 @@ describe('cardsPage', () => {
             const hint = findOne(card, hasClass('bc-task-field-hint'));
             expect(hint).not.toBe(null);
             expect(hint.textContent).toBe('Injected into this card\'s Transform 1 prompt.');
+        });
+    });
+
+    // ------------------------------------------------------------------
+    // Per-card captured fields (inside the notes editor)
+    // ------------------------------------------------------------------
+
+    describe('per-card captured fields', () => {
+        const a = () => makeSource();
+        const b = () => makeSource({ key: 'b.png', name: 'Bob', avatar: 'b.png', fields: { name: 'Bob' } });
+        const FIELD_LABELS = ['Personality', 'Scenario', 'First message', 'Example messages'];
+
+        beforeEach(() => {
+            mockCharacters.push(
+                makeCharacter(),
+                makeCharacter({ name: 'Bob', avatar: 'b.png' }),
+            );
+        });
+
+        /**
+         * Expands a card's notes editor and returns its captured-fields block.
+         *
+         * @param {object} root Root fake element.
+         * @param {string} sourceKey Source key.
+         * @param {string} name Card display name.
+         * @returns {object} Captured-fields block element.
+         */
+        function fieldsBlockFor(root, sourceKey, name) {
+            const card = cardFor(root, sourceKey);
+            findOne(card, hasAriaLabel(`Notes for ${name}`)).click();
+            const block = findOne(card, hasClass('bc-task-card-captured-fields'));
+            expect(block).not.toBe(null);
+            return block;
+        }
+
+        test('inheriting (no override): boxes show the task default, disabled, and never PATCH', () => {
+            const { root, actions } = renderCardsPage([a(), b()], makeActions(), {}, { settings: { fields: ['scenario'] } });
+
+            const block = fieldsBlockFor(root, 'a.png', 'Alice');
+            expect(block.textContent).toContain('Captured fields');
+            const inherit = findOne(block, hasAriaLabel('Use the task default captured fields for Alice'));
+            expect(inherit.checked).toBe(true);
+
+            // The four boxes mirror settings.fields and are disabled while inheriting.
+            for (const label of FIELD_LABELS) {
+                const box = findOne(block, hasAriaLabel(`Capture ${label} for Alice`));
+                expect(box.disabled).toBe(true);
+                expect(box.checked).toBe(label === 'Scenario');
+                box.click(); // Disabled: the fake click is a no-op.
+            }
+            expect(actions.update).not.toHaveBeenCalled();
+
+            // Legacy task (no settings.fields at all): all four shown checked.
+            const legacy = renderCardsPage([a(), b()]);
+            const legacyBlock = fieldsBlockFor(legacy.root, 'a.png', 'Alice');
+            expect(findOne(legacyBlock, hasAriaLabel('Use the task default captured fields for Alice')).checked).toBe(true);
+            for (const label of FIELD_LABELS) {
+                const box = findOne(legacyBlock, hasAriaLabel(`Capture ${label} for Alice`));
+                expect(box.checked).toBe(true);
+                expect(box.disabled).toBe(true);
+            }
+        });
+
+        test('a non-array override entry (junk) inherits the task default', () => {
+            const taskExtras = { settings: { fields: ['scenario'] }, sourceFields: { 'a.png': 'junk' } };
+            const { root } = renderCardsPage([a(), b()], makeActions(), {}, taskExtras);
+
+            const block = fieldsBlockFor(root, 'a.png', 'Alice');
+            expect(findOne(block, hasAriaLabel('Use the task default captured fields for Alice')).checked).toBe(true);
+            const scenario = findOne(block, hasAriaLabel('Capture Scenario for Alice'));
+            expect(scenario.checked).toBe(true);
+            expect(scenario.disabled).toBe(true);
+        });
+
+        test('turning inherit OFF commits the current effective selection as the override', () => {
+            const { root, actions } = renderCardsPage([a(), b()], makeActions(), {}, { settings: { fields: ['personality'] } });
+
+            const block = fieldsBlockFor(root, 'a.png', 'Alice');
+            const inherit = findOne(block, hasAriaLabel('Use the task default captured fields for Alice'));
+            inherit.checked = false;
+            inherit.fire('change');
+            expect(actions.update).toHaveBeenCalledTimes(1);
+            expect(actions.update).toHaveBeenCalledWith({ sourceFields: { 'a.png': ['personality'] } });
+        });
+
+        test('with an override the boxes show the override (not the task default) and toggle sparse patches', () => {
+            const taskExtras = {
+                settings: { fields: ['mes_example'] },
+                sourceFields: { 'a.png': ['personality'] },
+            };
+            const { root, actions } = renderCardsPage([a(), b()], makeActions(), {}, taskExtras);
+
+            const block = fieldsBlockFor(root, 'a.png', 'Alice');
+            expect(findOne(block, hasAriaLabel('Use the task default captured fields for Alice')).checked).toBe(false);
+
+            const personality = findOne(block, hasAriaLabel('Capture Personality for Alice'));
+            const scenario = findOne(block, hasAriaLabel('Capture Scenario for Alice'));
+            expect(personality.disabled).toBe(false);
+            expect(personality.checked).toBe(true);
+            expect(scenario.checked).toBe(false);
+            // The task default does NOT leak into the override view.
+            expect(findOne(block, hasAriaLabel('Capture Example messages for Alice')).checked).toBe(false);
+
+            // Toggle on → the union in canonical order.
+            scenario.checked = true;
+            scenario.fire('change');
+            expect(actions.update).toHaveBeenCalledTimes(1);
+            expect(actions.update).toHaveBeenLastCalledWith({ sourceFields: { 'a.png': ['personality', 'scenario'] } });
+
+            // Toggle off → only the remaining keys.
+            personality.checked = false;
+            personality.fire('change');
+            expect(actions.update).toHaveBeenCalledTimes(2);
+            expect(actions.update).toHaveBeenLastCalledWith({ sourceFields: { 'a.png': ['scenario'] } });
+        });
+
+        test('turning inherit back ON clears the override with a null patch', () => {
+            const taskExtras = { sourceFields: { 'a.png': ['personality'] } };
+            const { root, actions } = renderCardsPage([a(), b()], makeActions(), {}, taskExtras);
+
+            const block = fieldsBlockFor(root, 'a.png', 'Alice');
+            const inherit = findOne(block, hasAriaLabel('Use the task default captured fields for Alice'));
+            expect(inherit.checked).toBe(false);
+            inherit.checked = true;
+            inherit.fire('change');
+            expect(actions.update).toHaveBeenCalledTimes(1);
+            expect(actions.update).toHaveBeenCalledWith({ sourceFields: { 'a.png': null } });
+        });
+
+        test('one card\'s override does not leak into another card', () => {
+            const taskExtras = { sourceFields: { 'a.png': ['personality'] } };
+            const { root } = renderCardsPage([a(), b()], makeActions(), {}, taskExtras);
+
+            // Bob has no override → inherits the (legacy) all-four default.
+            const bobBlock = fieldsBlockFor(root, 'b.png', 'Bob');
+            expect(findOne(bobBlock, hasAriaLabel('Use the task default captured fields for Bob')).checked).toBe(true);
+            for (const label of FIELD_LABELS) {
+                expect(findOne(bobBlock, hasAriaLabel(`Capture ${label} for Bob`)).checked).toBe(true);
+            }
         });
     });
 });

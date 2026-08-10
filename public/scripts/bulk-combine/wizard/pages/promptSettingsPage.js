@@ -43,6 +43,7 @@ import { escapeHtml } from '../../../utils.js';
 import { createStructureBuilder } from '../../components/StructureBuilder.js';
 import { deletePromptPreset, findPromptPresetIndex, getPromptPresets, savePromptPreset } from '../../services/promptPresets.js';
 import { resolveApiEntry, resolveCompletionSettings } from '../../services/resolveCompletionSettings.js';
+import { ALL_CAPTURABLE_KEYS, CAPTURABLE_FIELDS, effectiveOptionalFields } from './fieldsModel.js';
 
 /** @type {string} Field key for the main prompt textarea. */
 const MAIN_TEXT_FIELD = 'prompt:main:text';
@@ -67,6 +68,12 @@ const PRESET_SAVE_TITLE = 'Save the current prompt text as a named preset.';
 const PRESET_DELETE_TITLE = 'Delete the selected preset.';
 const STRUCTURE_STALE_HINT = 'Changing the format marks all passes stale.';
 const FREEFORM_STRUCTURE_HINT = 'Freeform output — no structure enforced.';
+const CAPTURED_FIELDS_HINT = 'Name and description are always captured. Unchecked fields are left out of every per-card prompt.';
+const REFUSAL_RETRIES_HINT = 'Retries responses that look like model refusals; 0 disables.';
+/** @type {number} Default refusal-retry budget (legacy tasks without the setting). */
+const DEFAULT_REFUSAL_RETRIES = 3;
+/** @type {number} Maximum refusal-retry budget (mirrors the server normalizer). */
+const MAX_REFUSAL_RETRIES = 5;
 
 /**
  * Valid output formats (mirrors the server-side structure normalizer).
@@ -1088,9 +1095,70 @@ export function createPromptSettingsPage() {
     }
 
     /**
-     * Builds the Processing group (concurrency). Transform 1 always runs
-     * per card; pass-level merging is configured per pass (see Optional
-     * Passes).
+     * Builds the Captured fields row: one checkbox per optional core field
+     * (name + description are always captured — see the hint). The
+     * effective selection comes from `settings.fields` (absent on legacy
+     * tasks → all four checked); every change PATCHes the checked keys in
+     * canonical order.
+     *
+     * @param {object} settings Task settings record.
+     * @returns {Element} Field row.
+     */
+    function buildCapturedFieldsField(settings) {
+        const selection = new Set(effectiveOptionalFields(settings.fields));
+        const control = document.createElement('div');
+        control.className = 'bc-task-captured-fields';
+        for (const { key, label } of CAPTURABLE_FIELDS) {
+            control.append(buildCheckbox({
+                label,
+                checked: selection.has(key),
+                onChange: (checked) => {
+                    if (checked) {
+                        selection.add(key);
+                    } else {
+                        selection.delete(key);
+                    }
+                    patchSettings('fields', ALL_CAPTURABLE_KEYS.filter((field) => selection.has(field)));
+                },
+            }));
+        }
+        return buildField('Captured fields', control, CAPTURED_FIELDS_HINT);
+    }
+
+    /**
+     * Builds the Refusal retries row: a 0–5 integer number input (default
+     * 3; 0 disables). Out-of-range/fractional commits are clamped; blank
+     * or non-numeric input is ignored (the snapshot re-render restores the
+     * stored value).
+     *
+     * @param {object} settings Task settings record.
+     * @returns {Element} Field row.
+     */
+    function buildRefusalRetriesField(settings) {
+        const retriesInput = buildNumberInput({
+            ariaLabel: 'Refusal retries',
+            value: Number.isSafeInteger(settings.refusalRetries) ? settings.refusalRetries : DEFAULT_REFUSAL_RETRIES,
+            min: 0,
+            onChange: (raw) => {
+                if (String(raw).trim() === '') {
+                    return;
+                }
+                const number = Number(raw);
+                if (!Number.isFinite(number)) {
+                    return;
+                }
+                patchSettings('refusalRetries', Math.min(MAX_REFUSAL_RETRIES, Math.max(0, Math.trunc(number))));
+            },
+        });
+        retriesInput.setAttribute('max', String(MAX_REFUSAL_RETRIES));
+        retriesInput.setAttribute('step', '1');
+        return buildField('Refusal retries', retriesInput, REFUSAL_RETRIES_HINT);
+    }
+
+    /**
+     * Builds the Processing group (concurrency, captured fields, refusal
+     * retries). Transform 1 always runs per card; pass-level merging is
+     * configured per pass (see Optional Passes).
      *
      * @returns {Element} Settings group.
      */
@@ -1116,6 +1184,8 @@ export function createPromptSettingsPage() {
         return buildGroup('processing', 'Processing', [
             note,
             buildField('Concurrency', concurrencyInput, 'Parallel requests per pass.'),
+            buildCapturedFieldsField(settings),
+            buildRefusalRetriesField(settings),
         ]);
     }
 
