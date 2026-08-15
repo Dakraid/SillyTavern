@@ -3715,6 +3715,7 @@ function getReasoningEffort(settings = null, model = null) {
         chat_completion_sources.ELECTRONHUB,
         chat_completion_sources.CHUTES,
         chat_completion_sources.DEEPSEEK,
+        chat_completion_sources.ZAI,
     ];
 
     if (!reasoningEffortSources.includes(settings.chat_completion_source)) {
@@ -3722,6 +3723,25 @@ function getReasoningEffort(settings = null, model = null) {
     }
 
     function resolveReasoningEffort() {
+        if (settings.chat_completion_source === chat_completion_sources.ZAI) {
+            // https://docs.z.ai/api-reference/llm/chat-completion
+            // reasoning_effort is only supported by GLM-5 series models (GLM-5.2+).
+            if (!/^glm-5/.test(model)) {
+                return undefined;
+            }
+            switch (settings.reasoning_effort) {
+                case reasoning_effort_types.auto:
+                    // Let the server default decide.
+                    return undefined;
+                case reasoning_effort_types.min:
+                    // Skips thinking entirely.
+                    return 'minimal';
+                default:
+                    // low/medium/high/max are native Z.AI effort levels.
+                    return settings.reasoning_effort;
+            }
+        }
+
         if (settings.chat_completion_source === chat_completion_sources.DEEPSEEK) {
             switch (settings.reasoning_effort) {
                 case reasoning_effort_types.auto:

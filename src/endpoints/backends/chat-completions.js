@@ -3267,6 +3267,7 @@ export async function dispatchChatCompletion(request, response) {
                 thinking: {
                     type: request.body.include_reasoning ? 'enabled' : 'disabled',
                 },
+                reasoning_effort: request.body.reasoning_effort,
             };
             if (request.body.json_schema) {
                 setJsonObjectFormat(
