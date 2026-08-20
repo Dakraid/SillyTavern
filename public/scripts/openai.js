@@ -102,6 +102,7 @@ import {
     updateOpenRouterProvidersWarning,
 } from './textgen-models.js';
 import { wrapPromptWrapperContent } from './prompt-wrappers.js';
+import { applyReasoningPrefill } from './reasoning-prefill.js';
 
 export {
     openai_messages_count,
@@ -611,6 +612,12 @@ export const settingsToUpdate = {
         false,
         false,
     ],
+    reasoning_prefill: [
+        '#reasoning_prefill',
+        'reasoning_prefill',
+        false,
+        false,
+    ],
     assistant_impersonation: [
         '#claude_assistant_impersonation',
         'assistant_impersonation',
@@ -807,6 +814,7 @@ const default_settings = {
     show_external_models: false,
     proxy_password: '',
     assistant_prefill: '',
+    reasoning_prefill: '',
     assistant_impersonation: '',
     use_sysprompt: false,
     vertexai_auth_mode: 'express',
@@ -4489,6 +4497,10 @@ async function sendOpenAIRequest(
         event_types.CHAT_COMPLETION_SETTINGS_READY,
         generate_data,
     );
+
+    // Apply after the event emit so extension listeners mutate first;
+    // tools injected by listeners cause the prefill to be skipped.
+    applyReasoningPrefill(generate_data, type, activeSettings.reasoning_prefill);
 
     const generate_url = '/api/backends/chat-completions/generate';
     const response = await fetch(generate_url, {
