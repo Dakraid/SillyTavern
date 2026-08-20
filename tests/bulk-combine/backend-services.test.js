@@ -11,7 +11,10 @@ jest.unstable_mockModule('node-fetch', () => ({
 }));
 
 jest.unstable_mockModule('../../src/endpoints/secrets.js', () => ({
+    allowKeysExposure: false,
     readSecret: () => 'test-secret',
+    writeSecret: jest.fn(),
+    SECRETS_FILE: 'secrets.json',
     SECRET_KEYS: {
         CUSTOM: 'api_key_custom',
     },

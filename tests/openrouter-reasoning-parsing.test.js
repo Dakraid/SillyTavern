@@ -81,6 +81,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     extension_prompt_roles: {},
     extension_prompt_types: {},
     Generate: jest.fn(),
+    getCurrentChatId: jest.fn(),
     getExtensionPrompt: jest.fn(),
     getExtensionPromptMaxDepth: jest.fn(),
     getMediaDisplay: jest.fn(),
