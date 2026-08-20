@@ -228,6 +228,29 @@ describe('applyReasoningPrefill transform', () => {
         expect(data.messages[2].partial).toBe(true);
         expect(data.include_reasoning).toBe(true);
     });
+
+    test('does not transform a trailing assistant message with non-string content', () => {
+        const data = basePayload();
+        data.messages.push({ role: 'assistant', content: [{ type: 'text', text: '<think>x</think>y' }] });
+        const before = structuredClone(data);
+
+        const applied = applyReasoningPrefill(data, 'normal', 'seed');
+
+        expect(applied).toBe(false);
+        expect(data).toEqual(before);
+        expect(data.include_reasoning).toBeUndefined();
+    });
+
+    test('does not transform a trailing assistant message with a mid-string <think> block', () => {
+        const data = thinkPayload('text before <think>reason</think>');
+        const before = structuredClone(data);
+
+        const applied = applyReasoningPrefill(data, 'normal', 'seed');
+
+        expect(applied).toBe(false);
+        expect(data).toEqual(before);
+        expect(data.include_reasoning).toBeUndefined();
+    });
 });
 
 describe('applyProgrammaticReasoningPrefill', () => {

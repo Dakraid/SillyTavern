@@ -9574,6 +9574,11 @@ export function initOpenAI() {
         saveSettingsDebounced();
     });
 
+    $('#reasoning_prefill').on('input', function () {
+        oai_settings.reasoning_prefill = String($(this).val());
+        saveSettingsDebounced();
+    });
+
     $('#claude_assistant_impersonation').on('input', function () {
         oai_settings.assistant_impersonation = String($(this).val());
         saveSettingsDebounced();
