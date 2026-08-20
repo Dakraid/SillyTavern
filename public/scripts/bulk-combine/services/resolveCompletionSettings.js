@@ -294,6 +294,10 @@ export function resolveCompletionSettings(task, deps = {}) {
         if (seed !== null && seed >= 0) {
             result.seed = Math.trunc(seed);
         }
+        const reasoningPrefill = nonEmptyString(preset.reasoning_prefill);
+        if (reasoningPrefill !== null) {
+            result.reasoning_prefill = reasoningPrefill;
+        }
     }
 
     // Profile transport, mirroring `ConnectionManagerRequestService

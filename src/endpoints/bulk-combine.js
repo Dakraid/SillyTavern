@@ -56,6 +56,7 @@ const SANITIZER_ALLOWED_KEYS = new Set([
     'chat_completion_source',
     'max_tokens',
     'max_completion_tokens',
+    'reasoning_prefill',
 ]);
 const SECRET_KEY_PATTERN = /key|secret|password|token|authorization/i;
 

@@ -70,6 +70,7 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { addOpenRouterUserIdentifier } from '../openrouter-user.js';
 import { getCookieSecret } from '../../users.js';
+import { applyProgrammaticReasoningPrefill } from '../../../public/scripts/reasoning-prefill.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -299,6 +300,8 @@ export async function executeChatCompletion({ body, userDirectories, signal }) {
     if (body.stream) {
         throw new TypeError('Programmatic Chat Completion execution is non-streaming.');
     }
+
+    applyProgrammaticReasoningPrefill(body);
 
     let status = 200;
     let data;
