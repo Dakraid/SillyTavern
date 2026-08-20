@@ -1,4 +1,5 @@
 /* eslint-disable dot-notation */
+import { createHmac } from 'node:crypto';
 import process from 'node:process';
 import util from 'node:util';
 import express from 'express';
@@ -68,6 +69,7 @@ import {
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { addOpenRouterUserIdentifier } from '../openrouter-user.js';
+import { getCookieSecret } from '../../users.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -119,6 +121,18 @@ const enableAdaptiveThinking = getConfigValue(
     true,
     'boolean',
 );
+
+/**
+ * Lazily-cached HMAC key (instance cookie secret) for session-affinity hashing.
+ * @type {string|undefined}
+ */
+let affinityKey;
+function getAffinityKey() {
+    if (affinityKey === undefined) {
+        affinityKey = getCookieSecret(globalThis.DATA_ROOT);
+    }
+    return affinityKey;
+}
 
 /**
  * Cache for cacheable (writing) OpenRouter model IDs.
@@ -265,14 +279,20 @@ async function sendClaudeRequest(request, response) {
         );
         // Unanchored to also match prefixed ids passed through proxies, e.g. 'anthropic/claude-fable-5'
         const isFableModel = /claude-fable/.test(request.body.model);
+        const isClaude5Model = /claude-(opus-5|sonnet-5)/.test(request.body.model);
         const useThinking =
             /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(
                 request.body.model,
-            ) || isFableModel;
+            ) ||
+            isFableModel ||
+            isClaude5Model;
         const useWebSearch =
             (/^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(
                 request.body.model,
-            ) || isFableModel) && Boolean(request.body.enable_web_search);
+            ) ||
+                isFableModel ||
+                isClaude5Model) &&
+            Boolean(request.body.enable_web_search);
         const isLimitedSampling =
             /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(
                 request.body.model,
@@ -280,18 +300,25 @@ async function sendClaudeRequest(request, response) {
         const useVerbosity =
             /^claude-(opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(
                 request.body.model,
-            ) || isFableModel;
+            ) ||
+            isFableModel ||
+            isClaude5Model;
         const noPrefillModel =
             /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(
                 request.body.model,
-            ) || isFableModel;
+            ) ||
+            isFableModel ||
+            isClaude5Model;
         const isAdaptiveModel =
             /^claude-(opus-4-7|opus-4-8)/.test(request.body.model) ||
             isFableModel ||
+            isClaude5Model ||
             (enableAdaptiveThinking &&
                 /^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model));
         const noSamplingModel =
-            /^claude-(opus-4-7|opus-4-8)/.test(request.body.model) || isFableModel;
+            /^claude-(opus-4-7|opus-4-8)/.test(request.body.model) ||
+            isFableModel ||
+            isClaude5Model;
         let fixThinkingPrefill = false;
         // Add custom stop sequences
         const stopSequences = [];
@@ -420,8 +447,8 @@ async function sendClaudeRequest(request, response) {
             requestBody.output_config.effort = budgetTokens;
             // top_k is not allowed in adaptive mode
             delete requestBody.top_k;
-        } else if (useThinking && isFableModel && reasoningEffort === 'auto' && includeReasoning) {
-            // Fable auto thinking is already enabled, but readable summaries require an explicit display request.
+        } else if (useThinking && (isFableModel || isClaude5Model) && reasoningEffort === 'auto' && includeReasoning) {
+            // Fable/Claude 5 auto thinking is already enabled, but readable summaries require an explicit display request.
             fixThinkingPrefill = true;
             requestBody.thinking = { type: 'adaptive', display: 'summarized' };
         } else if (useThinking && Number.isInteger(budgetTokens)) {
@@ -616,6 +643,8 @@ async function sendMakerSuiteRequest(request, response) {
             (/^gemini-2.5-(flash|pro)/.test(m) && !/-image(-preview)?$/.test(m)) ||
 			/^gemini-3[.\d]*-(flash|pro)/.test(m);
         const isImageSizeModel = (m) => /^gemini-3/.test(m);
+        // https://ai.google.dev/gemini-api/docs/latest-model#api-changes-and-parameter-updates
+        const noSamplingModel = /gemini-3\.[67]-flash|gemini-3\.5-flash-lite/.test(model);
 
         const noSearchModels = [
             'gemini-2.0-flash-lite',
@@ -630,6 +659,13 @@ async function sendMakerSuiteRequest(request, response) {
 			!generationConfig.stopSequences.length
         ) {
             delete generationConfig.stopSequences;
+        }
+
+        if (noSamplingModel) {
+            delete generationConfig.temperature;
+            delete generationConfig.topP;
+            delete generationConfig.topK;
+            delete generationConfig.candidateCount;
         }
 
         const enableImageModality =
@@ -2231,13 +2267,84 @@ router.post('/status', async function (request, statusResponse) {
         } else if (
             request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.FIREWORKS
         ) {
-            apiUrl = API_FIREWORKS;
             apiKey = readSecret(
                 request.user.directories,
                 SECRET_KEYS.FIREWORKS,
                 request.body.secret_id,
             );
-            headers = {};
+            const modelsUrl =
+                'https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue&pageSize=200';
+
+            try {
+                const response = await fetch(modelsUrl, {
+                    method: 'GET',
+                    headers: {
+                        Authorization: 'Bearer ' + apiKey,
+                        ...headers,
+                    },
+                });
+
+                if (response.ok) {
+                    /** @type {any} */
+                    const data = await response.json();
+                    const models = Array.isArray(data?.models)
+                        ? data.models
+                            .filter(
+                                (model) =>
+                                    model?.contextLength > 0 &&
+                                    model?.kind !== 'EMBEDDING_MODEL',
+                            )
+                            .map((model) => ({
+                                id: model.name,
+                                name: model.displayName,
+                                context_length: model.contextLength,
+                                supports_tools: model.supportsTools,
+                                supports_image_input: model.supportsImageInput,
+                            }))
+                        : [];
+
+                    // Add fast router versions for models that have them
+                    const fastRouters = {
+                        'accounts/fireworks/models/glm-5p2':
+                            'accounts/fireworks/routers/glm-5p2-fast',
+                        'accounts/fireworks/models/kimi-k2p6':
+                            'accounts/fireworks/routers/kimi-k2p6-fast',
+                        'accounts/fireworks/models/kimi-k2p7-code':
+                            'accounts/fireworks/routers/kimi-k2p7-code-fast',
+                        'accounts/fireworks/models/kimi-k3':
+                            'accounts/fireworks/routers/kimi-k3-fast',
+                    };
+                    for (const [standardId, fastId] of Object.entries(fastRouters)) {
+                        const standard = models.find((model) => model.id === standardId);
+                        if (standard) {
+                            models.push({
+                                ...standard,
+                                id: fastId,
+                                name: standard.name + ' (fast)',
+                            });
+                        }
+                    }
+
+                    console.debug(
+                        'Available Fireworks models:',
+                        models.map((model) => model.id),
+                    );
+                    return statusResponse.send({ data: models });
+                } else {
+                    console.warn(
+                        'Fireworks models endpoint failed:',
+                        response.status,
+                        response.statusText,
+                    );
+                    return statusResponse.send({
+                        error: true,
+                        data: { data: [] },
+                    });
+                }
+            } catch (error) {
+                console.error('Error fetching Fireworks models:', error);
+                return statusResponse.send({ error: true, data: { data: [] } });
+            }
         } else if (
             request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.MAKERSUITE
         ) {
@@ -3048,6 +3155,9 @@ router.post('/generate', async function (request, response) {
             );
             headers = {};
             bodyParams = {};
+            if (request.body.reasoning_effort) {
+                bodyParams['reasoning_effort'] = request.body.reasoning_effort;
+            }
             if (request.body.json_schema) {
                 bodyParams['response_format'] = {
                     type: 'json_schema',
@@ -3058,6 +3168,12 @@ router.post('/generate', async function (request, response) {
                         strict: request.body.json_schema.strict ?? true,
                     },
                 };
+            }
+            if (request.body.chat_id) {
+                headers['x-session-affinity'] = createHmac('sha256', getAffinityKey())
+                    .update(request.body.chat_id)
+                    .digest('hex')
+                    .slice(0, 16);
             }
         } else if (
             request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.NANOGPT

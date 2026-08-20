@@ -34,6 +34,7 @@ import {
     clientRelativePath,
     getUniqueName,
     sanitizeSafeCharacterReplacements,
+    getArrayBufferSlice,
 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write } from '../character-card-parser.js';
@@ -905,10 +906,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
 async function importFromCharX(uploadPath, { request }, preservedFileName) {
     const fileBuffer = fs.readFileSync(uploadPath);
     // Create a properly-sized ArrayBuffer (Node's buffer pool can cause oversized .buffer)
-    const data = fileBuffer.buffer.slice(
-        fileBuffer.byteOffset,
-        fileBuffer.byteOffset + fileBuffer.byteLength,
-    );
+    const data = getArrayBufferSlice(fileBuffer);
     fs.unlinkSync(uploadPath);
 
     const parser = new CharXParser(data);
@@ -962,7 +960,7 @@ async function importFromCharX(uploadPath, { request }, preservedFileName) {
 }
 
 async function importFromByaf(uploadPath, { request }, preservedFileName) {
-    const data = (await fsPromises.readFile(uploadPath)).buffer;
+    const data = getArrayBufferSlice(await fsPromises.readFile(uploadPath));
     await fsPromises.unlink(uploadPath);
     console.info('Importing from BYAF');
 
