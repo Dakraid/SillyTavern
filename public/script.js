@@ -16140,6 +16140,28 @@ jQuery(async function () {
         $('#character_import_file').trigger('click');
     });
 
+    $('#rm_button_export_all').on('click', async function () {
+        const toast = toastr.info('Preparing character archive...', '', { timeOut: 0, extendedTimeOut: 0 });
+        try {
+            const prepare = await fetch('/api/characters/export-all/prepare', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+            });
+            if (!prepare.ok) throw new Error(prepare.statusText);
+            const { id } = await prepare.json();
+            const file = await fetch(`/api/characters/export-all/download?id=${encodeURIComponent(id)}`, {
+                headers: getRequestHeaders(),
+            });
+            if (!file.ok) throw new Error(file.statusText);
+            download(await file.blob(), 'characters.zip', 'application/zip');
+        } catch (err) {
+            console.error('Character bulk export failed', err);
+            toastr.error('Failed to download characters.');
+        } finally {
+            toastr.clear(toast);
+        }
+    });
+
     $('#character_import_file').on('change', async function (e) {
         $('#rm_info_avatar').html('');
 

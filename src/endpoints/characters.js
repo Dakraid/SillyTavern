@@ -6,6 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 
 import express from 'express';
+import archiver from 'archiver';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import yaml from 'yaml';
@@ -2160,6 +2161,61 @@ router.post(
         }
     },
 );
+
+const EXPORT_ALL_TTL_MS = 30 * 60 * 1000;
+/** @type {Map<string, { file: string, handle: string, timer?: NodeJS.Timeout }>} */
+const exportAllArchives = new Map();
+
+/**
+ * (Re)starts the expiry timer of a prepared archive. The ZIP is removed 30 minutes after last access.
+ * @param {string} id Archive ID
+ */
+function touchExportAllArchive(id) {
+    const entry = exportAllArchives.get(id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+        exportAllArchives.delete(id);
+        fs.rm(entry.file, { force: true }, () => { });
+    }, EXPORT_ALL_TTL_MS);
+    entry.timer.unref();
+}
+
+router.post('/export-all/prepare', async function (request, response) {
+    try {
+        const id = crypto.randomUUID();
+        const file = path.join(os.tmpdir(), `st-characters-${id}.zip`);
+        const output = fs.createWriteStream(file);
+        const archive = archiver('zip', { zlib: { level: 6 } });
+        await new Promise((resolve, reject) => {
+            output.on('close', resolve);
+            output.on('error', reject);
+            archive.on('error', reject);
+            archive.pipe(output);
+            archive.glob('*.png', { cwd: request.user.directories.characters, follow: false });
+            archive.finalize();
+        }).catch((err) => {
+            fs.rmSync(file, { force: true });
+            throw err;
+        });
+        exportAllArchives.set(id, { file, handle: request.user.profile.handle });
+        touchExportAllArchive(id);
+        return response.send({ id });
+    } catch (err) {
+        console.error('Character bulk export failed', err);
+        return response.sendStatus(500);
+    }
+});
+
+router.get('/export-all/download', function (request, response) {
+    const id = String(request.query.id);
+    const entry = exportAllArchives.get(id);
+    if (!entry || entry.handle !== request.user.profile.handle || !fs.existsSync(entry.file)) {
+        return response.sendStatus(404);
+    }
+    touchExportAllArchive(id);
+    return response.download(entry.file, `characters-${humanizedDateTime()}.zip`);
+});
 
 router.get('/jobs', function (_request, response) {
     response.json({ jobs: globalJobRegistry.getAllActiveJobs() });
